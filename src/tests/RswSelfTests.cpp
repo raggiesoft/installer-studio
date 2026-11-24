@@ -18,8 +18,11 @@
 // ================================================================================
 
 #include "../common/RswCryptoAndPe.hpp"
+#include "../common/RswLzmsCompression.hpp"
 #include "../common/RswManifestAst.hpp"
+#include "../common/RswMsiFeatureTree.hpp"
 #include "../common/RswPlatform.hpp"
+#include "../common/RswPrerequisites.hpp"
 #include "../common/RswSuiteWorkspace.hpp"
 #include "../common/RswVersion.hpp"
 #include "../compiler/RswAiSpecEmitter.hpp"
@@ -384,6 +387,97 @@ int wmain() {
         };
         Check(runPrism(v1Sum.msiPath) && runPrism(msmOut) && runPrism(mspPath),
               "msiprism.exe --inspect-summary inspects .msi, .msm, and .msp databases cleanly");
+    }
+
+    // 5B. Verify `v0.3.0` Editions, `LZMS` Solid Compression, `[Prerequisite.*]`, `SelectionTree`,
+    //     `ActionText` `[1]` Template Hygiene, & Native 64-Bit `[MergeModule.*]` (`.msm`) Consumption!
+    {
+        Check(rsw::EditionHasFullPremierParity(rsw::RswIdeEdition::Community) &&
+              rsw::EditionHasFullPremierParity(rsw::RswIdeEdition::Premier),
+              "IDE Community Edition enforces 100% feature parity with Premier Edition");
+
+        // Windows `COMPRESS_ALGORITHM_LZMS` (`Cabinet.lib`) solid compression round-trip
+        std::vector<std::uint8_t> repData(65536);
+        for (std::size_t i = 0; i < repData.size(); ++i) repData[i] = static_cast<std::uint8_t>((i * 7u) & 0x3Fu);
+        const auto lzmsComp = rsw::CompressWithLzmsIfSmaller(repData);
+        std::vector<std::uint8_t> lzmsDec;
+        std::string lzErr;
+        Check(lzmsComp.size() < repData.size() / 4 &&
+              rsw::DecompressLzmsOrCopyRaw(lzmsComp.data(), lzmsComp.size(), lzmsDec, lzErr) &&
+              lzmsDec == repData,
+              "Windows LZMS solid compression shrinks payload >75% and restores exact bytes", lzErr);
+
+        // Curated & custom `[Prerequisite.*]` exit-code classification + INI round-trip
+        std::ostringstream prManifest;
+        prManifest << "[Package]\nName = PrereqApp\nVersion = 1.0.0\nManufacturer = RaggieSoft\n"
+                   << "UpgradeCode = {6A0D9B55-1234-4B55-9C11-AA22BB33CC44}\n"
+                   << "[Install]\nDefaultSubdir = RaggieSoft\\PrereqApp\n"
+                   << "[Feature.Main]\nTitle = Core\nLevel = 1\nDisallowAbsent = true\n"
+                   << "[Feature.Docs]\nParent = Main\nTitle = Offline Docs\nLevel = 1\n"
+                   << "[Prerequisite.DotNet10]\nPreset = DotNet10Desktop\nDistribution = download\n"
+                   << "[Prerequisite.VendorRuntime]\nPreset = Custom\nName = Custom Vendor Runtime\n"
+                   << "Distribution = embedded\nSourceFile = " << rsw::WideToUtf8(payloadToUse.wstring()) << "\n"
+                   << "SuccessExitCodes = 0, 1638\nRebootExitCodes = 3010, 1641, 9999\n"
+                   << "[MergeModule.SharedMod]\nSource = " << rsw::WideToUtf8(msmOut.wstring()) << "\n"
+                   << "Feature = Main\nTargetRoot = INSTALLDIR\n"
+                   << "[Payload.MainExe]\nSource = " << rsw::WideToUtf8(payloadToUse.wstring()) << "\nFeature = Docs\n";
+        auto prDoc = rsw::ParseManifestText(prManifest.str(), testWorkDir / L"prereq-msm.rsip");
+        prDoc.SetString("Package", "", "OutputDir", rsw::WideToUtf8((testWorkDir / L"pr-out").wstring()));
+
+        const auto resolvedPr = rsw::ResolveManifestPrerequisites(prDoc, hostArch);
+        const auto iniRound   = rsw::ParsePrerequisiteTableIni(rsw::SerializePrerequisiteTableIni(resolvedPr));
+        Check(iniRound.size() == 2 &&
+              rsw::ClassifyPrerequisiteExitCode(iniRound[0], 3010) == rsw::PrereqExitOutcome::SucceededRebootRequested &&
+              rsw::ClassifyPrerequisiteExitCode(iniRound[0], 23)   == rsw::PrereqExitOutcome::SucceededRebootRequested &&
+              rsw::ClassifyPrerequisiteExitCode(iniRound[1], 9999) == rsw::PrereqExitOutcome::SucceededRebootRequested &&
+              rsw::ClassifyPrerequisiteExitCode(iniRound[1], 1638) == rsw::PrereqExitOutcome::Succeeded &&
+              rsw::ClassifyPrerequisiteExitCode(iniRound[1], 1603) == rsw::PrereqExitOutcome::Failed,
+              "Prerequisite catalog & custom RebootExitCodes (3010/1641/23/9999) classify accurately");
+
+        // Compile `.rsip` consuming `[MergeModule.SharedMod]` (`.msm`) + embedded LZMS `[Prerequisite.VendorRuntime]`!
+        rsw::CompiledMsiSummary msmMergedSum{};
+        std::string mergeErr;
+        const bool mergedMsiOk = rsw::CompileManifestToMsi(prDoc, hostArch, msmMergedSum, mergeErr);
+        std::filesystem::path mergedSetupExe;
+        const bool mergedExeOk = mergedMsiOk &&
+                                 rsw::PackageSelfExtractingBootstrapper(prDoc, msmMergedSum, binDir, mergedSetupExe, mergeErr);
+        Check(mergedMsiOk && mergedExeOk && msmMergedSum.fileCount >= 2 && std::filesystem::exists(mergedSetupExe),
+              "Native 64-bit [MergeModule.*] (.msm) & embedded LZMS [Prerequisite.*] compiled into MSI + Setup.exe", mergeErr);
+
+        // Verify `SelectionTree` SQL loader, `DisallowAbsent` lock, & `ADDLOCAL` / `REMOVE` builder!
+        std::vector<rsw::MsiFeatureNode> treeNodes;
+        const bool loadedTree = rsw::LoadFeatureTreeFromMsiDatabase(msmMergedSum.msiPath, L"", treeNodes);
+        if (loadedTree && treeNodes.size() == 2) {
+            rsw::ApplyMsiFeatureActionRecursive(treeNodes, 0, rsw::MsiTreeState::Absent); // Should be blocked by `DisallowAbsent = true`!
+            rsw::ApplyMsiFeatureActionRecursive(treeNodes, 1, rsw::MsiTreeState::Absent); // Disables `Docs` child feature!
+        }
+        const std::wstring treeProps = rsw::BuildMsiFeatureSelectionProps(treeNodes);
+        Check(loadedTree && treeNodes.size() == 2 &&
+              treeNodes[0].currentState != rsw::MsiTreeState::Absent &&
+              treeNodes[1].currentState == rsw::MsiTreeState::Absent &&
+              treeProps.find(L"ADDLOCAL=Main") != std::wstring::npos &&
+              treeProps.find(L"REMOVE=Docs")   != std::wstring::npos,
+              "MSI SelectionTree loads Feature costs, honors DisallowAbsent, and emits ADDLOCAL/REMOVE",
+              rsw::WideToUtf8(treeProps));
+
+        // Verify `ActionText` table never puts unexpanded `[1]` inside `Description` (only in `Template`!)
+        {
+            rsw::ScopedMsiHandle hActDb, hActView, hActRec;
+            bool descClean = false, tmplPresent = false;
+            if (::MsiOpenDatabaseW(msmMergedSum.msiPath.wstring().c_str(), MSIDBOPEN_READONLY, hActDb.Put()) == ERROR_SUCCESS &&
+                ::MsiDatabaseOpenViewW(hActDb.Get(), L"SELECT `Description`, `Template` FROM `ActionText` WHERE `Action` = 'InstallFiles'", hActView.Put()) == ERROR_SUCCESS &&
+                ::MsiViewExecute(hActView.Get(), 0) == ERROR_SUCCESS &&
+                ::MsiViewFetch(hActView.Get(), hActRec.Put()) == ERROR_SUCCESS) {
+                wchar_t dBuf[256]{}, tBuf[256]{};
+                DWORD cd = 256, ct = 256;
+                ::MsiRecordGetStringW(hActRec.Get(), 1, dBuf, &cd);
+                ::MsiRecordGetStringW(hActRec.Get(), 2, tBuf, &ct);
+                descClean   = (std::wstring_view(dBuf).find(L"[1]") == std::wstring_view::npos);
+                tmplPresent = (std::wstring_view(tBuf) == L"[1]");
+            }
+            Check(descClean && tmplPresent,
+                  "ActionText separates Description from '[1]' Template (prevents 'Copying New File: [1]' bug)");
+        }
     }
 
     // 6. Live Windows Installer (`msi.dll`) Engine Verification (`AppSearch`, `Signature`, `LaunchConditions`,

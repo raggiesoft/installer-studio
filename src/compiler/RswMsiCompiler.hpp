@@ -37,6 +37,7 @@
 #include "../common/RswVersion.hpp"
 #include "RswCabBuilder.hpp"
 #include "RswMsiDialogBuilder.hpp"
+#include "RswMsmMerger.hpp"
 #include "RswValidator.hpp"
 #include "RswWizard97Art.hpp"
 
@@ -547,33 +548,38 @@ inline bool CompileManifestToMsi(
         return curParent;
     };
 
-    // Collect `[Feature.<id>]` hierarchy (supporting `Parent` sub-features!)
+    // Collect `[Feature.<id>]` hierarchy (supporting `Parent` sub-features, `DisallowAbsent`, & `AllowAdvertise`!)
     struct FeatureRec {
         std::string id;
         std::string parentId;
         std::string title;
         std::string desc;
         int         level = 1;
+        int         attrs = 8; // Default `msidbFeatureAttributesDisallowAdvertise` (`8`) unless `AllowAdvertise = true`
     };
     std::vector<FeatureRec> features;
     for (const auto& fid : doc.GetNamedSectionIds("Feature")) {
+        int fAttrs = 0;
+        if (!doc.GetBool("Feature", fid, "AllowAdvertise", false)) fAttrs |= 8;  // `msidbFeatureAttributesDisallowAdvertise`
+        if (doc.GetBool("Feature", fid, "DisallowAbsent", false))  fAttrs |= 16; // `msidbFeatureAttributesUIDisallowAbsent`
         features.push_back({
             fid,
             TrimAscii(doc.GetString("Feature", fid, "Parent")),
             doc.GetString("Feature", fid, "Title", fid),
             doc.GetString("Feature", fid, "Description", ""),
-            doc.GetInt("Feature", fid, "Level", 1)
+            doc.GetInt("Feature", fid, "Level", 1),
+            fAttrs
         });
     }
     if (features.empty()) {
-        features.push_back({"Main", "", outSummary.productName, "Core application files", 1});
+        features.push_back({"Main", "", outSummary.productName, "Core application files", 1, 8});
     }
     auto ensureFeatureExists = [&](const std::string& fid) {
         if (fid.empty()) return features.front().id;
         for (const auto& f : features) {
             if (EqualsIgnoreCase(f.id, fid)) return f.id;
         }
-        features.push_back({fid, "", fid, "", 1});
+        features.push_back({fid, "", fid, "", 1, 8});
         return fid;
     };
 
@@ -735,8 +741,14 @@ inline bool CompileManifestToMsi(
         }
     }
 
-    if (stagedFiles.empty()) {
-        outError = "No payload files were matched by [Payload.*] sections.";
+    const auto mergeModuleIds = doc.GetNamedSectionIds("MergeModule");
+    for (const auto& mid : mergeModuleIds) {
+        ensureSystemRootRegistered(doc.GetString("MergeModule", mid, "TargetRoot", "INSTALLDIR"));
+        ensureFeatureExists(doc.GetString("MergeModule", mid, "Feature", features.front().id));
+    }
+
+    if (stagedFiles.empty() && mergeModuleIds.empty()) {
+        outError = "No payload files were matched by [Payload.*] or [MergeModule.*] sections.";
         return false;
     }
 
@@ -777,7 +789,8 @@ inline bool CompileManifestToMsi(
     }
 
     // -------------------------------------------------------------------------
-    // STEP 2: Compress all staged files into temporary `#payload.cab` via `fci.h`
+    // STEP 2: Prepare scratch workspace & queue staged files for `#payload.cab`
+    //         (Final `BuildPayloadCabinet` runs after `[MergeModule.*]` merging!)
     // -------------------------------------------------------------------------
     const std::filesystem::path scratchDir = std::filesystem::temp_directory_path(ec) /
                                              ("rsw-build-" + outSummary.packageCode.substr(1, 8));
@@ -787,16 +800,12 @@ inline bool CompileManifestToMsi(
     const std::filesystem::path welcomeBmpPath = scratchDir / "welcome.bmp";
 
     std::vector<CabInputEntry> cabInputs;
-    cabInputs.reserve(stagedFiles.size());
+    cabInputs.reserve(stagedFiles.size() + 16);
     for (const auto& sf : stagedFiles) {
         cabInputs.push_back({sf.sourcePath, sf.fileKey});
     }
 
     const bool useLzx = !EqualsIgnoreCase(doc.GetString("Package", "", "CabinetCompression", "lzx"), "mszip");
-    if (!BuildPayloadCabinet(cabInputs, cabPath, useLzx, outError)) {
-        std::filesystem::remove_all(scratchDir, ec);
-        return false;
-    }
     WriteDefaultWizard97BannerBmp(bannerBmpPath);
     WriteDefaultWizard97WelcomeBmp(welcomeBmpPath);
 
@@ -980,7 +989,7 @@ inline bool CompileManifestToMsi(
             hDb.Get(), "Feature",
             {"Feature", "Feature_Parent", "Title", "Description", "Display", "Level", "Directory_", "Attributes"},
             {f.id, f.parentId.empty() ? SqlParam{std::monostate{}} : SqlParam{f.parentId},
-             f.title, f.desc, featOrder, f.level, std::string("INSTALLDIR"), 0},
+             f.title, f.desc, featOrder, f.level, std::string("INSTALLDIR"), f.attrs},
             outError);
         featOrder += 2;
     }
@@ -1506,17 +1515,39 @@ inline bool CompileManifestToMsi(
         }
     }
 
-    outSummary.fileCount      = stagedFiles.size();
+    // Merge any `[MergeModule.<id>]` (`.msm`) databases into `hDb` & `cabInputs` BEFORE packing `#payload.cab`!
+    std::size_t totalMergedFiles = 0;
+    int nextCabSeq = static_cast<int>(stagedFiles.size()) + 1;
+    for (const auto& mid : mergeModuleIds) {
+        const auto msmPath  = resolvePath(doc.GetString("MergeModule", mid, "Source"));
+        const auto msmFeat  = ensureFeatureExists(doc.GetString("MergeModule", mid, "Feature", features.front().id));
+        const auto msmRoot  = ensureSystemRootRegistered(doc.GetString("MergeModule", mid, "TargetRoot", "INSTALLDIR"));
+        if (!MergeMsmIntoMsiDatabase(
+                hDb.Get(), msmPath, msmFeat, msmRoot, scratchDir,
+                registeredDirKeys, cabInputs, nextCabSeq,
+                totalComponents, totalMergedFiles, outError)) {
+            std::filesystem::remove_all(scratchDir, ec);
+            return false;
+        }
+    }
+
+    outSummary.fileCount      = stagedFiles.size() + totalMergedFiles;
     outSummary.componentCount = totalComponents;
+
+    // Pack all `[Payload.*]` + merged `[MergeModule.*]` files into unified `LZX:21` `#payload.cab`!
+    if (!cabInputs.empty() && !BuildPayloadCabinet(cabInputs, cabPath, useLzx, outError)) {
+        std::filesystem::remove_all(scratchDir, ec);
+        return false;
+    }
 
     // `Media` & `_Streams` (`payload.cab`)
     msi_sql::InsertRow(
         hDb.Get(), "Media",
         {"DiskId", "LastSequence", "DiskPrompt", "Cabinet", "VolumeLabel", "Source"},
-        {1, static_cast<int>(stagedFiles.size()), std::monostate{}, std::string("#payload.cab"), std::monostate{}, std::monostate{}},
+        {1, static_cast<int>(cabInputs.size()), std::monostate{}, std::string("#payload.cab"), std::monostate{}, std::monostate{}},
         outError);
 
-    if (!msi_sql::InsertBinaryStreamRow(hDb.Get(), "_Streams", "Name", "Data", "payload.cab", cabPath, outError) ||
+    if ((!cabInputs.empty() && !msi_sql::InsertBinaryStreamRow(hDb.Get(), "_Streams", "Name", "Data", "payload.cab", cabPath, outError)) ||
         !msi_sql::InsertBinaryStreamRow(hDb.Get(), "Binary", "Name", "Data", "RswBannerBmp", bannerBmpPath, outError) ||
         !msi_sql::InsertBinaryStreamRow(hDb.Get(), "Binary", "Name", "Data", "RswWelcomeBmp", welcomeBmpPath, outError)) {
         std::filesystem::remove_all(scratchDir, ec);
@@ -1587,24 +1618,31 @@ inline bool CompileManifestToMsi(
         addProp("SecureCustomProperties", std::move(joinedProps));
     }
 
-    const std::pair<const char*, const char*> actionTexts[] = {
-        {"InstallValidate",        "Validating installation..."},
-        {"RemoveExistingProducts", "Removing previous version..."},
-        {"ProcessComponents",      "Updating component registration..."},
-        {"RemoveFiles",            "Removing old files..."},
-        {"CreateFolders",          "Creating application folders..."},
-        {"InstallFiles",           "Copying new files..."},
-        {"RegisterFonts",          "Registering fonts..."},
-        {"CreateShortcuts",        "Creating shortcuts..."},
-        {"WriteRegistryValues",    "Writing system registry values..."},
-        {"RegisterProgIdInfo",     "Registering document ProgIDs..."},
-        {"RegisterExtensionInfo",  "Registering file extensions..."},
-        {"RegisterProduct",        "Registering product..."},
-        {"PublishProduct",         "Publishing product information..."}
+    // Populate `ActionText` with BOTH plain `Description` (never containing raw `[1]`!)
+    // AND proper `Template` patterns formatted by `MsiFormatRecordW` on `INSTALLMESSAGE_ACTIONDATA`
+    // so neither `msiexec` nor `SetupWizard.exe` EVER prints an unexpanded `"Copying New File: [1]"`!
+    struct ActionTextRow { const char* action; const char* desc; const char* tmpl; };
+    const ActionTextRow actionTexts[] = {
+        {"InstallValidate",        "Validating installation...",          nullptr},
+        {"RemoveExistingProducts", "Removing previous version...",        nullptr},
+        {"ProcessComponents",      "Updating component registration...",  nullptr},
+        {"RemoveFiles",            "Removing old files",                  "[1]"},
+        {"CreateFolders",          "Creating application folders",        "[1]"},
+        {"InstallFiles",           "Copying new files",                   "[1]"},
+        {"RegisterFonts",          "Registering fonts",                   "[1]"},
+        {"CreateShortcuts",        "Creating shortcuts",                  "[1]"},
+        {"WriteRegistryValues",    "Updating system configuration...",    nullptr},
+        {"RegisterProgIdInfo",     "Registering document types...",       nullptr},
+        {"RegisterExtensionInfo",  "Registering file extensions...",      nullptr},
+        {"RegisterProduct",        "Registering product...",              nullptr},
+        {"PublishProduct",         "Publishing product information...",   nullptr}
     };
-    for (const auto& [act, txt] : actionTexts) {
-        msi_sql::InsertRow(hDb.Get(), "ActionText", {"Action", "Description", "Template"},
-                           {std::string(act), std::string(txt), std::monostate{}}, outError);
+    for (const auto& at : actionTexts) {
+        msi_sql::InsertRow(
+            hDb.Get(), "ActionText", {"Action", "Description", "Template"},
+            {std::string(at.action), std::string(at.desc),
+             at.tmpl ? SqlParam{std::string(at.tmpl)} : SqlParam{std::monostate{}}},
+            outError);
     }
 
     // -------------------------------------------------------------------------

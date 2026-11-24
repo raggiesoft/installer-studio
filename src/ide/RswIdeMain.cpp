@@ -37,7 +37,9 @@
 #include "../common/RswGlassRenderer.hpp"
 #include "../common/RswCryptoAndPe.hpp"
 #include "../common/RswManifestAst.hpp"
+#include "../common/RswMsiFeatureTree.hpp"
 #include "../common/RswPlatform.hpp"
+#include "../common/RswPrerequisites.hpp"
 #include "../common/RswSuiteWorkspace.hpp"
 #include "../common/RswVersion.hpp"
 #include "../compiler/RswAiSpecEmitter.hpp"
@@ -67,12 +69,13 @@ enum StudioView : int {
     VIEW_PACKAGE      = 0,
     VIEW_DEST_FOLDERS = 1,
     VIEW_SETUP_DESIGN = 2,
-    VIEW_FILE_ASSOC   = 3,
-    VIEW_SHORTCUTS    = 4,
-    VIEW_CPP_WIZARD   = 5,
-    VIEW_MSI_DIALOGS  = 6,
-    VIEW_SIGN_REL     = 7,
-    VIEW_SOURCE       = 8
+    VIEW_PREREQS      = 3,
+    VIEW_FILE_ASSOC   = 4,
+    VIEW_SHORTCUTS    = 5,
+    VIEW_CPP_WIZARD   = 6,
+    VIEW_MSI_DIALOGS  = 7,
+    VIEW_SIGN_REL     = 8,
+    VIEW_SOURCE       = 9
 };
 
 enum IdeId : int {
@@ -87,6 +90,7 @@ enum IdeId : int {
     IDM_WIZ_COMPONENT        = 2007,
     IDM_WIZ_RELEASE          = 2008,
     IDM_WIZ_INSERT_PRESET    = 2009,
+    IDM_WIZ_PREREQ_MSM       = 2017,
 
     IDM_BUILD_VALIDATE       = 2010,
     IDM_BUILD_MSI            = 2011,
@@ -95,6 +99,13 @@ enum IdeId : int {
     IDM_BUILD_EMIT_AI        = 2014,
     IDM_LAUNCH_MSIPRISM      = 2015,
     IDM_OPEN_OUTDIR          = 2016,
+
+    // Editions & About Menu (`Community == 100% Premier Feature Parity`!)
+    IDM_EDITION_COMMUNITY    = 2020,
+    IDM_EDITION_EXPRESS      = 2021,
+    IDM_EDITION_PROFESSIONAL = 2022,
+    IDM_EDITION_PREMIER      = 2023,
+    IDM_HELP_ABOUT           = 2024,
 
     // Persistent Toolbar & Navigation
     IDC_TB_WIZARD            = 2100,
@@ -148,7 +159,19 @@ enum IdeId : int {
     IDC_COMP_SAVE_BTN        = 2322,
     IDC_COMP_WIZ_BTN         = 2323,
 
-    // View 3: File Associations & Shell Verbs
+    // View 3: Runtime Prerequisites (`[Prerequisite.*]`) & Merge Modules (`[MergeModule.*]`)
+    IDC_PR_GRID              = 2370,
+    IDC_PR_PRESET_COMBO      = 2371,
+    IDC_PR_DIST_COMBO        = 2372,
+    IDC_PR_SOURCE_EDIT       = 2373,
+    IDC_PR_BROWSE_BTN        = 2374,
+    IDC_PR_REBOOT_CODES      = 2375,
+    IDC_PR_ADD_BTN           = 2376,
+    IDC_PR_ADD_MSM_BTN       = 2377,
+    IDC_PR_REMOVE_BTN        = 2378,
+    IDC_PR_WIZ_BTN           = 2379,
+
+    // View 4: File Associations & Shell Verbs
     IDC_FA_GRID              = 2330,
     IDC_FA_EXT               = 2331,
     IDC_FA_PROGID            = 2332,
@@ -323,6 +346,7 @@ public:
     rsw::RswSuiteWorkspace     activeSuite{};
     bool                       hasActiveSuite = false;
     rsw::RswManifestDocument   astDoc{};
+    rsw::RswIdeEdition         activeEdition = rsw::RswIdeEdition::Community;
     int                        activeView = VIEW_PACKAGE;
     std::vector<TaggedControl> taggedControls;
     RECT                       previewCanvasRc{};
@@ -353,7 +377,12 @@ public:
     HWND hCompId = nullptr, hCompFeat = nullptr, hCompRoot = nullptr, hCompSubdir = nullptr;
     HWND hCompKpKind = nullptr, hCompKpTarget = nullptr, hCompSaveBtn = nullptr, hCompWizBtn = nullptr;
 
-    // View 3: File Associations & Verbs
+    // View 3: Runtimes (`[Prerequisite.*]`) & Merge Modules (`[MergeModule.*]`)
+    HWND hPrGrid = nullptr, hPrPreset = nullptr, hPrDist = nullptr, hPrSource = nullptr;
+    HWND hPrBrowseBtn = nullptr, hPrRebootCodes = nullptr, hPrAddBtn = nullptr;
+    HWND hPrAddMsmBtn = nullptr, hPrRemBtn = nullptr, hPrWizBtn = nullptr;
+
+    // View 4: File Associations & Verbs
     HWND hFaGrid = nullptr, hFaExt = nullptr, hFaProgId = nullptr, hFaDesc = nullptr;
     HWND hFaTarget = nullptr, hFaVerbs = nullptr, hFaAdvChk = nullptr;
     HWND hFaAddBtn = nullptr, hFaRemBtn = nullptr, hFaWizBtn = nullptr;
@@ -414,6 +443,7 @@ public:
 
         HMENU hWiz = ::CreatePopupMenu();
         ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_PROJECT,       L"&New Project AeroWizard (Project Assistant)...\tCtrl+W");
+        ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_PREREQ_MSM,    L"&Runtime Prerequisite & .MSM Merge Module AeroWizard...");
         ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_COMPONENT,     L"&Component & KeyPath AeroWizard (Microsoft Rules)...");
         ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_FILE_ASSOC,    L"&File Association & Document Icon AeroWizard...");
         ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_RELEASE,       L"&Release, Transform (.MST) & Patch (.MSP) AeroWizard...");
@@ -430,9 +460,18 @@ public:
         ::AppendMenuW(hBuild, MF_STRING, IDM_LAUNCH_MSIPRISM, L"Open &MSI Prism Inspector (msiprism.exe)");
         ::AppendMenuW(hBuild, MF_STRING, IDM_OPEN_OUTDIR,     L"Open &Output Folder in Explorer");
 
+        HMENU hEd = ::CreatePopupMenu();
+        ::AppendMenuW(hEd, MF_STRING | MF_CHECKED, IDM_EDITION_COMMUNITY,    L"&Community Edition (100% Premier Feature Parity)");
+        ::AppendMenuW(hEd, MF_STRING,              IDM_EDITION_EXPRESS,      L"&Express Edition (Placeholder Tier)");
+        ::AppendMenuW(hEd, MF_STRING,              IDM_EDITION_PROFESSIONAL, L"&Professional Edition (Placeholder Tier)");
+        ::AppendMenuW(hEd, MF_STRING,              IDM_EDITION_PREMIER,      L"P&remier Edition (Placeholder Tier)");
+        ::AppendMenuW(hEd, MF_SEPARATOR, 0, nullptr);
+        ::AppendMenuW(hEd, MF_STRING,              IDM_HELP_ABOUT,           L"&About RaggieSoft Installer Studio...");
+
         ::AppendMenuW(hBar, MF_POPUP, reinterpret_cast<UINT_PTR>(hFile),  L"&File");
         ::AppendMenuW(hBar, MF_POPUP, reinterpret_cast<UINT_PTR>(hWiz),   L"&Wizards (Aero)");
         ::AppendMenuW(hBar, MF_POPUP, reinterpret_cast<UINT_PTR>(hBuild), L"&Build & Compliance");
+        ::AppendMenuW(hBar, MF_POPUP, reinterpret_cast<UINT_PTR>(hEd),    L"&Editions & Help");
         return hBar;
     }
 
@@ -491,12 +530,13 @@ public:
             L"1. Package & Identity",
             L"2. Destination Files & Folders",
             L"3. Setup Design (Components)",
-            L"4. File Associations & Verbs",
-            L"5. Shortcuts & Registry",
-            L"6. C++ Wizard Designer",
-            L"7. MSI.DLL Dialog Designer",
-            L"8. Signing, .MST & .MSP",
-            L"9. .RSIP Source (AST)"
+            L"4. Runtimes & Merge Modules",
+            L"5. File Associations & Verbs",
+            L"6. Shortcuts & Registry",
+            L"7. C++ Wizard Designer",
+            L"8. MSI.DLL Dialog Designer",
+            L"9. Signing, .MST & .MSP",
+            L"10. .RSIP Source (AST)"
         };
         for (const wchar_t* vl : viewLabels) {
             ::SendMessageW(hNavViews, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(vl));
@@ -557,7 +597,35 @@ public:
         hCompSaveBtn = mkBtn(VIEW_SETUP_DESIGN, L"Save &Component", IDC_COMP_SAVE_BTN);
         hCompWizBtn  = mkBtn(VIEW_SETUP_DESIGN, L"&Component & KeyPath AeroWizard...", IDC_COMP_WIZ_BTN);
 
-        // --- VIEW 3: File Associations & Shell Verbs ---
+        // --- VIEW 3: Runtime Prerequisites (`[Prerequisite.*]`) & Merge Modules (`[MergeModule.*]`) ---
+        hPrGrid = RegisterViewCtrl(VIEW_PREREQS, ::CreateWindowExW(
+            WS_EX_CLIENTEDGE, WC_LISTVIEWW, nullptr,
+            WS_CHILD | WS_TABSTOP | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
+            0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PR_GRID)), hInst, nullptr));
+        ListView_SetExtendedListViewStyle(hPrGrid, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+        mkLbl(VIEW_PREREQS, L"Runtime Preset:");
+        hPrPreset = mkCombo(VIEW_PREREQS, IDC_PR_PRESET_COMBO, {
+            L"DotNet10Desktop (.NET 10 Desktop)",
+            L"DotNet10AspNet (ASP.NET Core 10)",
+            L"DotNet9Desktop (.NET 9 Desktop)",
+            L"DotNet8Desktop (.NET 8 LTS)",
+            L"EdgeWebView2 (WebView2 Evergreen)",
+            L"VcRedist2022 (VC++ 2015-2022)",
+            L"Custom (.exe / .msi)"
+        }, 0);
+        mkLbl(VIEW_PREREQS, L"Delivery:");
+        hPrDist = mkCombo(VIEW_PREREQS, IDC_PR_DIST_COMBO, {L"download", L"embedded", L"side-by-side"}, 0);
+        mkLbl(VIEW_PREREQS, L"URL / File:");
+        hPrSource      = mkEd(VIEW_PREREQS, IDC_PR_SOURCE_EDIT, L"https://aka.ms/dotnet/10.0/windowsdesktop-runtime-win-$(ARCH).exe");
+        hPrBrowseBtn   = mkBtn(VIEW_PREREQS, L"&Pick...", IDC_PR_BROWSE_BTN);
+        mkLbl(VIEW_PREREQS, L"Reboot Codes:");
+        hPrRebootCodes = mkEd(VIEW_PREREQS, IDC_PR_REBOOT_CODES, L"3010, 1641, 23");
+        hPrAddBtn      = mkBtn(VIEW_PREREQS, L"+ Add [&Prerequisite]",       IDC_PR_ADD_BTN);
+        hPrAddMsmBtn   = mkBtn(VIEW_PREREQS, L"+ Add .&MSM Merge Module...", IDC_PR_ADD_MSM_BTN);
+        hPrRemBtn      = mkBtn(VIEW_PREREQS, L"&Remove Selected",            IDC_PR_REMOVE_BTN);
+        hPrWizBtn      = mkBtn(VIEW_PREREQS, L"Runtime & .MSM &AeroWizard...", IDC_PR_WIZ_BTN);
+
+        // --- VIEW 4: File Associations & Shell Verbs ---
         hFaGrid = RegisterViewCtrl(VIEW_FILE_ASSOC, ::CreateWindowExW(
             WS_EX_CLIENTEDGE, WC_LISTVIEWW, nullptr,
             WS_CHILD | WS_TABSTOP | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
@@ -597,7 +665,8 @@ public:
             L"Setup Type (48x48 Vector Cards)",
             L"Office-Style Repair Mode",
             L"Installing Live Progress",
-            L"16:9 Autorun Cover & 2x2 Menu"
+            L"16:9 Autorun Cover & 2x2 Menu",
+            L"Select Features (MSI SelectionTree)"
         }, 1);
         mkLbl(VIEW_CPP_WIZARD, L"Primary Accent Hex:");   hUiPrim    = mkEd(VIEW_CPP_WIZARD, IDC_UI_PRIMARY_HEX);
         mkLbl(VIEW_CPP_WIZARD, L"Secondary Accent Hex:"); hUiSec     = mkEd(VIEW_CPP_WIZARD, IDC_UI_SECONDARY_HEX);
@@ -687,6 +756,13 @@ public:
         addCol(hPayGrid, 4, L"KeyPath",      110);
         addCol(hPayGrid, 5, L"Source / Info",230);
 
+        addCol(hPrGrid,  0, L"Kind",         105);
+        addCol(hPrGrid,  1, L"Section ID",   135);
+        addCol(hPrGrid,  2, L"Preset / Target", 180);
+        addCol(hPrGrid,  3, L"Delivery",     105);
+        addCol(hPrGrid,  4, L"URL / Source", 240);
+        addCol(hPrGrid,  5, L"Reboot / Feature", 130);
+
         addCol(hFaGrid,  0, L"Extension",     90);
         addCol(hFaGrid,  1, L"ProgId",       220);
         addCol(hFaGrid,  2, L"Description",  200);
@@ -714,14 +790,14 @@ public:
         for (const auto& tc : taggedControls) {
             ::SendMessageW(tc.hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(hFontUi), TRUE);
         }
-        for (HWND h : {hBtnWizard, hBtnBuildMsi, hPkgApply, hUiApply, hCompWizBtn, hFaWizBtn, hEntRelWizBtn}) {
+        for (HWND h : {hBtnWizard, hBtnBuildMsi, hPkgApply, hUiApply, hCompWizBtn, hPrWizBtn, hFaWizBtn, hEntRelWizBtn}) {
             if (h) ::SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(hFontBold), TRUE);
         }
         for (HWND h : {hSourceEdit, hConsoleEdit}) {
             if (h) ::SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(hFontMono), TRUE);
         }
         if (!theme.isHighContrast) {
-            for (HWND g : {hPayGrid, hFaGrid, hScGrid}) {
+            for (HWND g : {hPayGrid, hPrGrid, hFaGrid, hScGrid}) {
                 ListView_SetBkColor(g, theme.cardBg);
                 ListView_SetTextBkColor(g, theme.cardBg);
                 ListView_SetTextColor(g, theme.textPrimary);
@@ -845,7 +921,34 @@ public:
             }
         }
 
-        // View 3: File Associations & Shell Verbs
+        // View 3: Runtime Prerequisites (`[Prerequisite.*]`) & Merge Modules (`[MergeModule.*]`)
+        {
+            auto v = viewCtrls(VIEW_PREREQS);
+            const int gridH = mainH - S(116);
+            ::MoveWindow(hPrGrid, paneX, contentTop, paneW, gridH, TRUE);
+            if (v.size() >= 14) {
+                const int y1 = contentTop + gridH + S(8);
+                ::MoveWindow(v[1], paneX,            y1 + S(4), S(104), S(22), TRUE);
+                ::MoveWindow(hPrPreset, paneX + S(106), y1,     S(220), S(180), TRUE);
+                ::MoveWindow(v[3], paneX + S(336),   y1 + S(4), S(60),  S(22), TRUE);
+                ::MoveWindow(hPrDist, paneX + S(398), y1,       S(118), S(140), TRUE);
+                ::MoveWindow(v[8], paneX + S(526),   y1 + S(4), S(94),  S(22), TRUE);
+                ::MoveWindow(hPrRebootCodes, paneX + S(622), y1, std::max(S(110), paneW - S(622)), S(26), TRUE);
+
+                const int y2 = y1 + S(34);
+                ::MoveWindow(v[5], paneX,          y2 + S(4), S(74), S(22), TRUE);
+                ::MoveWindow(hPrSource, paneX + S(76), y2,    std::max(S(200), paneW - S(156)), S(26), TRUE);
+                ::MoveWindow(hPrBrowseBtn, paneX + paneW - S(74), y2, S(74), S(26), TRUE);
+
+                const int y3 = y2 + S(34);
+                ::MoveWindow(hPrAddBtn,    paneX,          y3, S(162), S(30), TRUE);
+                ::MoveWindow(hPrAddMsmBtn, paneX + S(170), y3, S(196), S(30), TRUE);
+                ::MoveWindow(hPrRemBtn,    paneX + S(374), y3, S(140), S(30), TRUE);
+                ::MoveWindow(hPrWizBtn,    paneX + S(522), y3, std::max(S(210), paneW - S(522)), S(30), TRUE);
+            }
+        }
+
+        // View 4: File Associations & Shell Verbs
         {
             auto v = viewCtrls(VIEW_FILE_ASSOC);
             const int gridH = mainH - S(116);
@@ -1240,7 +1343,44 @@ public:
         RebuildDestinationTreeAndPayloadGrid(effectiveDoc);
         RebuildSetupDesignTree(effectiveDoc);
 
-        // Populate View 3: File Associations
+        // Populate View 3: Runtime Prerequisites (`[Prerequisite.*]`) & Merge Modules (`[MergeModule.*]`)
+        ListView_DeleteAllItems(hPrGrid);
+        int prRow = 0;
+        const auto resolvedPrereqs = rsw::ResolveManifestPrerequisites(effectiveDoc, SelectedArch());
+        for (const auto& pr : resolvedPrereqs) {
+            std::wstring w0 = L"Prerequisite";
+            std::wstring w1 = rsw::Utf8ToWide(pr.id);
+            std::wstring w2 = rsw::Utf8ToWide(pr.displayName);
+            std::wstring w3 = rsw::Utf8ToWide(pr.distribution);
+            std::wstring w4 = rsw::Utf8ToWide(!pr.buildSourcePath.empty() ? rsw::WideToUtf8(pr.buildSourcePath.wstring()) : pr.downloadUrl);
+            std::wstring w5 = L"Reboot: " + rsw::Utf8ToWide(rsw::FormatExitCodeList(pr.rebootCodes));
+            LVITEMW it{LVIF_TEXT, prRow, 0, 0, 0, w0.data(), 0, 0, 0, 0};
+            ListView_InsertItem(hPrGrid, &it);
+            ListView_SetItemText(hPrGrid, prRow, 1, w1.data());
+            ListView_SetItemText(hPrGrid, prRow, 2, w2.data());
+            ListView_SetItemText(hPrGrid, prRow, 3, w3.data());
+            ListView_SetItemText(hPrGrid, prRow, 4, w4.data());
+            ListView_SetItemText(hPrGrid, prRow, 5, w5.data());
+            ++prRow;
+        }
+        for (const auto& mid : effectiveDoc.GetNamedSectionIds("MergeModule")) {
+            std::wstring w0 = L"MergeModule";
+            std::wstring w1 = rsw::Utf8ToWide(mid);
+            std::wstring w2 = rsw::Utf8ToWide("[" + effectiveDoc.GetString("MergeModule", mid, "TargetRoot", "INSTALLDIR") + "]");
+            std::wstring w3 = L"merged (.msm)";
+            std::wstring w4 = rsw::Utf8ToWide(effectiveDoc.GetString("MergeModule", mid, "Source"));
+            std::wstring w5 = L"Feature: " + rsw::Utf8ToWide(effectiveDoc.GetString("MergeModule", mid, "Feature", "Main"));
+            LVITEMW it{LVIF_TEXT, prRow, 0, 0, 0, w0.data(), 0, 0, 0, 0};
+            ListView_InsertItem(hPrGrid, &it);
+            ListView_SetItemText(hPrGrid, prRow, 1, w1.data());
+            ListView_SetItemText(hPrGrid, prRow, 2, w2.data());
+            ListView_SetItemText(hPrGrid, prRow, 3, w3.data());
+            ListView_SetItemText(hPrGrid, prRow, 4, w4.data());
+            ListView_SetItemText(hPrGrid, prRow, 5, w5.data());
+            ++prRow;
+        }
+
+        // Populate View 4: File Associations
         ListView_DeleteAllItems(hFaGrid);
         int faRow = 0;
         for (const auto& aid : effectiveDoc.GetNamedSectionIds("FileAssociation")) {
@@ -1395,11 +1535,16 @@ public:
         astDoc = rsw::ParseManifestText(utf8, path);
         SyncSourceEditorFromAst();
         SyncAllViewsFromAst();
-        std::wstring title = L"RaggieSoft Installer Studio — ";
+        UpdateWindowCaptionWithEdition();
+    }
+
+    void UpdateWindowCaptionWithEdition() {
+        std::wstring title = L"RaggieSoft Installer Studio v" + std::wstring(rsw::kVersionStringWide) +
+                             L" [" + std::wstring(rsw::EditionDisplayName(activeEdition)) + L"] — ";
         if (hasActiveSuite) {
             title += rsw::Utf8ToWide(activeSuite.name) + L" / ";
         }
-        title += path.empty() ? L"[Untitled.rsip]" : path.filename().wstring();
+        title += currentFilePath.empty() ? L"[Untitled.rsip]" : currentFilePath.filename().wstring();
         ::SetWindowTextW(hWnd, title.c_str());
     }
 
@@ -1767,6 +1912,7 @@ public:
             if (stepIdx == 0) { stepGlyph = rsw::ui::GlassGlyph::Sparkle;   stepCol = rsw::ui::brand::kRaggieBlue; kicker = L"Welcome to the Setup Wizard"; }
             if (stepIdx == 2) { stepGlyph = rsw::ui::GlassGlyph::Reinstall; stepCol = rsw::ui::brand::kRaggieBlue; kicker = L"Repair & Verify Installation"; }
             if (stepIdx == 3) { stepGlyph = rsw::ui::GlassGlyph::Gear;      stepCol = rsw::ui::brand::kRaggieBlue; kicker = L"Applying System Changes"; }
+            if (stepIdx == 5) { stepGlyph = rsw::ui::GlassGlyph::Blocks;    stepCol = rsw::ui::brand::kVioletTune; kicker = L"Select Program Features"; }
 
             if (aeroMode) {
                 rsw::ui::DrawAeroWizardTopHeader(pvDc, pvG, pvW, pvDpi, pvTheme, prodName + L" Setup", kicker, hPreviewIcon, stepGlyph, stepCol, pubName);
@@ -1815,6 +1961,41 @@ public:
                 RECT r1{cx, bTop + PS(96), cx + cw, bTop + PS(172)};
                 rsw::ui::DrawAccessibleOptionCard(pvDc, pvG, r0, pvDpi, pvTheme, rsw::ui::GlassGlyph::ShieldCheck, rsw::ui::brand::kEmeraldOk,  rsw::ui::brand::kWarmGold, L"&Quick Check & Repair (Recommended)", L"Verifies installed files and restores only missing or damaged files.", true, true, false);
                 rsw::ui::DrawAccessibleOptionCard(pvDc, pvG, r1, pvDpi, pvTheme, rsw::ui::GlassGlyph::Reinstall,   rsw::ui::brand::kRaggieBlue, rsw::ui::brand::kSkyCyan,  L"&Full Reinstall (Refresh All Files)", L"Replaces every program file and shortcut from the setup package.", false, false, false);
+            } else if (stepIdx == 5) {
+                // Live Preview of the MSI `SelectionTree` (`SysTreeView32` split icons + `Feature Details` Glass Card!)
+                const int treeW = (cw * 58) / 100;
+                const int paneH = footY - bTop - PS(14);
+                Gdiplus::SolidBrush boxBr(rsw::ui::ToGpColor(pvTheme.cardBg));
+                Gdiplus::Pen boxPen(rsw::ui::ToGpColor(pvTheme.borderSubtle), 1.0f);
+                rsw::ui::FillAndStrokeRoundRect(pvG, static_cast<float>(cx), static_cast<float>(bTop), static_cast<float>(treeW), static_cast<float>(paneH), static_cast<float>(PS(6)), &boxBr, &boxPen);
+                rsw::ui::FillAndStrokeRoundRect(pvG, static_cast<float>(cx + treeW + PS(10)), static_cast<float>(bTop), static_cast<float>(cw - treeW - PS(10)), static_cast<float>(paneH), static_cast<float>(PS(8)), &boxBr, &boxPen);
+
+                const struct { rsw::MsiTreeState st; int indent; const wchar_t* label; } previewRows[3] = {
+                    {rsw::MsiTreeState::EntireSubtree, 0, L"Core IDE & Compiler"},
+                    {rsw::MsiTreeState::Local,         1, L"Dialog & AI Templates"},
+                    {rsw::MsiTreeState::Absent,        1, L"Optional Sample Pack"}
+                };
+                HFONT fRow = rsw::ui::CreateScaledFont(L"Segoe UI", 9, FW_NORMAL, pvDpi, 100);
+                HFONT fHd  = rsw::ui::CreateScaledFont(L"Segoe UI", 9, FW_BOLD,   pvDpi, 100);
+                HGDIOBJ oF = ::SelectObject(pvDc, fRow);
+                ::SetTextColor(pvDc, pvTheme.textPrimary);
+                for (int r = 0; r < 3; ++r) {
+                    const int rx = cx + PS(8 + previewRows[r].indent * 16);
+                    const int ry = bTop + PS(10 + r * 28);
+                    rsw::PaintSingleMsiStateCell(pvG, static_cast<float>(rx), static_cast<float>(ry), static_cast<float>(PS(30)), static_cast<float>(PS(18)), previewRows[r].st, pvTheme);
+                    RECT lblRc{rx + PS(36), ry, cx + treeW - PS(6), ry + PS(20)};
+                    ::DrawTextW(pvDc, previewRows[r].label, -1, &lblRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                }
+                ::SelectObject(pvDc, fHd);
+                RECT dtRc{cx + treeW + PS(18), bTop + PS(10), cx + cw - PS(8), bTop + PS(32)};
+                ::DrawTextW(pvDc, L"Feature Details", -1, &dtRc, DT_LEFT | DT_SINGLELINE);
+                ::SelectObject(pvDc, fRow);
+                ::SetTextColor(pvDc, pvTheme.textSecondary);
+                RECT dbRc{cx + treeW + PS(18), bTop + PS(36), cx + cw - PS(8), bTop + paneH - PS(8)};
+                ::DrawTextW(pvDc, L"Authentic MSI SelectionTree split-icons + live byte cost.", -1, &dbRc, DT_LEFT | DT_WORDBREAK);
+                ::SelectObject(pvDc, oF);
+                ::DeleteObject(fRow);
+                ::DeleteObject(fHd);
             } else {
                 RECT heroRc{cx, bTop, cx + cw, bTop + PS(66)};
                 rsw::ui::DrawHeroBrandCard(pvDc, pvG, heroRc, pvDpi, pvTheme, pubName, tagline, webLbl, L"CONFIGURING SYSTEM", hPreviewIcon);
@@ -2040,9 +2221,24 @@ public:
         ::SetBkMode(hdc, TRANSPARENT);
         HGDIOBJ oldF = ::SelectObject(hdc, hFontBanner);
         ::SetTextColor(hdc, theme.bannerTitleText);
-        RECT tRc{S(54), S(8), W - S(16), S(44)};
-        ::DrawTextW(hdc, L"RaggieSoft Installer Studio  •  Install Without Limits (AeroWizards • Destination Tree • KeyPaths • Dual C++ & MSI.DLL Designer)",
+        RECT tRc{S(54), S(8), W - S(236), S(44)};
+        ::DrawTextW(hdc, L"RaggieSoft Installer Studio  •  Install Without Limits (AeroWizards • Runtimes & .MSM • MSI SelectionTree • Dual Designer)",
                     -1, &tRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+        // Edition Badge Pill on the right of the top banner (`COMMUNITY EDITION • PREMIER PARITY`!)
+        const int pillW = S(214);
+        RECT pillRc{W - pillW - S(14), S(11), W - S(14), S(39)};
+        Gdiplus::SolidBrush pillBr(rsw::ui::ToGpColor(theme.accentPrimary, 215));
+        Gdiplus::Pen pillPen(Gdiplus::Color(180, 255, 255, 255), 1.0f);
+        rsw::ui::FillAndStrokeRoundRect(
+            g, static_cast<float>(pillRc.left), static_cast<float>(pillRc.top),
+            static_cast<float>(pillW), static_cast<float>(S(28)), static_cast<float>(S(14)), &pillBr, &pillPen);
+        ::SelectObject(hdc, hFontBold);
+        ::SetTextColor(hdc, RGB(255, 255, 255));
+        const std::wstring edBadge = (activeEdition == rsw::RswIdeEdition::Community)
+            ? L"COMMUNITY • PREMIER PARITY"
+            : rsw::ui::UpperWide(std::wstring(rsw::EditionDisplayName(activeEdition)));
+        ::DrawTextW(hdc, edBadge.c_str(), -1, &pillRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
         if (activeView == VIEW_CPP_WIZARD && previewCanvasRc.right > previewCanvasRc.left + S(160)) {
             PaintLiveWizardPreview(hdc, previewCanvasRc, dpi);
@@ -2168,8 +2364,59 @@ public:
                     return 0;
                 }
 
+                if (id == IDC_PR_PRESET_COMBO && code == CBN_SELCHANGE) {
+                    const LRESULT sel = ::SendMessageW(self->hPrPreset, CB_GETCURSEL, 0, 0);
+                    if (sel >= 0 && sel < 6) {
+                        const auto& pr = rsw::kCuratedRuntimePresets[static_cast<std::size_t>(sel)];
+                        ::SetWindowTextW(self->hPrSource, rsw::Utf8ToWide(pr.urlArm64).c_str());
+                        ::SetWindowTextW(self->hPrRebootCodes, rsw::Utf8ToWide(pr.rebootCodes).c_str());
+                    }
+                    return 0;
+                }
+
                 switch (id) {
-                    // --- 4 Guided Native Win32 AeroWizards (`PSH_AEROWIZARD`)! ---
+                    // --- Editions & About Menu (`Community == 100% Premier Parity`) ---
+                    case IDM_EDITION_COMMUNITY:
+                    case IDM_EDITION_EXPRESS:
+                    case IDM_EDITION_PROFESSIONAL:
+                    case IDM_EDITION_PREMIER: {
+                        self->activeEdition = static_cast<rsw::RswIdeEdition>(id - IDM_EDITION_COMMUNITY);
+                        HMENU hMenu = ::GetMenu(hWnd);
+                        if (hMenu) {
+                            ::CheckMenuRadioItem(hMenu, IDM_EDITION_COMMUNITY, IDM_EDITION_PREMIER, id, MF_BYCOMMAND);
+                        }
+                        self->UpdateWindowCaptionWithEdition();
+                        ::InvalidateRect(hWnd, nullptr, FALSE);
+                        self->AppendConsole(L"[EDITION] Switched active tier badge to " +
+                                            std::wstring(rsw::EditionDisplayName(self->activeEdition)) +
+                                            L" — " + std::wstring(rsw::EditionSummary(self->activeEdition)) + L"\r\n");
+                        return 0;
+                    }
+                    case IDM_HELP_ABOUT: {
+                        const std::wstring head = L"RaggieSoft Installer Studio v" + std::wstring(rsw::kVersionStringWide) +
+                                                  L" (" + std::wstring(rsw::EditionDisplayName(self->activeEdition)) + L")";
+                        const std::wstring body =
+                            std::wstring(rsw::EditionSummary(self->activeEdition)) +
+                            L"\n\n• Zero-dependency static /MT Win32 C++20 suite (x64 & ARM64)"
+                            L"\n• Enterprise .MSI, .MSM Merge Modules, .MST Transforms, .MSP Patches & LZMS Setup.exe"
+                            L"\n• Pre-MSI Runtime Prerequisites (WinHTTP Download, Embedded LZMS, & Redist\\) + MSI SelectionTree"
+                            L"\n\nFictitious Persons & Entities Disclaimer: All narrative characters, bands, universities, and corporations across RaggieSoft creative works are fictitious.";
+                        ::TaskDialog(hWnd, ::GetModuleHandleW(nullptr), L"About RaggieSoft Installer Studio",
+                                     head.c_str(), body.c_str(), TDCBF_OK_BUTTON, TD_INFORMATION_ICON, nullptr);
+                        return 0;
+                    }
+
+                    // --- 5 Guided Native Win32 AeroWizards (`PSH_AEROWIZARD`)! ---
+                    case IDM_WIZ_PREREQ_MSM:
+                    case IDC_PR_WIZ_BTN: {
+                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
+                        if (rsw::ide_wizards::RunPrerequisiteMsmAeroWizard(hWnd, self->astDoc)) {
+                            self->SyncSourceEditorFromAst();
+                            self->SyncAllViewsFromAst();
+                            self->AppendConsole(L"[AEROWIZARD] Added Runtime Prerequisite / .MSM Merge Module to .rsip AST.\r\n");
+                        }
+                        return 0;
+                    }
                     case IDM_WIZ_PROJECT:
                     case IDC_TB_WIZARD: {
                         std::string genText;
@@ -2313,7 +2560,87 @@ public:
                         return 0;
                     }
 
-                    // --- View 3: File Associations ---
+                    // --- View 3: Runtime Prerequisites & Merge Modules (.MSM) ---
+                    case IDC_PR_BROWSE_BTN: {
+                        std::wstring p;
+                        if (self->PickPathDialog(false, L"Runtimes & Merge Modules (*.exe;*.msi;*.msm)\0*.exe;*.msi;*.msm\0All Files (*.*)\0*.*\0", p)) {
+                            ::SetWindowTextW(self->hPrSource, p.c_str());
+                        }
+                        return 0;
+                    }
+                    case IDC_PR_ADD_BTN: {
+                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
+                        const char* presetIds[] = {
+                            "DotNet10Desktop", "DotNet10AspNet", "DotNet9Desktop",
+                            "DotNet8Desktop", "EdgeWebView2", "VcRedist2022", "Custom"
+                        };
+                        const char* distNames[] = {"download", "embedded", "side-by-side"};
+                        const int pIdx = std::clamp(static_cast<int>(::SendMessageW(self->hPrPreset, CB_GETCURSEL, 0, 0)), 0, 6);
+                        const int dIdx = std::clamp(static_cast<int>(::SendMessageW(self->hPrDist, CB_GETCURSEL, 0, 0)), 0, 2);
+                        const std::string preset = presetIds[pIdx];
+                        const std::string dist   = distNames[dIdx];
+                        const std::string pid    = (preset == "Custom")
+                            ? ("Runtime" + std::to_string(self->astDoc.GetNamedSectionIds("Prerequisite").size() + 1))
+                            : preset;
+                        const std::string src = ReadCtlUtf8(self->hPrSource);
+                        const std::string reb = ReadCtlUtf8(self->hPrRebootCodes);
+
+                        self->astDoc.SetString("Prerequisite", pid, "Preset",       preset);
+                        self->astDoc.SetString("Prerequisite", pid, "Distribution", dist);
+                        if (dist == "embedded" || (dist == "side-by-side" && src.rfind("http", 0) != 0)) {
+                            self->astDoc.SetString("Prerequisite", pid, "SourceFile", src);
+                        } else if (preset == "Custom" && !src.empty()) {
+                            self->astDoc.SetString("Prerequisite", pid, "Url", src);
+                        }
+                        if (!reb.empty()) {
+                            self->astDoc.SetString("Prerequisite", pid, "RebootExitCodes", reb);
+                        }
+                        self->SyncSourceEditorFromAst();
+                        self->SyncAllViewsFromAst();
+                        self->AppendConsole(L"[AST] Added [Prerequisite." + rsw::Utf8ToWide(pid) + L"] (" + rsw::Utf8ToWide(dist) + L").\r\n");
+                        return 0;
+                    }
+                    case IDC_PR_ADD_MSM_BTN: {
+                        std::wstring msmPath;
+                        if (!self->PickPathDialog(false, L"Windows Installer Merge Modules (*.msm)\0*.msm\0All Files (*.*)\0*.*\0", msmPath)) {
+                            return 0;
+                        }
+                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
+                        const std::string mid = "Module" + std::to_string(self->astDoc.GetNamedSectionIds("MergeModule").size() + 1);
+                        self->astDoc.SetString("MergeModule", mid, "Source",     rsw::WideToUtf8(msmPath));
+                        self->astDoc.SetString("MergeModule", mid, "Feature",    "Main");
+                        self->astDoc.SetString("MergeModule", mid, "TargetRoot", "INSTALLDIR");
+                        self->SyncSourceEditorFromAst();
+                        self->SyncAllViewsFromAst();
+                        self->AppendConsole(L"[AST] Added [MergeModule." + rsw::Utf8ToWide(mid) + L"].\r\n");
+                        return 0;
+                    }
+                    case IDC_PR_REMOVE_BTN: {
+                        const int sel = ListView_GetNextItem(self->hPrGrid, -1, LVNI_SELECTED);
+                        if (sel < 0) return 0;
+                        wchar_t kindBuf[64]{}, idBuf[160]{};
+                        ListView_GetItemText(self->hPrGrid, sel, 0, kindBuf, 64);
+                        ListView_GetItemText(self->hPrGrid, sel, 1, idBuf, 160);
+                        const std::string secPfx = rsw::WideToUtf8(kindBuf);
+                        const std::string secId  = rsw::WideToUtf8(idBuf);
+                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
+                        std::vector<rsw::RswAstLine> kept;
+                        for (const auto& ln : self->astDoc.lines) {
+                            if ((ln.kind == rsw::AstLineKind::SectionHeader || ln.kind == rsw::AstLineKind::KeyValue) &&
+                                rsw::EqualsIgnoreCase(ln.sectionPrefix, secPfx) &&
+                                rsw::EqualsIgnoreCase(ln.sectionItemId, secId)) {
+                                continue;
+                            }
+                            kept.push_back(ln);
+                        }
+                        self->astDoc.lines = std::move(kept);
+                        self->SyncSourceEditorFromAst();
+                        self->SyncAllViewsFromAst();
+                        self->AppendConsole(L"[AST] Removed [" + rsw::Utf8ToWide(secPfx + "." + secId) + L"].\r\n");
+                        return 0;
+                    }
+
+                    // --- View 4: File Associations ---
                     case IDC_FA_ADD_BTN: {
                         self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
                         const std::string aid = "Assoc" + std::to_string(self->astDoc.GetNamedSectionIds("FileAssociation").size() + 1);

@@ -1,6 +1,6 @@
 ; ==============================================================================
 ; FILE: projects/apps/installer-studio/installer-studio.rsip
-; APPLICATION: RaggieSoft Installer Studio (v0.2.1 Technical Preview)
+; APPLICATION: RaggieSoft Installer Studio (v0.3.0 Technical Preview)
 ; COMPILER: RaggieSoft Installer Studio (instbuild.exe -> .msi + Setup.exe)
 ; ==============================================================================
 
@@ -10,7 +10,7 @@
 Name                  = RaggieSoft Installer Studio
 Tagline               = Install Without Limits - AeroWizard IDE, MSI Compiler & Prism
 WebsiteLabel          = raggiesoftstudio.com
-Version               = 0.2.1
+Version               = 0.3.0
 Manufacturer          = RaggieSoft
 UpgradeCode           = {D9C0EF36-990C-519C-A9C7-D7E19FDD5627}
 Architecture          = $(ARCH)
@@ -35,14 +35,22 @@ IconFile              = ..\..\..\..\windows\RaggieSoftApps\RaggieSoftLauncher\As
 InstallButtonText     = &Install
 FinishLaunchCheckbox  = &Open RaggieSoft Installer Studio when setup finishes
 
+; Hierarchical MSI SelectionTree Features (shown in Custom Setup & Maintenance -> Modify!)
 [Feature.Main]
 Title                 = Visual IDE, CLI Compiler & MSI Prism
 Description           = Core 64-bit native Win32 C++20 executables (InstallerStudio.exe, instbuild.exe, SetupWizard.exe, msiprism.exe).
 Level                 = 1
+DisallowAbsent        = true
 
 [Feature.Templates]
-Title                 = Dialog Presets & AI Agent Specifications
-Description           = Reusable .rsii dialog workflow includes plus llms.txt and SKILL.md documentation.
+Title                 = Reusable Dialog & Workflow Presets
+Description           = Reusable .rsii @include dialog presets and starter .rsip blueprints.
+Level                 = 1
+
+[Feature.AiSpecs]
+Parent                = Templates
+Title                 = AI Agent Grammar & SKILL.md Specs
+Description           = Machine-readable llms.txt, llms-full.txt, and SKILL.md documentation for autonomous AI packaging.
 Level                 = 1
 
 [Payload.CoreBinaries]
@@ -50,17 +58,17 @@ Source                = ..\..\..\bin\$(ARCH)
 TargetRoot            = INSTALLDIR
 Feature               = Main
 
-[Payload.AiSpecs]
-Source                = ..\..\..\specs
-TargetRoot            = INSTALLDIR
-TargetSubdir          = specs
-Feature               = Templates
-
 [Payload.DialogTemplates]
 Source                = ..\..\..\templates
 TargetRoot            = INSTALLDIR
 TargetSubdir          = templates
 Feature               = Templates
+
+[Payload.AiSpecs]
+Source                = ..\..\..\specs
+TargetRoot            = INSTALLDIR
+TargetSubdir          = specs
+Feature               = AiSpecs
 
 [FileAssociation.RsipProject]
 Extension             = .rsip

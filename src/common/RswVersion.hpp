@@ -6,22 +6,29 @@
 //
 // PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
 //   What is this file?
-//     This header holds the canonical version numbers, file extensions, and
-//     product identity constants shared across the entire **RaggieSoft Installer
-//     Studio** native Win32 C++20 packaging suite:
-//       - `InstallerStudio.exe` : 7-view Visual IDE for `.rsip` projects & `.rsis` suites
+//     This header holds the canonical version numbers, file extensions, IDE
+//     Edition tiers, and embedded resource IDs shared across the entire
+//     **RaggieSoft Installer Studio** native Win32 C++20 packaging suite:
+//       - `InstallerStudio.exe` : 10-view Visual IDE + 5 Guided AeroWizards
 //       - `instbuild.exe`       : Headless CLI compiler, JSON linter, AI spec & VPAT emitter
 //       - `SetupWizard.exe`     : White-label WCAG 2.2 AA runtime wizard ("RaggieSoft Setup Wizard")
 //       - `msiprism.exe`        : Native 64-bit/ARM64 MSI, MSM, MST & MSP SQL inspector ("RaggieSoft MSI Prism")
 //       - `insttests.exe`       : Automated C++20 verification suite
 //
-//   Hybrid Project Architecture (`.rsip` + `.rsis` + `.rsii`):
-//     - `.rsip` (RaggieSoft Installer Project) : Standalone single-file project (like `.iss` / `.csproj`)
-//     - `.rsis` (RaggieSoft Installer Suite)   : Optional multi-project workspace (like `.slnx`)
-//     - `.rsii` (RaggieSoft Installer Include) : Optional `@include` shared header snippet
+//   IDE Edition Architecture (`Community`, `Express`, `Professional`, `Premier`):
+//     RaggieSoft Installer Studio defines four named product editions:
+//       1. `Community`    — Free Community Edition with **100% technical feature
+//                           parity with Premier** (zero locked views, zero disabled
+//                           compilers, zero watermarks!).
+//       2. `Express`      — Streamlined commercial license tier placeholder.
+//       3. `Professional` — Mid-tier commercial license tier placeholder.
+//       4. `Premier`      — Enterprise commercial license tier placeholder.
+//     Keeping `Community == Premier` in capability ensures independent developers,
+//     educators, open-source authors, and accessibility advocates never hit paywalls
+//     for core MSI, Prerequisite, Native, or Scripting features!
 //
 //   Community Edition White-Label Attribution Rule:
-//     `kGeneratorSigWide` (`"RaggieSoft Installer Studio (instbuild.exe 0.1.0)"`) is
+//     `kGeneratorSigWide` (`"RaggieSoft Installer Studio (instbuild.exe 0.3.0)"`) is
 //     written ONLY to the non-visible MSI `SummaryInformation` `PID_APPNAME`
 //     (Creating Application) diagnostic field—never stamped as a visible watermark
 //     onto customer dialogs or `Setup.exe` `VERSIONINFO`!
@@ -33,13 +40,13 @@
 
 namespace rsw {
 
-// Semantic Versioning (`0.2.1`)
+// Semantic Versioning (`0.3.0`)
 inline constexpr int kVersionMajor = 0;
-inline constexpr int kVersionMinor = 2;
-inline constexpr int kVersionPatch = 1;
+inline constexpr int kVersionMinor = 3;
+inline constexpr int kVersionPatch = 0;
 
-inline constexpr std::string_view  kVersionString      = "0.2.1";
-inline constexpr std::wstring_view kVersionStringWide  = L"0.2.1";
+inline constexpr std::string_view  kVersionString      = "0.3.0";
+inline constexpr std::wstring_view kVersionStringWide  = L"0.3.0";
 
 // Suite, Runtime Wizard, & MSI Prism Product Identity
 inline constexpr std::string_view  kSuiteTitle         = "RaggieSoft Installer Studio";
@@ -52,14 +59,56 @@ inline constexpr std::string_view  kProductTagline     = "Install Without Limits
 inline constexpr std::string_view  kCanonicalExt       = ".rsip";
 inline constexpr std::string_view  kSuiteExt           = ".rsis";
 inline constexpr std::string_view  kIncludeExt         = ".rsii";
-inline constexpr std::string_view  kGeneratorSignature = "RaggieSoft Installer Studio (instbuild.exe 0.2.1)";
-inline constexpr std::wstring_view kGeneratorSigWide   = L"RaggieSoft Installer Studio (instbuild.exe 0.2.1)";
+inline constexpr std::string_view  kScriptExt          = ".rssc";
+inline constexpr std::string_view  kGeneratorSignature = "RaggieSoft Installer Studio (instbuild.exe 0.3.0)";
+inline constexpr std::wstring_view kGeneratorSigWide   = L"RaggieSoft Installer Studio (instbuild.exe 0.3.0)";
 inline constexpr std::string_view  kManifestSchemaVer  = "0.3";
 
+/// IDE Product Editions (`Community` permanently maintains 100% feature parity with `Premier`!).
+enum class RswIdeEdition : int {
+    Community    = 0,
+    Express      = 1,
+    Professional = 2,
+    Premier      = 3
+};
+
+/// Returns the consumer-friendly display badge for an IDE edition.
+inline constexpr std::wstring_view EditionDisplayName(RswIdeEdition ed) noexcept {
+    switch (ed) {
+        case RswIdeEdition::Community:    return L"Community Edition";
+        case RswIdeEdition::Express:      return L"Express Edition";
+        case RswIdeEdition::Professional: return L"Professional Edition";
+        case RswIdeEdition::Premier:      return L"Premier Edition";
+    }
+    return L"Community Edition";
+}
+
+/// Returns a plain-English summary of each edition's positioning.
+inline constexpr std::wstring_view EditionSummary(RswIdeEdition ed) noexcept {
+    switch (ed) {
+        case RswIdeEdition::Community:
+            return L"100% Feature Parity with Premier — Every MSI, Prerequisite, AeroWizard, VPAT 2.5, & CLI builder unlocked with zero watermarks.";
+        case RswIdeEdition::Express:
+            return L"Placeholder commercial license tier for rapid single-project packaging.";
+        case RswIdeEdition::Professional:
+            return L"Placeholder commercial license tier for multi-architecture studio teams.";
+        case RswIdeEdition::Premier:
+            return L"Placeholder enterprise commercial license tier with full suite parity.";
+    }
+    return L"100% Feature Parity with Premier.";
+}
+
+/// Enforces our core pledge: Community Edition always enjoys full Premier capability!
+inline constexpr bool EditionHasFullPremierParity(RswIdeEdition ed) noexcept {
+    return ed == RswIdeEdition::Community || ed == RswIdeEdition::Premier;
+}
+
 // Embedded Win32 RCDATA resource IDs inside `SetupWizard.exe` -> `<Product>-setup.exe`
-inline constexpr int kResIdEmbeddedMsi     = 201;
-inline constexpr int kResIdBrandingIni     = 202;
-inline constexpr int kResIdLicenseRtf      = 203;
-inline constexpr int kResIdArtworkPng      = 204;
+inline constexpr int kResIdEmbeddedMsi       = 201; // Full compiled `Product.msi` stream
+inline constexpr int kResIdBrandingIni       = 202; // UTF-8 `[Branding]` manifest
+inline constexpr int kResIdLicenseRtf        = 203; // RTF / plain-text software license
+inline constexpr int kResIdArtworkPng        = 204; // Optional cover / 16:9 banner PNG
+inline constexpr int kResIdPrereqManifest    = 205; // UTF-8 serialized `[Prerequisite.*]` runtime table
+inline constexpr int kResIdPrereqPayloadBase = 300; // `300 + idx`: Embedded offline runtime binaries!
 
 } // namespace rsw

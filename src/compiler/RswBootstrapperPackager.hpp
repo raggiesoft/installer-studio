@@ -32,8 +32,10 @@
 
 #pragma once
 
+#include "../common/RswLzmsCompression.hpp"
 #include "../common/RswManifestAst.hpp"
 #include "../common/RswPlatform.hpp"
+#include "../common/RswPrerequisites.hpp"
 #include "../common/RswVersion.hpp"
 #include "RswMsiCompiler.hpp"
 
@@ -399,10 +401,41 @@ inline bool PackageSelfExtractingBootstrapper(
         return false;
     }
 
-    // 3. Read `Product.msi` bytes + synthesize the UTF-8 branding & layout manifest (`#202`)
-    std::vector<std::uint8_t> msiBytes;
-    if (!ReadBinaryFileBytes(msiSummary.msiPath, msiBytes, outError)) {
+    // 3. Read `Product.msi` bytes, compress with Windows `COMPRESS_ALGORITHM_LZMS` (`Cabinet.lib`),
+    //    resolve `[Prerequisite.*]` runtimes, and synthesize the UTF-8 branding & layout manifest (`#202`)!
+    std::vector<std::uint8_t> rawMsiBytes;
+    if (!ReadBinaryFileBytes(msiSummary.msiPath, rawMsiBytes, outError)) {
         return false;
+    }
+    std::vector<std::uint8_t> msiBytes = CompressWithLzmsIfSmaller(rawMsiBytes);
+
+    const auto prereqList       = ResolveManifestPrerequisites(doc, arch);
+    const std::string prereqStr = SerializePrerequisiteTableIni(prereqList);
+
+    // Stage `embedded` runtime binaries in memory (compressed with `LZMS`!) and copy any
+    // `side-by-side` `SourceFile` runtimes into `<OutputDir>\Redist\<FileName>`!
+    struct EmbeddedPrereqBlob {
+        int                       resId = 0;
+        std::vector<std::uint8_t> bytes;
+    };
+    std::vector<EmbeddedPrereqBlob> embeddedPrereqs;
+    for (const auto& pr : prereqList) {
+        if (pr.distribution == "embedded") {
+            std::vector<std::uint8_t> rawPrBytes;
+            if (!ReadBinaryFileBytes(pr.buildSourcePath, rawPrBytes, outError)) {
+                return false;
+            }
+            embeddedPrereqs.push_back({pr.embeddedResId, CompressWithLzmsIfSmaller(rawPrBytes)});
+        } else if (pr.distribution == "side-by-side" && !pr.buildSourcePath.empty() &&
+                   std::filesystem::exists(pr.buildSourcePath, ec)) {
+            const auto redistDir = outSetupExePath.parent_path() / L"Redist";
+            std::filesystem::create_directories(redistDir, ec);
+            std::filesystem::copy_file(
+                pr.buildSourcePath,
+                redistDir / Utf8ToWide(pr.fileName),
+                std::filesystem::copy_options::overwrite_existing,
+                ec);
+        }
     }
 
     const std::filesystem::path baseDir = doc.sourcePath.empty()
@@ -441,6 +474,8 @@ inline bool PackageSelfExtractingBootstrapper(
              << "MainExecutable="     << sanitizeSingleLine(msiSummary.mainExeRel) << "\n"
              << "PerMachine="         << (msiSummary.perMachine ? "true" : "false") << "\n"
              << "MinWindowsBuild="    << msiSummary.minWindowsBuild << "\n"
+             << "SilentRebootExitCode=" << doc.GetInt("Requirements", "", "SilentRebootExitCode", 3010) << "\n"
+             << "UncompressedMsiSize=" << rawMsiBytes.size() << "\n"
              << "OsLaunchMessage="    << sanitizeSingleLine(msiSummary.osLaunchMessage) << "\n"
              << "WizardLayout="       << sanitizeSingleLine(doc.GetString("UI", "", "WizardLayout", "standard")) << "\n"
              << "AccentPrimaryHex="   << sanitizeSingleLine(doc.GetString("UI", "", "AccentPrimaryHex", "#2563EB")) << "\n"
@@ -492,6 +527,15 @@ inline bool PackageSelfExtractingBootstrapper(
     ok = ok && ::UpdateResourceW(
         hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdLicenseRtf), kLangNeutral,
         const_cast<char*>(licenseRtf.data()), static_cast<DWORD>(licenseRtf.size()));
+    ok = ok && ::UpdateResourceW(
+        hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdPrereqManifest), kLangNeutral,
+        const_cast<char*>(prereqStr.data()), static_cast<DWORD>(prereqStr.size()));
+
+    for (const auto& ep : embeddedPrereqs) {
+        ok = ok && ::UpdateResourceW(
+            hRes, RT_RCDATA, MAKEINTRESOURCEW(ep.resId), kLangNeutral,
+            const_cast<std::uint8_t*>(ep.bytes.data()), static_cast<DWORD>(ep.bytes.size()));
+    }
 
     if (!artworkBytes.empty()) {
         ok = ok && ::UpdateResourceW(

@@ -38,6 +38,7 @@
 
 #include "../common/RswCryptoAndPe.hpp"
 #include "../common/RswManifestAst.hpp"
+#include "../common/RswPrerequisites.hpp"
 #include "../common/RswSchema.hpp"
 #include "../common/RswWin32UiTheme.hpp"
 
@@ -920,6 +921,202 @@ inline bool RunReleaseMstMspAeroWizard(HWND hOwner, ReleaseWizardResult& outRes)
     psh.phpage     = hPages;
     ::PropertySheetW(&psh);
     return outRes.completed;
+}
+
+// ================================================================================
+// WIZARD 5: RUNTIME PREREQUISITE & MERGE MODULE (`.MSM`) AEROWIZARD (3 PAGES!)
+// ================================================================================
+struct PrereqMsmWizardData {
+    int         kindIdx       = 0; // 0..5 = Curated Presets, 6 = Custom Runtime, 7 = Merge Module (.msm)
+    std::string sectionId     = "DotNet10Desktop";
+    int         distIdx       = 0; // 0 = download, 1 = embedded, 2 = side-by-side
+    std::string urlOrSource   = "https://aka.ms/dotnet/10.0/windowsdesktop-runtime-win-$(ARCH).exe";
+    std::string silentArgs    = "/install /quiet /norestart";
+    std::string successCodes  = "0, 1638";
+    std::string rebootCodes   = "3010, 1641, 23";
+    std::string msmFeature    = "Main";
+    bool        completed     = false;
+};
+
+struct PrereqMsmPageCtx {
+    int                  pageIndex = 0;
+    PrereqMsmWizardData* data      = nullptr;
+};
+
+inline INT_PTR CALLBACK PrereqMsmAeroPageProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* ctx = reinterpret_cast<PrereqMsmPageCtx*>(::GetWindowLongPtrW(hDlg, DWLP_USER));
+    if (msg == WM_INITDIALOG) {
+        const auto* psp = reinterpret_cast<const PROPSHEETPAGEW*>(lParam);
+        ctx = reinterpret_cast<PrereqMsmPageCtx*>(psp->lParam);
+        ::SetWindowLongPtrW(hDlg, DWLP_USER, reinterpret_cast<LONG_PTR>(ctx));
+        AeroPageBuilder b(hDlg);
+        auto& d = *ctx->data;
+
+        if (ctx->pageIndex == 0) {
+            b.AddLabel(L"Choose a curated Microsoft runtime, custom prerequisite, or .MSM Merge Module:", 6, 4, 296, 14);
+            b.AddLabel(L"Runtime / Module &Preset:", 6, 22, 296);
+            b.AddCombo(901, {
+                L"Microsoft .NET 10.0 Desktop Runtime (aka.ms x64 & ARM64)",
+                L"Microsoft ASP.NET Core 10.0 Runtime (aka.ms x64 & ARM64)",
+                L"Microsoft .NET 9.0 Desktop Runtime (aka.ms x64 & ARM64)",
+                L"Microsoft .NET 8.0 LTS Desktop Runtime (aka.ms x64 & ARM64)",
+                L"Microsoft Edge WebView2 Evergreen Bootstrapper",
+                L"Microsoft Visual C++ 2015-2022 Redistributable (x64 & ARM64)",
+                L"Custom Runtime Installer (.exe or .msi — runs BEFORE Product.msi)",
+                L"Windows Installer Merge Module (.msm — merged into Product.msi)"
+            }, d.kindIdx, 6, 34, 296, 120);
+            b.AddLabel(L"&Section Identifier:", 6, 66, 110);
+            b.AddEdit(902, Utf8ToWide(d.sectionId), 120, 64, 150);
+            b.AddLabel(L"Note: Runtime prerequisites execute BEFORE msiexec so nested MSI redistributables never hit mutex error 1618.", 6, 94, 296, 28);
+        } else if (ctx->pageIndex == 1) {
+            b.AddLabel(L"Configure how Setup acquires this runtime or .MSM Merge Module:", 6, 4, 296, 14);
+            b.AddLabel(L"&Delivery Mode (for Runtime Prerequisites):", 6, 22, 296);
+            b.AddCombo(911, {
+                L"download — Stream from official HTTPS URL on demand (zero Setup.exe bloat)",
+                L"embedded — Compress with LZMS inside Setup.exe (100% offline / air-gapped)",
+                L"side-by-side — Read from Redist\\ folder next to Setup.exe (with HTTPS fallback)"
+            }, d.distIdx, 6, 34, 296);
+            b.AddLabel(L"HTTPS &URL or Local .exe / .msi / .msm Source Path:", 6, 64, 296);
+            b.AddEdit(912, Utf8ToWide(d.urlOrSource), 6, 76, 244);
+            b.AddButton(913, L"&Browse...", 254, 75, 48);
+        } else {
+            b.AddLabel(L"Configure silent switches, reboot exit codes, or target MSI Feature:", 6, 4, 296, 14);
+            b.AddLabel(L"&Silent CLI Switches:", 6, 24, 96);  b.AddEdit(921, Utf8ToWide(d.silentArgs),   106, 22, 196);
+            b.AddLabel(L"S&uccess Exit Codes:", 6, 48, 96);  b.AddEdit(922, Utf8ToWide(d.successCodes), 106, 46, 120);
+            b.AddLabel(L"&Reboot Exit Codes:",  6, 72, 96);  b.AddEdit(923, Utf8ToWide(d.rebootCodes),  106, 70, 120);
+            b.AddLabel(L".MSM Owning &Feature:",6, 96, 96);  b.AddEdit(924, Utf8ToWide(d.msmFeature),   106, 94, 120);
+            b.AddLabel(L"Any code in Reboot Exit Codes flags a pending restart and continues installing your app.", 6, 120, 296, 24);
+        }
+        return TRUE;
+    }
+    if (!ctx || !ctx->data) return FALSE;
+    auto& d = *ctx->data;
+
+    if (msg == WM_COMMAND) {
+        const int id   = LOWORD(wParam);
+        const int code = HIWORD(wParam);
+        if (id == 901 && code == CBN_SELCHANGE) {
+            const int sel = GetComboIndex(hDlg, 901);
+            const char* defIds[] = {
+                "DotNet10Desktop", "DotNet10AspNet", "DotNet9Desktop",
+                "DotNet8Desktop", "EdgeWebView2", "VcRedist2022", "CustomRuntime", "SharedModule"
+            };
+            if (sel >= 0 && sel < 8) {
+                ::SetDlgItemTextW(hDlg, 902, Utf8ToWide(defIds[sel]).c_str());
+            }
+            return TRUE;
+        }
+        if (id == 913) {
+            std::wstring p;
+            if (BrowsePathModal(hDlg, false, L"Runtimes & Merge Modules (*.exe;*.msi;*.msm)\0*.exe;*.msi;*.msm\0All Files (*.*)\0*.*\0", p)) {
+                ::SetDlgItemTextW(hDlg, 912, p.c_str());
+            }
+            return TRUE;
+        }
+    }
+
+    if (msg == WM_NOTIFY) {
+        const auto* nm = reinterpret_cast<const NMHDR*>(lParam);
+        if (nm->code == PSN_SETACTIVE) {
+            if (ctx->pageIndex == 1 && d.kindIdx < 6 && d.distIdx == 0) {
+                const auto& pr = kCuratedRuntimePresets[static_cast<std::size_t>(d.kindIdx)];
+                ::SetDlgItemTextW(hDlg, 912, Utf8ToWide(pr.urlArm64).c_str());
+            }
+            if (ctx->pageIndex == 2 && d.kindIdx < 6) {
+                const auto& pr = kCuratedRuntimePresets[static_cast<std::size_t>(d.kindIdx)];
+                ::SetDlgItemTextW(hDlg, 921, Utf8ToWide(pr.silentArgs).c_str());
+                ::SetDlgItemTextW(hDlg, 922, Utf8ToWide(pr.successCodes).c_str());
+                ::SetDlgItemTextW(hDlg, 923, Utf8ToWide(pr.rebootCodes).c_str());
+            }
+            DWORD btns = PSWIZB_BACK | PSWIZB_NEXT;
+            if (ctx->pageIndex == 0) btns = PSWIZB_NEXT;
+            if (ctx->pageIndex == 2) btns = PSWIZB_BACK | PSWIZB_FINISH;
+            PropSheet_SetWizButtons(::GetParent(hDlg), btns);
+            ::SetWindowLongPtrW(hDlg, DWLP_MSGRESULT, 0);
+            return TRUE;
+        }
+        if (nm->code == PSN_WIZNEXT || nm->code == PSN_WIZFINISH) {
+            if (ctx->pageIndex == 0) {
+                d.kindIdx   = GetComboIndex(hDlg, 901);
+                d.sectionId = ReadDlgItemUtf8(hDlg, 902);
+                if (d.sectionId.empty()) d.sectionId = "Runtime1";
+            } else if (ctx->pageIndex == 1) {
+                d.distIdx     = GetComboIndex(hDlg, 911);
+                d.urlOrSource = ReadDlgItemUtf8(hDlg, 912);
+            } else {
+                d.silentArgs   = ReadDlgItemUtf8(hDlg, 921);
+                d.successCodes = ReadDlgItemUtf8(hDlg, 922);
+                d.rebootCodes  = ReadDlgItemUtf8(hDlg, 923);
+                d.msmFeature   = ReadDlgItemUtf8(hDlg, 924);
+                d.completed    = true;
+            }
+            ::SetWindowLongPtrW(hDlg, DWLP_MSGRESULT, 0);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+inline bool RunPrerequisiteMsmAeroWizard(HWND hOwner, RswManifestDocument& ioDoc) {
+    PrereqMsmWizardData data{};
+    auto dlgt = BuildBlankAeroPageTemplate();
+    const wchar_t* headers[3] = {
+        L"Step 1 of 3 — Select Runtime Prerequisite or .MSM Merge Module",
+        L"Step 2 of 3 — Delivery Mode (HTTPS Download, Embedded LZMS, or Redist\\)",
+        L"Step 3 of 3 — Silent Switches & Reboot Exit Codes"
+    };
+    PrereqMsmPageCtx ctxs[3]{};
+    HPROPSHEETPAGE hPages[3]{};
+    for (int i = 0; i < 3; ++i) {
+        ctxs[i] = {i, &data};
+        PROPSHEETPAGEW psp{};
+        psp.dwSize         = sizeof(psp);
+        psp.dwFlags        = PSP_DEFAULT | PSP_USEHEADERTITLE | PSP_DLGINDIRECT;
+        psp.hInstance      = ::GetModuleHandleW(nullptr);
+        psp.pResource      = reinterpret_cast<LPCDLGTEMPLATEW>(dlgt.data());
+        psp.pszHeaderTitle = headers[i];
+        psp.pfnDlgProc     = &PrereqMsmAeroPageProc;
+        psp.lParam         = reinterpret_cast<LPARAM>(&ctxs[i]);
+        hPages[i]          = ::CreatePropertySheetPageW(&psp);
+    }
+
+    PROPSHEETHEADERW psh{};
+    psh.dwSize     = sizeof(psh);
+    psh.dwFlags    = PSH_WIZARD | PSH_AEROWIZARD;
+    psh.hwndParent = hOwner;
+    psh.hInstance  = ::GetModuleHandleW(nullptr);
+    psh.pszCaption = L"Runtime Prerequisite & Merge Module (.MSM) Wizard";
+    psh.nPages     = 3;
+    psh.phpage     = hPages;
+    ::PropertySheetW(&psh);
+
+    if (!data.completed) return false;
+
+    if (data.kindIdx == 7) {
+        ioDoc.SetString("MergeModule", data.sectionId, "Source",     data.urlOrSource);
+        ioDoc.SetString("MergeModule", data.sectionId, "Feature",    data.msmFeature.empty() ? "Main" : data.msmFeature);
+        ioDoc.SetString("MergeModule", data.sectionId, "TargetRoot", "INSTALLDIR");
+    } else {
+        const char* presetNames[] = {
+            "DotNet10Desktop", "DotNet10AspNet", "DotNet9Desktop",
+            "DotNet8Desktop", "EdgeWebView2", "VcRedist2022", "Custom"
+        };
+        const char* distNames[] = {"download", "embedded", "side-by-side"};
+        const std::string preset = presetNames[std::clamp(data.kindIdx, 0, 6)];
+        const std::string dist   = distNames[std::clamp(data.distIdx, 0, 2)];
+
+        ioDoc.SetString("Prerequisite", data.sectionId, "Preset",           preset);
+        ioDoc.SetString("Prerequisite", data.sectionId, "Distribution",     dist);
+        if (dist == "embedded" || (dist == "side-by-side" && data.urlOrSource.rfind("http", 0) != 0)) {
+            ioDoc.SetString("Prerequisite", data.sectionId, "SourceFile", data.urlOrSource);
+        } else if (preset == "Custom" && !data.urlOrSource.empty()) {
+            ioDoc.SetString("Prerequisite", data.sectionId, "Url", data.urlOrSource);
+        }
+        if (!data.silentArgs.empty())   ioDoc.SetString("Prerequisite", data.sectionId, "SilentArgs",       data.silentArgs);
+        if (!data.successCodes.empty()) ioDoc.SetString("Prerequisite", data.sectionId, "SuccessExitCodes", data.successCodes);
+        if (!data.rebootCodes.empty())  ioDoc.SetString("Prerequisite", data.sectionId, "RebootExitCodes",  data.rebootCodes);
+    }
+    return true;
 }
 
 } // namespace rsw::ide_wizards

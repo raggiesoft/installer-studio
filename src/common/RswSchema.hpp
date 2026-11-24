@@ -15,16 +15,15 @@
 //     type, default value, allowed enum tokens, and plain-English description here
 //     keeps THREE subsystems 100% synchronized forever:
 //       1. `RswValidator.hpp` (`instbuild.exe --validate --diagnostics=json`):
-//          Checks syntax, GUIDs, 3-part MSI versions, `&` mnemonics, AND Microsoft's
-//          official Windows Installer Component Rules (Single-Directory Rule, ICE18
-//          `CreateFolder`, ICE38 per-user Registry KeyPaths, ICE64 `RemoveFolder`)!
+//          Checks syntax, GUIDs, 3-part MSI versions, `&` mnemonics, `[Prerequisite.*]`
+//          rules, AND Microsoft's official Windows Installer Component Rules!
 //       2. `RswAiSpecEmitter.hpp` (`instbuild.exe --emit-ai-spec <dir>`):
 //          Deterministically generates `llms.txt`, `llms-full.txt`, and `SKILL.md`
 //          straight from the compiled binary with zero documentation drift!
 //       3. `InstallerStudio.exe` (Native Win32 C++20 Visual IDE):
-//          Powers the Destination Computer folder tree, Setup Design (Features ->
-//          Components -> KeyPaths), File Associations, Dual Dialog Designer, and
-//          Lossless AST Source Editor!
+//          Powers Destination Folders, Setup Design (`Features -> Components ->
+//          KeyPaths`), Runtime Prerequisites, File Associations, Dual Dialog
+//          Designer, and the Lossless AST Source Editor!
 // ================================================================================
 
 #pragma once
@@ -38,7 +37,7 @@ namespace rsw {
 enum class SectionCardinality {
     SingletonRequired, // Must appear once in a complete `.rsip` project (`[Package]`, `[Install]`)
     SingletonOptional, // May appear 0 or 1 times (`[Requirements]`, `[UI]`, `[Signing]`)
-    NamedRepeatable    // Appears 0 or more times as `[Prefix.<id>]` (`[Feature.*]`, `[Component.*]`, etc.)
+    NamedRepeatable    // Appears 0 or more times as `[Prefix.<id>]` (`[Feature.*]`, `[Prerequisite.*]`, etc.)
 };
 
 /// Value data types checked by `RswValidator` before `cabinet.dll` or `msi.dll` ever run.
@@ -56,7 +55,7 @@ enum class FieldValueKind {
 };
 
 struct SectionDescriptor {
-    std::string_view   nameOrPrefix; // Exact name (`"Package"`) or prefix (`"Component"` for `[Component.<id>]`)
+    std::string_view   nameOrPrefix; // Exact name (`"Package"`) or prefix (`"Prerequisite"` for `[Prerequisite.<id>]`)
     SectionCardinality cardinality;
     bool               atLeastOneRequired;
     std::string_view   summary;
@@ -77,22 +76,30 @@ inline constexpr std::string_view kAllowedTargetRoots =
     "INSTALLDIR|CommonFiles64Folder|CommonAppDataFolder|AppDataFolder|LocalAppDataFolder|"
     "ProgramMenuFolder|ApplicationProgramsFolder|DesktopFolder|System64Folder|FontsFolder";
 
+/// Curated one-click runtime prerequisite presets supported by `[Prerequisite.<id>] Preset`.
+inline constexpr std::string_view kAllowedPrereqPresets =
+    "Custom|DotNet10Desktop|DotNet10AspNet|DotNet9Desktop|DotNet8Desktop|EdgeWebView2|VcRedist2022";
+
 // ================================================================================
-// 1. CANONICAL `.RSIP` SECTION DESCRIPTOR TABLE (`14` SECTIONS)
+// 1. CANONICAL `.RSIP` SECTION DESCRIPTOR TABLE (`16` SECTIONS)
 // ================================================================================
-inline constexpr std::array<SectionDescriptor, 14> kSectionDescriptors{{
+inline constexpr std::array<SectionDescriptor, 16> kSectionDescriptors{{
     {"Package",         SectionCardinality::SingletonRequired, true,
      "Core product identity, MSI Summary Information, target CPU architecture (x64/arm64), and output settings."},
     {"Requirements",    SectionCardinality::SingletonOptional, false,
-     "Minimum Windows 11 build gate (RtlGetVersion & MSI LaunchCondition) and downgrade protection."},
+     "Minimum Windows 11 build gate (RtlGetVersion & MSI LaunchCondition), downgrade protection, and silent reboot exit code."},
     {"Install",         SectionCardinality::SingletonRequired, true,
      "Default installation subfolder under ProgramFiles64Folder/LocalAppDataFolder and Start Menu group."},
     {"UI",              SectionCardinality::SingletonOptional, false,
-     "Branding, RTF license, icon, C++ Glass layout, and MSI.DLL Express/Custom dialog workflow preset."},
+     "Branding, RTF license, icon, C++ Glass/AeroWizard layout, and MSI.DLL Express/Custom dialog workflow preset."},
     {"Signing",         SectionCardinality::SingletonOptional, false,
      "Optional dual-layer Authenticode code signing (Product.msi first, then outer Setup.exe) via signtool.exe."},
+    {"Prerequisite",    SectionCardinality::NamedRepeatable,   false,
+     "Runtime prerequisite ([Prerequisite.<id>]: .NET Desktop Runtime, WebView2, VC++ Redist, or Custom .exe/.msi) executed BEFORE msiexec with download/embedded/side-by-side delivery and reboot exit-code tracking."},
+    {"MergeModule",     SectionCardinality::NamedRepeatable,   false,
+     "Consumes a Windows Installer Merge Module ([MergeModule.<id>]: .msm) merging its Components, Files, Registry, and MergeModule.CABinet directly into Product.msi."},
     {"Feature",         SectionCardinality::NamedRepeatable,   false,
-     "Named MSI Feature or Sub-Feature ([Feature.<id>]); defaults to a single 'Main' feature if omitted."},
+     "Named MSI Feature or Sub-Feature ([Feature.<id>]) displayed in SetupWizard.exe and MSI SelectionTree."},
     {"Component",       SectionCardinality::NamedRepeatable,   false,
      "Explicit MSI Component ([Component.<id>]) enforcing Microsoft Single-Directory & KeyPath rules (File, Registry, or CreateFolder)."},
     {"Folder",          SectionCardinality::NamedRepeatable,   false,
@@ -226,19 +233,21 @@ inline constexpr std::array<FieldDescriptor, 45> kFieldDescriptors{{
 }};
 
 // ================================================================================
-// 3. EXTENDED `.RSIP` FIELD DESCRIPTOR TABLE (`v0.3` — COMPONENTS, KEYPATHS,
-//    FOLDERS, FILE ASSOCIATIONS, & CUSTOM MSI.DLL DIALOG AUTHORING!)
+// 3. EXTENDED `.RSIP` FIELD DESCRIPTOR TABLE (`v0.3` — PREREQUISITES, SELECTION
+//    TREE ATTRIBUTES, COMPONENTS, KEYPATHS, FOLDERS, FILE ASSOCIATIONS, & DIALOGS)
 // ================================================================================
-inline constexpr std::array<FieldDescriptor, 69> kExtendedFieldDescriptors{{
-    // --- Extended [Package], [UI], [Feature], [Payload], [Shortcut], [Registry] ---
+inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>({
+    // --- Extended [Package], [Requirements], [UI], [Feature], [Payload], [Shortcut], [Registry] ---
     {"Package",  "PackageKind",          FieldValueKind::EnumChoice,  false, "msi",               "msi|msm",
      "`msi` builds a standalone Enterprise `.msi` (+ optional `-setup.exe`); `msm` builds a reusable Merge Module (`.msm`)."},
     {"Package",  "Tagline",              FieldValueKind::String,      false, "",                  "",
      "Short subtitle displayed beneath the product title in `SetupWizard.exe` and `InstallerStudio.exe`."},
     {"Package",  "WebsiteLabel",         FieldValueKind::String,      false, "",                  "",
      "Optional domain badge shown in the setup wizard footer (left blank if omitted — 100% white-label!)."},
+    {"Requirements", "SilentRebootExitCode", FieldValueKind::Integer, false, "3010",              "",
+     "Process exit code returned in silent mode (`/s` / `/qn`) when a runtime prerequisite or MSI requests a Windows restart (`3010` standard MSI, or `9001` for RaggieSoft Launcher)."},
     {"UI",       "WizardLayout",         FieldValueKind::EnumChoice,  false, "standard",          "standard|aerowizard|autorun16x9",
-     "`standard` shows the RaggieSoft Glass Setup Wizard; `aerowizard` uses modern Windows AeroWizard chrome with top-left DWM Back glyph; `autorun16x9` shows the 640x480 16:9 Autorun stage."},
+     "`standard` shows the RaggieSoft Glass Setup Wizard; `aerowizard` uses modern Windows AeroWizard header chrome; `autorun16x9` shows the 640x480 16:9 Autorun stage."},
     {"UI",       "MsiDialogPreset",      FieldValueKind::EnumChoice,  false, "express_custom",    "express_custom|minimal",
      "`express_custom` builds the full Express / Compact / Custom + SelectionTree + BrowseDlg + Shortcuts + Office Repair Mode workflow inside MSI.DLL's Dialog table; `minimal` builds a compact 3-screen MSI UI."},
     {"UI",       "AccentPrimaryHex",     FieldValueKind::String,      false, "#2563EB",           "",
@@ -258,12 +267,16 @@ inline constexpr std::array<FieldDescriptor, 69> kExtendedFieldDescriptors{{
      "Installs essential core application files (`Level = 1`) with minimal disk footprint.", "",
      "Helper caption for the Compact Core Setup mode card in `SetupWizard.exe` and MSI `SetupTypeDlg`."},
     {"UI",       "CustomDescription",    FieldValueKind::String,      false,
-     "Choose a custom destination folder, features, Start Menu group, and shortcuts step by step.", "",
+     "Choose features in the MSI SelectionTree, destination folder, Start Menu group, and shortcuts step by step.", "",
      "Helper caption for the Custom Setup mode card in `SetupWizard.exe` and MSI `SetupTypeDlg`."},
     {"UI",       "AuthorOrArtist",       FieldValueKind::String,      false, "",                  "",
      "Optional author or band credit badge displayed in `autorun16x9` book/album micro-installers."},
     {"Feature",  "Parent",               FieldValueKind::String,      false, "",                  "",
      "Optional parent Feature ID (`Feature_Parent`) creating a hierarchical sub-feature in `SelectionTree`."},
+    {"Feature",  "DisallowAbsent",       FieldValueKind::Boolean,     false, "false",             "",
+     "Sets `msidbFeatureAttributesUIDisallowAbsent` (`16`) locking a required core feature so users cannot disable it in `SelectionTree`."},
+    {"Feature",  "AllowAdvertise",       FieldValueKind::Boolean,     false, "false",             "",
+     "When `false` (default), sets `msidbFeatureAttributesDisallowAdvertise` (`8`) hiding MSI on-demand advertisement; set `true` to enable 'Feature will be installed when required'."},
     {"Payload",  "TargetRoot",           FieldValueKind::EnumChoice,  false, "INSTALLDIR",        kAllowedTargetRoots,
      "Destination MSI system folder root (`INSTALLDIR`, `CommonAppDataFolder`, `AppDataFolder`, `FontsFolder`, etc.)."},
     {"Payload",  "Component",            FieldValueKind::String,      false, "",                  "",
@@ -286,6 +299,56 @@ inline constexpr std::array<FieldDescriptor, 69> kExtendedFieldDescriptors{{
      "Feature ID owning this registry value."},
     {"Registry", "Component",            FieldValueKind::String,      false, "",                  "",
      "Optional `[Component.<id>]` owning this registry row (used when grouping registry values or setting a Registry KeyPath)."},
+
+    // --- [Prerequisite.<id>] (Pre-MSI Runtime Bootstrapper: Download, Embedded, & Side-by-Side!) ---
+    {"Prerequisite", "Preset",             FieldValueKind::EnumChoice,  false, "Custom",          kAllowedPrereqPresets,
+     "One-click curated preset (`DotNet10Desktop`, `DotNet10AspNet`, `DotNet9Desktop`, `DotNet8Desktop`, `EdgeWebView2`, `VcRedist2022`) or `Custom`."},
+    {"Prerequisite", "Name",               FieldValueKind::String,      false, "",                "",
+     "Consumer-friendly runtime display name (auto-filled when `Preset` != `Custom`)."},
+    {"Prerequisite", "Distribution",       FieldValueKind::EnumChoice,  false, "download",        "download|embedded|side-by-side",
+     "`download` streams over WinHTTP HTTPS on demand; `embedded` packs `SourceFile` inside `Setup.exe` for offline installs; `side-by-side` reads `Redist\\<FileName>` next to `Setup.exe` (with URL fallback)."},
+    {"Prerequisite", "SourceFile",         FieldValueKind::Path,        false, "",                "",
+     "Local runtime `.exe` or `.msi` on the build machine (required for `Distribution = embedded`, optional for `side-by-side`, supports `$(ARCH)`)."},
+    {"Prerequisite", "FileName",           FieldValueKind::String,      false, "",                "",
+     "Runtime installer filename used inside `Redist\\` or `%TEMP%` (auto-filled for presets)."},
+    {"Prerequisite", "Url",                FieldValueKind::String,      false, "",                "",
+     "Architecture-neutral HTTPS download URL (or fallback URL for `side-by-side`)."},
+    {"Prerequisite", "UrlX64",             FieldValueKind::String,      false, "",                "",
+     "Optional `x64`-specific HTTPS download URL (auto-filled for `aka.ms` presets)."},
+    {"Prerequisite", "UrlArm64",           FieldValueKind::String,      false, "",                "",
+     "Optional `arm64`-specific HTTPS download URL (auto-filled for `aka.ms` presets)."},
+    {"Prerequisite", "Sha256",             FieldValueKind::String,      false, "",                "",
+     "Optional expected SHA-256 hex digest verified via `bcrypt.dll` before executing a downloaded runtime."},
+    {"Prerequisite", "SilentArgs",         FieldValueKind::String,      false, "",                "",
+     "Command-line switches passed to the runtime installer (auto-filled for presets, e.g. `/install /quiet /norestart`)."},
+    {"Prerequisite", "SuccessExitCodes",   FieldValueKind::String,      false, "0, 1638",         "",
+     "Comma-separated exit codes treated as clean success (`0` = OK, `1638` = newer redistributable already installed)."},
+    {"Prerequisite", "RebootExitCodes",    FieldValueKind::String,      false, "3010, 1641",      "",
+     "Comma-separated exit codes treated as success WITH a Windows restart requested (`3010`, `1641`, `23`, or any custom vendor codes)."},
+    {"Prerequisite", "DetectRegistryHive", FieldValueKind::EnumChoice,  false, "HKLM",            "HKLM|HKCU",
+     "Registry hive checked before running a `Custom` prerequisite (`HKLM` or `HKCU`, probed in native 64-bit view)."},
+    {"Prerequisite", "DetectRegistryKey",  FieldValueKind::String,      false, "",                "",
+     "Optional registry key checked to skip an already-installed `Custom` prerequisite."},
+    {"Prerequisite", "DetectRegistryValue",FieldValueKind::String,      false, "",                "",
+     "Optional registry value name under `DetectRegistryKey` (non-empty / non-zero means installed)."},
+    {"Prerequisite", "DetectMinVersion",   FieldValueKind::String,      false, "",                "",
+     "Optional minimum dotted version compared against `DetectRegistryValue` or `DetectFilePath`."},
+    {"Prerequisite", "DetectFilePath",     FieldValueKind::String,      false, "",                "",
+     "Optional file path (supports `%ProgramW6432%` / `%SystemRoot%`) whose presence/version skips the prerequisite."},
+    {"Prerequisite", "DetectUpgradeCode",  FieldValueKind::Guid,        false, "",                "",
+     "Optional MSI `{UpgradeCode}` probed via `MsiEnumRelatedProductsW` to skip an already-installed MSI runtime."},
+    {"Prerequisite", "RequiresElevation",  FieldValueKind::Boolean,     false, "true",            "",
+     "When `true` (default), executes inside the single unified elevated UAC session right before `Product.msi`."},
+    {"Prerequisite", "Optional",           FieldValueKind::Boolean,     false, "false",           "",
+     "When `true`, logs a warning and continues installing `Product.msi` even if this prerequisite fails."},
+
+    // --- [MergeModule.<id>] (Consume Third-Party or First-Party .MSM Merge Modules!) ---
+    {"MergeModule", "Source",              FieldValueKind::Path,        true,  "",                "",
+     "Path to the `.msm` Merge Module database on the build machine (supports `$(ARCH)`)."},
+    {"MergeModule", "Feature",             FieldValueKind::String,      false, "Main",            "",
+     "Parent `[Feature.<id>]` in `Product.msi` that receives the Merge Module's components."},
+    {"MergeModule", "TargetRoot",          FieldValueKind::EnumChoice,  false, "INSTALLDIR",      kAllowedTargetRoots,
+     "Destination root folder to which the Merge Module's `TARGETDIR` / `MergeRedirectFolder` maps."},
 
     // --- [Component.<id>] (Microsoft Official Component & KeyPath Rules!) ---
     {"Component", "Feature",             FieldValueKind::String,      false, "Main",              "",
@@ -383,7 +446,7 @@ inline constexpr std::array<FieldDescriptor, 69> kExtendedFieldDescriptors{{
      "Control label or rich text (`{\\DlgFontBold8}...`)."},
     {"MsiControl", "Items",              FieldValueKind::String,      false, "",                  "",
      "Pipe-separated `Value:Caption` entries for `RadioButtonGroup`, `ComboBox`, or `ListBox` controls."}
-}};
+});
 
 /// Returns `true` if `rootDirKey` points to a per-user Windows profile directory (requiring ICE38 HKCU KeyPath & ICE64 RemoveFolder!).
 inline constexpr bool IsPerUserProfileRootDir(std::string_view rootDirKey) noexcept {

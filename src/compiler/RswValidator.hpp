@@ -493,6 +493,43 @@ inline ValidationReport ValidateManifestDocument(
         }
     }
 
+    // Validate `[Prerequisite.<id>]` runtime delivery rules (`embedded` requires `SourceFile`; `download` requires `Url` or `Preset`)
+    for (const auto& pid : doc.GetNamedSectionIds("Prerequisite")) {
+        const std::string preset = doc.GetString("Prerequisite", pid, "Preset", "Custom");
+        const std::string dist   = AsciiLower(doc.GetString("Prerequisite", pid, "Distribution", "download"));
+        const std::string rawSrc = doc.GetString("Prerequisite", pid, "SourceFile");
+        const std::string urlAny = doc.GetString("Prerequisite", pid, "Url") +
+                                   doc.GetString("Prerequisite", pid, "UrlX64") +
+                                   doc.GetString("Prerequisite", pid, "UrlArm64");
+        if (dist == "embedded") {
+            if (rawSrc.empty()) {
+                addErr("RSW035", 1, "Prerequisite." + pid, "SourceFile",
+                       "[Prerequisite." + pid + "] uses Distribution = embedded, so SourceFile must point to a local .exe or .msi runtime.");
+            } else {
+                const auto absSrc = resolvePathStd(rawSrc);
+                if (!std::filesystem::exists(absSrc, ec)) {
+                    addErr("RSW035", 1, "Prerequisite." + pid, "SourceFile",
+                           "Prerequisite SourceFile does not exist on disk: " + WideToUtf8(absSrc.wstring()));
+                }
+            }
+        } else if (dist == "download" && EqualsIgnoreCase(preset, "Custom") && urlAny.empty()) {
+            addErr("RSW036", 1, "Prerequisite." + pid, "Url",
+                   "[Prerequisite." + pid + "] uses Preset = Custom and Distribution = download, so Url (or UrlX64/UrlArm64) is required.");
+        }
+    }
+
+    // Validate `[MergeModule.<id>]` `.msm` paths on disk
+    for (const auto& mid : doc.GetNamedSectionIds("MergeModule")) {
+        const std::string rawMsm = doc.GetString("MergeModule", mid, "Source");
+        if (!rawMsm.empty()) {
+            const auto absMsm = resolvePathStd(rawMsm);
+            if (!std::filesystem::exists(absMsm, ec)) {
+                addErr("RSW037", 1, "MergeModule." + mid, "Source",
+                       "Merge Module (.msm) file does not exist on disk: " + WideToUtf8(absMsm.wstring()));
+            }
+        }
+    }
+
     return rep;
 }
 
