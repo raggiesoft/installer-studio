@@ -609,9 +609,10 @@ inline void DrawGlassTopHeader(
         static_cast<float>(clientW - S(36)), static_cast<float>(S(4)), theme);
 }
 
-/// Paints the Modern Windows **AeroWizard** Header (`WizardLayout = aerowizard`):
-///   - Top titlebar-integrated strip (`0..38px`) with circular Aero `<-` Back glyph zone & window title
-///   - Clean `AW_HEADERAREA` (`38..92px`) with `14pt` Aero Main Instruction (`mainInstruction`) + `48x48` Step Medallion!
+/// Paints the Modern Windows **AeroWizard** Command Header (`WizardLayout = aerowizard`):
+///   - Single clean `AW_HEADERAREA` band (`0..90px`) without duplicating the OS window titlebar!
+///   - `28x28` Brand Squircle Emblem + Kicker Eyebrow + `16pt` Aero Main Instruction + `60x60` Step Medallion!
+///   - `< &Back` stays in the familiar Wizard97 bottom-right footer alongside `Next >` and `Cancel`.
 inline void DrawAeroWizardTopHeader(
     HDC hdc,
     Gdiplus::Graphics& g,
@@ -627,52 +628,57 @@ inline void DrawAeroWizardTopHeader(
 {
     auto S = [&](int px) { return ScalePx(px, dpi, theme.textScalePercent); };
 
-    // Top DWM-styled Aero title band (`0..38`) + clean Main Instruction band (`38..90`)
-    RECT topBand{0, 0, clientW, S(38)};
-    RECT instrBand{0, S(38), clientW, S(90)};
+    RECT hdrBand{0, 0, clientW, S(90)};
     if (theme.isHighContrast) {
-        ::FillRect(hdc, &topBand, theme.hbrFooter);
-        ::FillRect(hdc, &instrBand, theme.hbrWindow);
+        ::FillRect(hdc, &hdrBand, theme.hbrFooter);
     } else if (theme.isDarkMode) {
-        FillHorizontalGradient(hdc, topBand, RGB(9, 15, 31), RGB(15, 25, 48));
-        ::FillRect(hdc, &instrBand, theme.hbrWindow);
+        FillHorizontalGradient(hdc, hdrBand, RGB(11, 19, 40), RGB(17, 31, 62));
     } else {
-        FillHorizontalGradient(hdc, topBand, RGB(230, 238, 249), RGB(241, 245, 252));
         HBRUSH hWhite = ::CreateSolidBrush(RGB(255, 255, 255));
-        ::FillRect(hdc, &instrBand, hWhite);
+        ::FillRect(hdc, &hdrBand, hWhite);
         ::DeleteObject(hWhite);
     }
 
-    // Window icon + caption right next to the top-left `<-` Aero Back button (`x = 52`)
-    DrawBrandSquircleBadge(g, static_cast<float>(S(50)), static_cast<float>(S(8)), static_cast<float>(S(22)), theme, manufacturer);
-    HFONT hCapFont   = CreateScaledFont(L"Segoe UI",  9, FW_SEMIBOLD, dpi, theme.textScalePercent);
-    HFONT hInstrFont = CreateScaledFont(L"Segoe UI", 14, FW_SEMIBOLD, dpi, theme.textScalePercent);
-    ::SetBkMode(hdc, TRANSPARENT);
-    HGDIOBJ oldF = ::SelectObject(hdc, hCapFont);
-    ::SetTextColor(hdc, theme.textSecondary);
-    RECT capRc{S(78), 0, clientW - S(18), S(38)};
-    ::DrawTextW(hdc, windowCaption.data(), static_cast<int>(windowCaption.size()), &capRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    // 1. `26x26` Brand Squircle Emblem + Uppercase Publisher/Product Eyebrow (`y = 12..36`)
+    DrawBrandSquircleBadge(g, static_cast<float>(S(18)), static_cast<float>(S(12)), static_cast<float>(S(26)), theme, manufacturer);
+    const std::wstring pubUpper = UpperWide(manufacturer.empty() ? L"RaggieSoft" : manufacturer);
+    const std::wstring eyebrow  = pubUpper + L"  \x2022  " + UpperWide(windowCaption);
 
-    // Aero Main Instruction (`AW_HEADERAREA` — `TEXT_MAININSTRUCTION` equivalent with >= 7.5:1 WCAG contrast!)
+    HFONT hKickFont  = CreateScaledFont(L"Segoe UI",  9, FW_BOLD,     dpi, theme.textScalePercent);
+    HFONT hInstrFont = CreateScaledFont(L"Segoe UI", 16, FW_SEMIBOLD, dpi, theme.textScalePercent);
+    ::SetBkMode(hdc, TRANSPARENT);
+
+    const int medalSz = S(60);
+    const int medalX  = clientW - S(18) - medalSz;
+
+    HGDIOBJ oldF = ::SelectObject(hdc, hKickFont);
+    const COLORREF kickCol = theme.isHighContrast
+        ? theme.textSecondary
+        : (theme.isDarkMode ? RGB(186, 230, 253) : RGB(30, 64, 175));
+    ::SetTextColor(hdc, kickCol);
+    RECT capRc{S(52), S(13), medalX - S(12), S(37)};
+    ::DrawTextW(hdc, eyebrow.data(), static_cast<int>(eyebrow.size()), &capRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+    // 2. Aero Main Instruction (`AW_HEADERAREA` `TEXT_MAININSTRUCTION` — >= 10.4:1 WCAG AAA contrast!)
     const COLORREF aeroInstrCol = theme.isHighContrast
         ? theme.textPrimary
         : (theme.isDarkMode ? RGB(125, 211, 252) : RGB(0, 51, 153));
     ::SelectObject(hdc, hInstrFont);
     ::SetTextColor(hdc, aeroInstrCol);
-    const int medalSz = S(48);
-    const int medalX  = clientW - S(18) - medalSz;
-    RECT insRc{S(22), S(44), medalX - S(12), S(86)};
+    RECT insRc{S(18), S(42), medalX - S(12), S(84)};
     ::DrawTextW(hdc, mainInstruction.data(), static_cast<int>(mainInstruction.size()), &insRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
     ::SelectObject(hdc, oldF);
-    ::DeleteObject(hCapFont);
+    ::DeleteObject(hKickFont);
     ::DeleteObject(hInstrFont);
 
-    DrawStepProductMedallion(hdc, g, medalX, S(40), medalSz, hProductIcon, stepGlyph, stepBadgeColor, theme, manufacturer);
+    // 3. `60x60` Step-Specific Product Medallion on top-right
+    DrawStepProductMedallion(hdc, g, medalX, S(14), medalSz, hProductIcon, stepGlyph, stepBadgeColor, theme, manufacturer);
 
-    // Subtle 1px Aero header divider
-    Gdiplus::Pen sepPen(ToGpColor(theme.borderSubtle), 1.0f);
-    g.DrawLine(&sepPen, 0.0f, static_cast<float>(S(90)), static_cast<float>(clientW), static_cast<float>(S(90)));
+    // 4. Crisp Aero accent divider at `y = 88..90`
+    DrawMultiStopAccentBar(
+        g, 0.0f, static_cast<float>(S(88)),
+        static_cast<float>(clientW), static_cast<float>(S(2)), theme);
 }
 
 /// Paints the Signature RaggieSoft `Hero Brand Card` (`render_hero_brand_card` 1:1 in native GDI+!)
@@ -1062,6 +1068,82 @@ inline void DrawGlassFooterBar(
     ::DrawTextW(hdc, label.c_str(), -1, &txtRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     ::SelectObject(hdc, oldF);
     ::DeleteObject(hFootFont);
+}
+
+/// Paints a WCAG 2.2 AAA (`>= 15.8:1` contrast) Subclassed `BS_AUTOCHECKBOX` Row!
+/// Why custom-paint checkboxes via `SetWindowSubclass` instead of relying on `WM_CTLCOLORSTATIC`?
+///   Under Windows 11 Visual Styles (`ComCtl32 v6` + `uxtheme.dll`), standard `BS_AUTOCHECKBOX`
+///   controls call `DrawThemeText(BP_CHECKBOX)` with hardcoded black `RGB(0,0,0)` text, ignoring
+///   `SetTextColor` in `WM_CTLCOLORSTATIC` and rendering black-on-black text in Dark Mode!
+///   Subclassing `BS_AUTOCHECKBOX` preserves 100% native UI Automation `CheckBox` semantics,
+///   `BM_GETCHECK`, Spacebar toggling, and `Alt+Key` mnemonics while guaranteeing crisp contrast!
+inline void DrawAccessibleCheckbox(
+    HDC hdc,
+    Gdiplus::Graphics& g,
+    const RECT& rc,
+    UINT dpi,
+    const RswTheme& theme,
+    std::wstring_view labelWithMnemonic,
+    bool isChecked,
+    bool hasFocus,
+    bool isHovered,
+    bool onCardSurface) noexcept
+{
+    auto S = [&](int px) { return ScalePx(px, dpi, theme.textScalePercent); };
+    ::FillRect(hdc, &rc, onCardSurface ? theme.hbrCard : theme.hbrWindow);
+
+    const float w = static_cast<float>(rc.right - rc.left);
+    const float h = static_cast<float>(rc.bottom - rc.top);
+    if (w <= 20.0f || h <= 12.0f) return;
+
+    // 1. High-Contrast WCAG 2.4.11 / 2.4.13 Keyboard Focus Ring around the checkbox row
+    if (hasFocus) {
+        const COLORREF focusRef = theme.isHighContrast
+            ? ::GetSysColor(COLOR_HIGHLIGHT)
+            : (theme.isDarkMode ? brand::kWarmGold : RGB(29, 78, 216));
+        Gdiplus::Pen focusPen(ToGpColor(focusRef), 2.0f);
+        FillAndStrokeRoundRect(g, 1.0f, 1.0f, w - 2.0f, h - 2.0f, static_cast<float>(S(5)), nullptr, &focusPen);
+    }
+
+    // 2. Crisp `18x18` Rounded-4px Checkbox Indicator (`>= 7:1` non-text contrast!)
+    const float boxSz = static_cast<float>(S(18));
+    const float boxX  = static_cast<float>(S(4));
+    const float boxY  = (h - boxSz) * 0.5f;
+    const float rad   = static_cast<float>(S(4));
+
+    if (isChecked) {
+        const COLORREF fillCol = theme.isHighContrast ? ::GetSysColor(COLOR_HIGHLIGHT) : theme.accentPrimary;
+        Gdiplus::SolidBrush fillBr(ToGpColor(fillCol));
+        Gdiplus::Pen rimPen(ToGpColor(fillCol), 1.5f);
+        FillAndStrokeRoundRect(g, boxX, boxY, boxSz, boxSz, rad, &fillBr, &rimPen);
+
+        const COLORREF markCol = theme.isHighContrast ? ::GetSysColor(COLOR_HIGHLIGHTTEXT) : RGB(255, 255, 255);
+        Gdiplus::Pen checkPen(ToGpColor(markCol), std::max(2.0f, boxSz * 0.13f));
+        checkPen.SetStartCap(Gdiplus::LineCapRound);
+        checkPen.SetEndCap(Gdiplus::LineCapRound);
+        checkPen.SetLineJoin(Gdiplus::LineJoinRound);
+        Gdiplus::PointF pts[3] = {
+            Gdiplus::PointF(boxX + boxSz * 0.22f, boxY + boxSz * 0.52f),
+            Gdiplus::PointF(boxX + boxSz * 0.43f, boxY + boxSz * 0.74f),
+            Gdiplus::PointF(boxX + boxSz * 0.79f, boxY + boxSz * 0.28f)
+        };
+        g.DrawLines(&checkPen, pts, 3);
+    } else {
+        const COLORREF rimCol = isHovered ? theme.accentPrimary : theme.textSecondary;
+        Gdiplus::SolidBrush boxBg(ToGpColor(theme.cardBg));
+        Gdiplus::Pen rimPen(ToGpColor(rimCol), 1.6f);
+        FillAndStrokeRoundRect(g, boxX, boxY, boxSz, boxSz, rad, &boxBg, &rimPen);
+    }
+
+    // 3. Crisp Label Text (`#F8FAFC` on `#0D1426` = 15.8:1 Dark / `#0F172A` on `#F4F7FB` = 16.1:1 Light!)
+    HFONT hChkFont = CreateScaledFont(L"Segoe UI", 10, FW_NORMAL, dpi, theme.textScalePercent);
+    ::SetBkMode(hdc, TRANSPARENT);
+    HGDIOBJ oldF = ::SelectObject(hdc, hChkFont);
+    ::SetTextColor(hdc, theme.textPrimary);
+    RECT txtRc{static_cast<int>(boxX + boxSz + static_cast<float>(S(9))), 0, rc.right - S(4), rc.bottom};
+    ::DrawTextW(hdc, labelWithMnemonic.data(), static_cast<int>(labelWithMnemonic.size()), &txtRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    ::SelectObject(hdc, oldF);
+    ::DeleteObject(hChkFont);
 }
 
 } // namespace rsw::ui

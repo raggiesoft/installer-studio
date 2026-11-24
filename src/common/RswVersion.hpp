@@ -33,13 +33,13 @@
 
 namespace rsw {
 
-// Semantic Versioning (`0.1.0`)
+// Semantic Versioning (`0.2.1`)
 inline constexpr int kVersionMajor = 0;
-inline constexpr int kVersionMinor = 1;
-inline constexpr int kVersionPatch = 0;
+inline constexpr int kVersionMinor = 2;
+inline constexpr int kVersionPatch = 1;
 
-inline constexpr std::string_view  kVersionString      = "0.1.0";
-inline constexpr std::wstring_view kVersionStringWide  = L"0.1.0";
+inline constexpr std::string_view  kVersionString      = "0.2.1";
+inline constexpr std::wstring_view kVersionStringWide  = L"0.2.1";
 
 // Suite, Runtime Wizard, & MSI Prism Product Identity
 inline constexpr std::string_view  kSuiteTitle         = "RaggieSoft Installer Studio";
@@ -52,8 +52,8 @@ inline constexpr std::string_view  kProductTagline     = "Install Without Limits
 inline constexpr std::string_view  kCanonicalExt       = ".rsip";
 inline constexpr std::string_view  kSuiteExt           = ".rsis";
 inline constexpr std::string_view  kIncludeExt         = ".rsii";
-inline constexpr std::string_view  kGeneratorSignature = "RaggieSoft Installer Studio (instbuild.exe 0.2.0)";
-inline constexpr std::wstring_view kGeneratorSigWide   = L"RaggieSoft Installer Studio (instbuild.exe 0.2.0)";
+inline constexpr std::string_view  kGeneratorSignature = "RaggieSoft Installer Studio (instbuild.exe 0.2.1)";
+inline constexpr std::wstring_view kGeneratorSigWide   = L"RaggieSoft Installer Studio (instbuild.exe 0.2.1)";
 inline constexpr std::string_view  kManifestSchemaVer  = "0.3";
 
 // Embedded Win32 RCDATA resource IDs inside `SetupWizard.exe` -> `<Product>-setup.exe`

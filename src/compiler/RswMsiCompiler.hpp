@@ -836,7 +836,15 @@ inline bool CompileManifestToMsi(
         "CREATE TABLE `Icon` (`Name` CHAR(72) NOT NULL, `Data` OBJECT NOT NULL PRIMARY KEY `Name`)",
         "CREATE TABLE `Binary` (`Name` CHAR(72) NOT NULL, `Data` OBJECT NOT NULL PRIMARY KEY `Name`)",
         "CREATE TABLE `Upgrade` (`UpgradeCode` CHAR(38) NOT NULL, `VersionMin` CHAR(20), `VersionMax` CHAR(20), `Language` CHAR(255), `Attributes` LONG NOT NULL, `Remove` CHAR(255), `ActionProperty` CHAR(72) NOT NULL PRIMARY KEY `UpgradeCode`, `VersionMin`, `VersionMax`, `Language`, `Attributes`)",
+        // CRITICAL `AppSearch` Table Set (`Signature`, `RegLocator`, `CompLocator`, `DrLocator`, `IniLocator`):
+        // Whenever `AppSearch` contains rows (even registry-only `RegLocator` searches!), Windows Installer
+        // queries the `Signature` table FIRST (`SELECT FileName... FROM Signature WHERE Signature = ?`).
+        // Omitting `Signature` causes `msiexec` to abort with `Error 2228: Unknown table 'Signature'` (`1603`)!
+        "CREATE TABLE `Signature` (`Signature` CHAR(72) NOT NULL, `FileName` CHAR(255) NOT NULL, `MinVersion` CHAR(20), `MaxVersion` CHAR(20), `MinSize` LONG, `MaxSize` LONG, `MinDate` LONG, `MaxDate` LONG, `Languages` CHAR(255) PRIMARY KEY `Signature`)",
         "CREATE TABLE `RegLocator` (`Signature_` CHAR(72) NOT NULL, `Root` SHORT NOT NULL, `Key` CHAR(255) NOT NULL, `Name` CHAR(255), `Type` SHORT PRIMARY KEY `Signature_`)",
+        "CREATE TABLE `CompLocator` (`Signature_` CHAR(72) NOT NULL, `ComponentId` CHAR(38) NOT NULL, `Type` SHORT PRIMARY KEY `Signature_`)",
+        "CREATE TABLE `DrLocator` (`Signature_` CHAR(72) NOT NULL, `Parent` CHAR(72), `Path` CHAR(255), `Depth` SHORT PRIMARY KEY `Signature_`, `Parent`, `Path`)",
+        "CREATE TABLE `IniLocator` (`Signature_` CHAR(72) NOT NULL, `FileName` CHAR(255) NOT NULL, `Section` CHAR(96) NOT NULL, `Key` CHAR(96) NOT NULL, `Field` SHORT, `Type` SHORT PRIMARY KEY `Signature_`)",
         "CREATE TABLE `AppSearch` (`Property` CHAR(72) NOT NULL, `Signature_` CHAR(72) NOT NULL PRIMARY KEY `Property`, `Signature_`)",
         "CREATE TABLE `LaunchCondition` (`Condition` CHAR(255) NOT NULL, `Description` CHAR(255) NOT NULL LOCALIZABLE PRIMARY KEY `Condition`)",
         "CREATE TABLE `CustomAction` (`Action` CHAR(72) NOT NULL, `Type` SHORT NOT NULL, `Source` CHAR(72), `Target` CHAR(255) PRIMARY KEY `Action`)",
@@ -874,6 +882,7 @@ inline bool CompileManifestToMsi(
 
     std::set<std::string> secureCustomProps = {
         "RSW_OLDERVERSION_DETECTED", "RSW_NEWERVERSION_DETECTED", "RSW_OSBUILD",
+        "INSTALLDIR", "STARTMENUFOLDER", "DESKTOP_SHORTCUT", "REGISTER_ASSOC",
         "REMOVE_CACHE", "REMOVE_PREFS"
     };
 
@@ -926,6 +935,24 @@ inline bool CompileManifestToMsi(
             outError);
     }
 
+    // Read BOTH `CurrentMajorVersionNumber` (`#10` on Windows 10/11, absent on
+    // Windows 7/8/8.1) and `CurrentBuildNumber` (`22000`+ on Windows 11) directly
+    // from 64-bit `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion` via `AppSearch`
+    // (`Type = 18` = `msidbLocatorTypeRawValue | msidbLocatorType64bit`).
+    // Why avoid `VersionNT >= 603`? Unmanifested Win32 hosts (e.g., legacy SCCM/MDT
+    // wrappers or console test runners without a Windows 10 `<supportedOS>` manifest)
+    // have `GetVersionExW` shimmed to Windows 8 (`VersionNT = 602`), whereas these
+    // registry values always report the true underlying OS major version and build!
+    msi_sql::InsertRow(
+        hDb.Get(), "RegLocator",
+        {"Signature_", "Root", "Key", "Name", "Type"},
+        {std::string("SigWinNtCurrentMajor"), 2, std::string("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"), std::string("CurrentMajorVersionNumber"), 18},
+        outError);
+    msi_sql::InsertRow(
+        hDb.Get(), "AppSearch",
+        {"Property", "Signature_"},
+        {std::string("RSW_OSMAJOR"), std::string("SigWinNtCurrentMajor")},
+        outError);
     msi_sql::InsertRow(
         hDb.Get(), "RegLocator",
         {"Signature_", "Root", "Key", "Name", "Type"},
@@ -939,7 +966,7 @@ inline bool CompileManifestToMsi(
     msi_sql::InsertRow(
         hDb.Get(), "LaunchCondition",
         {"Condition", "Description"},
-        {"Installed OR (VersionNT >= 603 AND RSW_OSBUILD >= \"" + std::to_string(outSummary.minWindowsBuild) + "\")",
+        {"Installed OR (RSW_OSMAJOR AND RSW_OSBUILD >= \"" + std::to_string(outSummary.minWindowsBuild) + "\")",
          outSummary.osLaunchMessage},
         outError);
 
@@ -1496,6 +1523,17 @@ inline bool CompileManifestToMsi(
         return false;
     }
 
+    if (registeredDirKeys.count("ApplicationProgramsFolder")) {
+        // Type 35 (`msidbCustomActionTypeDirectory | msidbCustomActionTypeTextData`) Custom Action:
+        // Applies custom `STARTMENUFOLDER` chosen in `SetupWizard.exe` (`Shortcuts & Integration` page)
+        // directly onto `ApplicationProgramsFolder` after `CostFinalize`!
+        msi_sql::InsertRow(
+            hDb.Get(), "CustomAction",
+            {"Action", "Type", "Source", "Target"},
+            {std::string("RswApplyStartMenuFolder"), 35, std::string("ApplicationProgramsFolder"), std::string("[ProgramMenuFolder][STARTMENUFOLDER]")},
+            outError);
+    }
+
     std::string mainExeFileKey;
     if (!outSummary.mainExeRel.empty()) {
         std::string normMain = outSummary.mainExeRel;
@@ -1624,6 +1662,9 @@ inline bool CompileManifestToMsi(
         {"PublishProduct",         nullptr, 6400},
         {"InstallFinalize",        nullptr, 6600}
     };
+    if (registeredDirKeys.count("ApplicationProgramsFolder")) {
+        execSeq.push_back({"RswApplyStartMenuFolder", "STARTMENUFOLDER AND NOT Installed", 1050});
+    }
     if (hasFontFiles) {
         execSeq.push_back({"UnregisterFonts", nullptr, 3400});
         execSeq.push_back({"RegisterFonts",   nullptr, 5300});

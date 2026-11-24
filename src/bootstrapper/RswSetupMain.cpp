@@ -390,6 +390,31 @@ std::wstring StripMnemonics(std::wstring_view s) {
     return out;
 }
 
+/// Checks whether the current process token already holds Administrator elevation (`TokenElevation`).
+bool IsCurrentProcessElevated() noexcept {
+    HANDLE hToken = nullptr;
+    if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+        return false;
+    }
+    TOKEN_ELEVATION elev{};
+    DWORD cb = sizeof(elev);
+    const BOOL ok = ::GetTokenInformation(hToken, TokenElevation, &elev, sizeof(elev), &cb);
+    ::CloseHandle(hToken);
+    return ok && (elev.TokenIsElevated != 0);
+}
+
+/// Strips trailing path slashes (`C:\Apps\Foo\` -> `C:\Apps\Foo`) before wrapping in `"..."` on an MSI
+/// command line so a trailing `\` never escapes the closing `"` (`\"`) inside `MsiInstallProductW`!
+std::wstring SanitizeMsiDirValue(std::wstring raw) {
+    while (raw.size() > 3 && (raw.back() == L'\\' || raw.back() == L'/')) {
+        raw.pop_back();
+    }
+    if (raw.size() == 3 && raw[1] == L':' && (raw[2] == L'\\' || raw[2] == L'/')) {
+        raw = raw.substr(0, 2) + L"\\\\"; // Escape drive root `C:\\` so `"C:\\"` doesn't escape `"`!
+    }
+    return raw;
+}
+
 class SetupWizardApp;
 
 /// Per-button visual metadata attached to our WCAG 2.2 AA subclassed `BS_AUTORADIOBUTTON` option cards!
@@ -404,6 +429,14 @@ struct OptionCardVisual {
     bool                isAutorunCell  = false;
     bool                isHovered      = false;
     std::vector<HWND>   groupSiblings;
+};
+
+/// Per-checkbox visual metadata attached to our WCAG 2.2 AAA subclassed `BS_AUTOCHECKBOX` controls!
+struct CheckboxVisual {
+    SetupWizardApp* app           = nullptr;
+    HWND            hwnd          = nullptr;
+    bool            onCardSurface = false;
+    bool            isHovered     = false;
 };
 
 // ================================================================================
@@ -439,8 +472,9 @@ public:
     std::filesystem::path   tempMsiPath;
     std::filesystem::path   msiLogPath;
 
-    // Subclassed accessible radio cards (`unique_ptr` keeps pointer addresses stable for `SetWindowSubclass`!)
+    // Subclassed accessible radio cards & checkboxes (`unique_ptr` keeps pointer addresses stable for `SetWindowSubclass`!)
     std::vector<std::unique_ptr<OptionCardVisual>> cardVisuals;
+    std::vector<std::unique_ptr<CheckboxVisual>>   checkboxVisuals;
 
     // Standard Glass & Autorun child controls
     HWND hModeExpress = nullptr, hModeCompact = nullptr, hModeCustom = nullptr;
@@ -649,6 +683,122 @@ public:
         return ::DefSubclassProc(hBtn, msg, wParam, lParam);
     }
 
+    // ----------------------------------------------------------------------------
+    // WCAG 2.2 AAA SUBCLASSED `BS_AUTOCHECKBOX` PAINTER (`>= 15.8:1` Contrast!)
+    // ----------------------------------------------------------------------------
+    static LRESULT CALLBACK CheckboxSubclassProc(
+        HWND hBtn,
+        UINT msg,
+        WPARAM wParam,
+        LPARAM lParam,
+        UINT_PTR /*uIdSubclass*/,
+        DWORD_PTR dwRefData)
+    {
+        auto* vis = reinterpret_cast<CheckboxVisual*>(dwRefData);
+        if (!vis || !vis->app) {
+            return ::DefSubclassProc(hBtn, msg, wParam, lParam);
+        }
+
+        switch (msg) {
+            case WM_ERASEBKGND:
+                return 1;
+
+            case WM_PAINT: {
+                PAINTSTRUCT ps{};
+                HDC hdcOut = ::BeginPaint(hBtn, &ps);
+                RECT rc{};
+                ::GetClientRect(hBtn, &rc);
+                const int w = std::max<int>(1, rc.right - rc.left);
+                const int h = std::max<int>(1, rc.bottom - rc.top);
+
+                HDC memDc      = ::CreateCompatibleDC(hdcOut);
+                HBITMAP memBmp = ::CreateCompatibleBitmap(hdcOut, w, h);
+                HGDIOBJ oldBmp = ::SelectObject(memDc, memBmp);
+
+                Gdiplus::Graphics g(memDc);
+                g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+                g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+                g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
+
+                wchar_t labelBuf[512]{};
+                ::GetWindowTextW(hBtn, labelBuf, static_cast<int>(std::size(labelBuf)));
+                const UINT dpi     = ::GetDpiForWindow(hBtn);
+                const bool checked = (::SendMessageW(hBtn, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                const bool focused = (::GetFocus() == hBtn);
+                const bool onCard  = vis->onCardSurface && !vis->app->cfg.isAutorun16x9;
+
+                rsw::ui::DrawAccessibleCheckbox(
+                    memDc, g, rc, dpi, vis->app->theme,
+                    labelBuf, checked, focused, vis->isHovered, onCard);
+
+                ::BitBlt(hdcOut, 0, 0, w, h, memDc, 0, 0, SRCCOPY);
+                ::SelectObject(memDc, oldBmp);
+                ::DeleteObject(memBmp);
+                ::DeleteDC(memDc);
+                ::EndPaint(hBtn, &ps);
+                return 0;
+            }
+
+            case BM_SETCHECK:
+            case BM_SETSTATE:
+            case WM_SETFOCUS:
+            case WM_KILLFOCUS:
+            case WM_ENABLE:
+            case WM_UPDATEUISTATE: {
+                ::SendMessageW(hBtn, WM_SETREDRAW, FALSE, 0);
+                const LRESULT res = ::DefSubclassProc(hBtn, msg, wParam, lParam);
+                ::SendMessageW(hBtn, WM_SETREDRAW, TRUE, 0);
+                ::InvalidateRect(hBtn, nullptr, FALSE);
+                return res;
+            }
+
+            case WM_LBUTTONUP:
+            case WM_KEYUP: {
+                const LRESULT res = ::DefSubclassProc(hBtn, msg, wParam, lParam);
+                ::InvalidateRect(hBtn, nullptr, FALSE);
+                return res;
+            }
+
+            case WM_MOUSEMOVE: {
+                if (!vis->isHovered) {
+                    vis->isHovered = true;
+                    TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hBtn, 0};
+                    ::TrackMouseEvent(&tme);
+                    ::InvalidateRect(hBtn, nullptr, FALSE);
+                }
+                break;
+            }
+
+            case WM_MOUSELEAVE:
+                if (vis->isHovered) {
+                    vis->isHovered = false;
+                    ::InvalidateRect(hBtn, nullptr, FALSE);
+                }
+                break;
+
+            case WM_NCDESTROY:
+                ::RemoveWindowSubclass(hBtn, &SetupWizardApp::CheckboxSubclassProc, 2);
+                break;
+        }
+        return ::DefSubclassProc(hBtn, msg, wParam, lParam);
+    }
+
+    HWND CreateAccessibleCheckbox(const wchar_t* text, int id, bool onCardSurface = false) {
+        HINSTANCE hInst = ::GetModuleHandleW(nullptr);
+        HWND hBtn = ::CreateWindowExW(
+            0, L"BUTTON", text, WS_CHILD | WS_TABSTOP | BS_AUTOCHECKBOX,
+            0, 0, 100, 26, hWnd,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), hInst, nullptr);
+
+        auto meta           = std::make_unique<CheckboxVisual>();
+        meta->app           = this;
+        meta->hwnd          = hBtn;
+        meta->onCardSurface = onCardSurface;
+        ::SetWindowSubclass(hBtn, &SetupWizardApp::CheckboxSubclassProc, 2, reinterpret_cast<DWORD_PTR>(meta.get()));
+        checkboxVisuals.push_back(std::move(meta));
+        return hBtn;
+    }
+
     HWND CreateOptionRadioCard(
         int id,
         bool startOfGroup,
@@ -777,8 +927,8 @@ public:
         ::SendMessageW(hRepairQuick, BM_SETCHECK, BST_CHECKED, 0);
 
         // 4. `SafeUninstall` Opt-In Checkboxes (Unchecked by default to protect user work!)
-        hUninstCache = mkBtn(L"&Also remove temporary cache and diagnostic log files", IDC_UNINST_CACHE_CHK, BS_AUTOCHECKBOX);
-        hUninstPrefs = mkBtn(L"A&lso remove saved window layout and user preferences", IDC_UNINST_PREFS_CHK, BS_AUTOCHECKBOX);
+        hUninstCache = CreateAccessibleCheckbox(L"&Also remove temporary cache and diagnostic log files", IDC_UNINST_CACHE_CHK, true);
+        hUninstPrefs = CreateAccessibleCheckbox(L"A&lso remove saved window layout and user preferences", IDC_UNINST_PREFS_CHK, true);
 
         // 5. `16:9` CD-Autorun 2x2 Choice Grid (`640x480` Book & Album Micro-Installers!)
         hArCell[0] = CreateOptionRadioCard(IDC_AR_CELL_1, true,  true, rsw::ui::GlassGlyph::Bolt, rsw::ui::brand::kSkyCyan, rsw::ui::brand::kWarmGold, L"&Install Edition",   L"Add to local library");
@@ -797,7 +947,7 @@ public:
             WS_CHILD | WS_TABSTOP | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
             0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_LIC_RICHEDIT)), hInst, nullptr);
         LoadEmbeddedRtfIntoControl();
-        hLicAccept = mkBtn(L"I have &read and accept the terms in the License Agreement", IDC_LIC_ACCEPT_CHK, BS_AUTOCHECKBOX);
+        hLicAccept = CreateAccessibleCheckbox(L"I have &read and accept the terms in the License Agreement", IDC_LIC_ACCEPT_CHK, false);
 
         hReadMeEdit = ::CreateWindowExW(
             WS_EX_CLIENTEDGE, L"EDIT", EffectiveReadMeText().c_str(),
@@ -818,8 +968,8 @@ public:
             WS_EX_CLIENTEDGE, L"EDIT", startMenuGroup.c_str(),
             WS_CHILD | WS_TABSTOP | ES_AUTOHSCROLL,
             0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SM_EDIT)), hInst, nullptr);
-        hDeskScChk    = mkBtn(L"&Create a Desktop shortcut for quick access", IDC_DESK_SC_CHK, BS_AUTOCHECKBOX);
-        hFileAssocChk = mkBtn(L"&Register supported file types with Windows Explorer", IDC_FILE_ASSOC_CHK, BS_AUTOCHECKBOX);
+        hDeskScChk    = CreateAccessibleCheckbox(L"&Create a Desktop shortcut for quick access", IDC_DESK_SC_CHK, false);
+        hFileAssocChk = CreateAccessibleCheckbox(L"&Register supported file types with Windows Explorer", IDC_FILE_ASSOC_CHK, false);
         ::SendMessageW(hDeskScChk,    BM_SETCHECK, BST_CHECKED, 0);
         ::SendMessageW(hFileAssocChk, BM_SETCHECK, BST_CHECKED, 0);
 
@@ -830,7 +980,7 @@ public:
             0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PROG_BAR)), hInst, nullptr);
         ::SendMessageW(hProgBar, PBM_SETRANGE32, 0, 1000);
 
-        hFinLaunch  = mkBtn(cfg.finishLaunchText.c_str(), IDC_FIN_LAUNCH_CHK, BS_AUTOCHECKBOX);
+        hFinLaunch  = CreateAccessibleCheckbox(cfg.finishLaunchText.c_str(), IDC_FIN_LAUNCH_CHK, false);
         ::SendMessageW(hFinLaunch, BM_SETCHECK, (cfg.offerLaunch && !cfg.mainExecutable.empty()) ? BST_CHECKED : BST_UNCHECKED, 0);
         hFinViewLog = mkBtn(L"&View Setup Log", IDC_FIN_VIEWLOG_BTN, BS_PUSHBUTTON);
 
@@ -909,14 +1059,9 @@ public:
         const int footerY = H - footerH;
         const int btnY    = footerY + (footerH - S(32)) / 2;
 
-        // Universal Footer Buttons (`< &Back` moves to top-left circular Aero glyph when `cfg.isAeroWizard`!)
-        if (cfg.isAeroWizard) {
-            ::SetWindowTextW(hBtnBack, L"\x2190 &Back");
-            ::MoveWindow(hBtnBack, S(12), S(5), S(34), S(28), TRUE);
-        } else {
-            ::SetWindowTextW(hBtnBack, L"< &Back");
-            ::MoveWindow(hBtnBack, W - S(320), btnY, S(94), S(32), TRUE);
-        }
+        // Universal Footer Buttons (`[< &Back]  [&Next >]  [Cancel]` positioned consistently in the Wizard97 footer!)
+        ::SetWindowTextW(hBtnBack, L"< &Back");
+        ::MoveWindow(hBtnBack,    W - S(320), btnY, S(94),  S(32), TRUE);
         ::MoveWindow(hBtnPrimary, W - S(218), btnY, S(112), S(32), TRUE);
         ::MoveWindow(hBtnCancel,  W - S(98),  btnY, S(80),  S(32), TRUE);
 
@@ -1127,7 +1272,8 @@ public:
             ::SetWindowTextW(hBtnPrimary, L"&Finish");
             ::EnableWindow(hBtnPrimary, TRUE);
         }
-        ::SendMessageW(hBtnPrimary, BCM_SETSHIELD, 0, showShield ? TRUE : FALSE);
+        const bool needsUac = cfg.perMachine && !IsCurrentProcessElevated();
+        ::SendMessageW(hBtnPrimary, BCM_SETSHIELD, 0, (showShield && needsUac) ? TRUE : FALSE);
 
         // Announce wizard stage transition to assistive technologies (`Narrator` / `NVDA` / `JAWS`)
         ::NotifyWinEvent(EVENT_OBJECT_NAMECHANGE, hWnd, OBJID_CLIENT, CHILDID_SELF);
@@ -1232,13 +1378,6 @@ public:
 
     void StartMsiWorkerTransaction() {
         SyncEditableFieldsFromControls();
-        currentPermille     = 0;
-        lastAnnouncedDecile = -1;
-        ::SendMessageW(hProgBar, PBM_SETPOS, 0, 0);
-
-        currentPage = WizardPage::Installing;
-        UpdateControlVisibilityForPage();
-        ::InvalidateRect(hWnd, nullptr, TRUE);
 
         std::error_code ec;
         tempWorkDir = std::filesystem::temp_directory_path(ec) /
@@ -1263,11 +1402,148 @@ public:
         const bool wipeCache     = (::SendMessageW(hUninstCache, BM_GETCHECK, 0, 0) == BST_CHECKED);
         const bool wipePrefs     = (::SendMessageW(hUninstPrefs, BM_GETCHECK, 0, 0) == BST_CHECKED);
 
+        // Build clean MSI property string with trailing-backslash-safe quoting
+        std::wstring msiProps = L"INSTALLDIR=\"" + SanitizeMsiDirValue(installDir) + L"\"";
+        if (!startMenuGroup.empty()) {
+            msiProps += L" STARTMENUFOLDER=\"" + SanitizeMsiDirValue(startMenuGroup) + L"\"";
+        }
+        msiProps += wantDesktopSc ? L" DESKTOP_SHORTCUT=1" : L" DESKTOP_SHORTCUT=0";
+        msiProps += wantFileAssoc ? L" REGISTER_ASSOC=1"   : L" REGISTER_ASSOC=0";
+        if (selectedAction == SelectedAction::InstallCompact) {
+            msiProps += L" ADDLOCAL=Main";
+        }
+
+        // UAC Elevation Broker for `Scope = machine` (`C:\Program Files`):
+        // Because `SetupWizard.exe` runs `asInvoker` (so reading the License never triggers UAC and
+        // launching the finished app runs safely as the standard desktop user!), calling `MsiInstallProductW`
+        // directly with `INSTALLUILEVEL_NONE` from an un-elevated process causes `MSI_LUA` to refuse
+        // credential elevation (`Error 1925`). Instead, when `cfg.perMachine && !IsCurrentProcessElevated()`,
+        // we spawn an elevated hidden `--elevated-msi-worker` child via `ShellExecuteExW(L"runas")`
+        // parented to `hWnd` and stream its real-time MSI progress back into this window!
+        HANDLE hElevatedChild = nullptr;
+        const auto statusFile = tempWorkDir / L"msi-status.txt";
+        const auto cancelFile = tempWorkDir / L"msi-cancel.flag";
+        std::filesystem::remove(statusFile, ec);
+        std::filesystem::remove(cancelFile, ec);
+
+        if (cfg.perMachine && !IsCurrentProcessElevated()) {
+            const auto jobFile = tempWorkDir / L"msi-elevated-job.ini";
+            std::string modeStr = "install";
+            if (selectedAction == SelectedAction::MaintUninstall)          modeStr = "uninstall";
+            else if (selectedAction == SelectedAction::MaintQuickRepair)   modeStr = "quickrepair";
+            else if (selectedAction == SelectedAction::MaintFullReinstall) modeStr = "fullreinstall";
+
+            if (selectedAction == SelectedAction::MaintFullReinstall) {
+                ExtractEmbeddedMsiToFile(tempMsiPath, extractErr);
+            }
+
+            std::wstring unProps;
+            if (wipeCache) unProps += L"REMOVE_CACHE=1 ";
+            if (wipePrefs) unProps += L"REMOVE_PREFS=1 ";
+
+            {
+                std::ofstream jf(jobFile, std::ios::binary);
+                jf << "Mode="        << modeStr << "\n"
+                   << "MsiPath="     << rsw::WideToUtf8(tempMsiPath.wstring()) << "\n"
+                   << "ProductCode=" << rsw::WideToUtf8(installedProductCode) << "\n"
+                   << "LogPath="     << rsw::WideToUtf8(msiLogPath.wstring()) << "\n"
+                   << "Props="       << rsw::WideToUtf8(selectedAction == SelectedAction::MaintUninstall ? unProps : msiProps) << "\n"
+                   << "StatusFile="  << rsw::WideToUtf8(statusFile.wstring()) << "\n"
+                   << "CancelFile="  << rsw::WideToUtf8(cancelFile.wstring()) << "\n";
+            }
+
+            wchar_t selfExe[MAX_PATH * 4]{};
+            ::GetModuleFileNameW(nullptr, selfExe, static_cast<DWORD>(std::size(selfExe)));
+            const std::wstring workerParams = L"--elevated-msi-worker \"" + jobFile.wstring() + L"\"";
+
+            SHELLEXECUTEINFOW sei{};
+            sei.cbSize       = sizeof(sei);
+            sei.fMask        = SEE_MASK_NOCLOSEPROCESS;
+            sei.hwnd         = hWnd;
+            sei.lpVerb       = L"runas";
+            sei.lpFile       = selfExe;
+            sei.lpParameters = workerParams.c_str();
+            sei.nShow        = SW_HIDE;
+
+            if (!::ShellExecuteExW(&sei) || !sei.hProcess) {
+                const DWORD errCode = ::GetLastError();
+                if (errCode == ERROR_CANCELLED) {
+                    // User clicked "No" on the Windows UAC consent prompt — stay calmly on the current
+                    // page (`ReadyToInstall` / `RepairMode` / `SafeUninstall`) so they can retry or go Back!
+                    return;
+                }
+                capturedErrorText = L"Could not start elevated Windows Installer helper (Win32 error " + std::to_wstring(errCode) + L").";
+                finalMsiResult    = ERROR_INSTALL_FAILURE;
+                OnTransactionCompleted();
+                return;
+            }
+            hElevatedChild = sei.hProcess;
+        }
+
+        currentPermille     = 0;
+        lastAnnouncedDecile = -1;
+        capturedErrorText.clear();
+        ::SendMessageW(hProgBar, PBM_SETPOS, 0, 0);
+
+        currentPage = WizardPage::Installing;
+        UpdateControlVisibilityForPage();
+        ::InvalidateRect(hWnd, nullptr, TRUE);
+
         cancelRequested.store(false);
         installRunning.store(true);
 
         if (workerThread.joinable()) workerThread.join();
-        workerThread = std::thread([this, wantDesktopSc, wantFileAssoc, wipeCache, wipePrefs]() {
+
+        if (hElevatedChild) {
+            workerThread = std::thread([this, hElevatedChild, statusFile, cancelFile]() {
+                auto syncStatusFromDisk = [&]() {
+                    std::ifstream in(statusFile, std::ios::binary);
+                    if (!in) return;
+                    std::string linePerm, lineStat, lineErr;
+                    std::getline(in, linePerm);
+                    std::getline(in, lineStat);
+                    std::getline(in, lineErr);
+                    if (!linePerm.empty() && linePerm.back() == '\r') linePerm.pop_back();
+                    if (!lineStat.empty() && lineStat.back() == '\r') lineStat.pop_back();
+                    if (!lineErr.empty()  && lineErr.back()  == '\r') lineErr.pop_back();
+
+                    if (!linePerm.empty()) {
+                        const int perm = std::clamp(std::atoi(linePerm.c_str()), 0, 1000);
+                        ::PostMessageW(hWnd, WM_RSW_PROGRESS_UPDATE, static_cast<WPARAM>(perm), 0);
+                    }
+                    if (!lineStat.empty() || !lineErr.empty()) {
+                        std::lock_guard<std::mutex> lk(msgMutex);
+                        if (!lineStat.empty()) {
+                            latestStatusText = rsw::Utf8ToWide(lineStat);
+                            ::PostMessageW(hWnd, WM_RSW_STATUS_TEXT, 0, 0);
+                        }
+                        if (!lineErr.empty()) {
+                            capturedErrorText = rsw::Utf8ToWide(lineErr);
+                        }
+                    }
+                };
+
+                while (::WaitForSingleObject(hElevatedChild, 45) == WAIT_TIMEOUT) {
+                    if (cancelRequested.load()) {
+                        std::ofstream cf(cancelFile, std::ios::binary);
+                        cf << "cancel\n";
+                    }
+                    syncStatusFromDisk();
+                }
+                syncStatusFromDisk();
+
+                DWORD exitCode = ERROR_INSTALL_FAILURE;
+                ::GetExitCodeProcess(hElevatedChild, &exitCode);
+                ::CloseHandle(hElevatedChild);
+
+                finalMsiResult = static_cast<UINT>(exitCode);
+                installRunning.store(false);
+                ::PostMessageW(hWnd, WM_RSW_INSTALL_DONE, static_cast<WPARAM>(finalMsiResult), 0);
+            });
+            return;
+        }
+
+        workerThread = std::thread([this, msiProps, wipeCache, wipePrefs]() {
             ::MsiSetInternalUI(INSTALLUILEVEL_NONE, nullptr);
 
             constexpr DWORD kFilter =
@@ -1300,16 +1576,7 @@ public:
                         REINSTALLMODE_FILEREPLACE | REINSTALLMODE_SHORTCUT | REINSTALLMODE_MACHINEDATA | REINSTALLMODE_USERDATA);
                 }
             } else {
-                std::wstring props = L"INSTALLDIR=\"" + installDir + L"\"";
-                if (!startMenuGroup.empty()) {
-                    props += L" STARTMENUFOLDER=\"" + startMenuGroup + L"\"";
-                }
-                props += wantDesktopSc ? L" DESKTOP_SHORTCUT=1" : L" DESKTOP_SHORTCUT=0";
-                props += wantFileAssoc ? L" REGISTER_ASSOC=1"   : L" REGISTER_ASSOC=0";
-                if (selectedAction == SelectedAction::InstallCompact) {
-                    props += L" ADDLOCAL=Main";
-                }
-                rc = ::MsiInstallProductW(tempMsiPath.wstring().c_str(), props.c_str());
+                rc = ::MsiInstallProductW(tempMsiPath.wstring().c_str(), msiProps.c_str());
             }
 
             ::MsiSetExternalUIRecord(prevHandler, 0, nullptr, nullptr);
@@ -1490,29 +1757,30 @@ public:
     // ----------------------------------------------------------------------------
     struct StepHeaderInfo {
         const wchar_t*      kickerSuffix;
+        const wchar_t*      aeroInstruction;
         rsw::ui::GlassGlyph glyph;
         COLORREF            badgeColor;
     };
 
     StepHeaderInfo CurrentStepHeaderInfo() const noexcept {
         switch (currentPage) {
-            case WizardPage::Welcome:         return {L"OFFICIAL SETUP WIZARD",    rsw::ui::GlassGlyph::Sparkle,     rsw::ui::brand::kRaggieBlue};
-            case WizardPage::License:         return {L"LICENSE AGREEMENT",        rsw::ui::GlassGlyph::ShieldCheck, rsw::ui::brand::kEmeraldOk};
-            case WizardPage::AutorunReadMe:   return {L"EDITION LINER NOTES",      rsw::ui::GlassGlyph::ReadMeBook,  rsw::ui::brand::kSkyCyan};
-            case WizardPage::SetupType:       return {L"CHOOSE SETUP MODE",        rsw::ui::GlassGlyph::Sliders,     rsw::ui::brand::kVioletTune};
-            case WizardPage::CustomFolder:    return {L"DESTINATION FOLDER",       rsw::ui::GlassGlyph::Folder,      rsw::ui::brand::kRaggieBlue};
-            case WizardPage::CustomShortcuts: return {L"SHORTCUTS & INTEGRATION",  rsw::ui::GlassGlyph::PinGrid,     rsw::ui::brand::kSkyCyan};
-            case WizardPage::ReadyToInstall:  return {L"READY TO APPLY CHANGES",   rsw::ui::GlassGlyph::Play,        rsw::ui::brand::kEmeraldOk};
-            case WizardPage::Maintenance:     return {L"MAINTENANCE WIZARD",       rsw::ui::GlassGlyph::Gear,        rsw::ui::brand::kVioletTune};
-            case WizardPage::RepairMode:      return {L"REPAIR & VERIFY OPTIONS",  rsw::ui::GlassGlyph::Reinstall,   rsw::ui::brand::kRaggieBlue};
-            case WizardPage::SafeUninstall:   return {L"SAFE UNINSTALL",           rsw::ui::GlassGlyph::Uninstall,   rsw::ui::brand::kCoralRose};
-            case WizardPage::Installing:      return {L"APPLYING SYSTEM CHANGES",  rsw::ui::GlassGlyph::Gear,        rsw::ui::brand::kRaggieBlue};
+            case WizardPage::Welcome:         return {L"OFFICIAL SETUP WIZARD",    L"Welcome to Setup",                 rsw::ui::GlassGlyph::Sparkle,     rsw::ui::brand::kRaggieBlue};
+            case WizardPage::License:         return {L"LICENSE AGREEMENT",        L"Review Software License Agreement",rsw::ui::GlassGlyph::ShieldCheck, rsw::ui::brand::kEmeraldOk};
+            case WizardPage::AutorunReadMe:   return {L"EDITION LINER NOTES",      L"Edition Liner Notes",              rsw::ui::GlassGlyph::ReadMeBook,  rsw::ui::brand::kSkyCyan};
+            case WizardPage::SetupType:       return {L"CHOOSE SETUP MODE",        L"Choose Setup Mode",                rsw::ui::GlassGlyph::Sliders,     rsw::ui::brand::kVioletTune};
+            case WizardPage::CustomFolder:    return {L"DESTINATION FOLDER",       L"Select Destination Folder",        rsw::ui::GlassGlyph::Folder,      rsw::ui::brand::kRaggieBlue};
+            case WizardPage::CustomShortcuts: return {L"SHORTCUTS & INTEGRATION",  L"Shortcuts & Explorer Integration", rsw::ui::GlassGlyph::PinGrid,     rsw::ui::brand::kSkyCyan};
+            case WizardPage::ReadyToInstall:  return {L"READY TO APPLY CHANGES",   L"Ready to Install",                 rsw::ui::GlassGlyph::Play,        rsw::ui::brand::kEmeraldOk};
+            case WizardPage::Maintenance:     return {L"MAINTENANCE WIZARD",       L"Modify, Repair, or Uninstall",     rsw::ui::GlassGlyph::Gear,        rsw::ui::brand::kVioletTune};
+            case WizardPage::RepairMode:      return {L"REPAIR & VERIFY OPTIONS",  L"Repair & Verify Installation",     rsw::ui::GlassGlyph::Reinstall,   rsw::ui::brand::kRaggieBlue};
+            case WizardPage::SafeUninstall:   return {L"SAFE UNINSTALL",           L"Safe Uninstall",                   rsw::ui::GlassGlyph::Uninstall,   rsw::ui::brand::kCoralRose};
+            case WizardPage::Installing:      return {L"APPLYING SYSTEM CHANGES",  L"Applying System Changes...",       rsw::ui::GlassGlyph::Gear,        rsw::ui::brand::kRaggieBlue};
             case WizardPage::Finished:
                 return (finalMsiResult == ERROR_SUCCESS || finalMsiResult == ERROR_SUCCESS_REBOOT_REQUIRED)
-                    ? StepHeaderInfo{L"SETUP COMPLETE",    rsw::ui::GlassGlyph::ShieldCheck, rsw::ui::brand::kEmeraldOk}
-                    : StepHeaderInfo{L"SETUP INTERRUPTED", rsw::ui::GlassGlyph::Uninstall,   rsw::ui::brand::kCoralRose};
+                    ? StepHeaderInfo{L"SETUP COMPLETE",    L"Setup Completed Successfully", rsw::ui::GlassGlyph::ShieldCheck, rsw::ui::brand::kEmeraldOk}
+                    : StepHeaderInfo{L"SETUP INTERRUPTED", L"Setup Did Not Complete",       rsw::ui::GlassGlyph::Uninstall,   rsw::ui::brand::kCoralRose};
         }
-        return {L"OFFICIAL SETUP WIZARD", rsw::ui::GlassGlyph::Sparkle, rsw::ui::brand::kRaggieBlue};
+        return {L"OFFICIAL SETUP WIZARD", L"Welcome to Setup", rsw::ui::GlassGlyph::Sparkle, rsw::ui::brand::kRaggieBlue};
     }
 
     void DrawGlassPanelBox(Gdiplus::Graphics& g, const RECT& rc, int radiusPx) const {
@@ -1592,7 +1860,7 @@ public:
         } else if (cfg.isAeroWizard) {
             const std::wstring winCap = cfg.productName + L" Setup";
             rsw::ui::DrawAeroWizardTopHeader(
-                memDc, g, W, dpi, theme, winCap, hdrInfo.kickerSuffix,
+                memDc, g, W, dpi, theme, winCap, hdrInfo.aeroInstruction,
                 hAppIconBig, hdrInfo.glyph, hdrInfo.badgeColor, cfg.manufacturer);
         } else {
             rsw::ui::DrawGlassTopHeader(
@@ -2083,6 +2351,161 @@ public:
 
 } // namespace
 
+namespace {
+
+struct ElevatedWorkerProgressState {
+    std::filesystem::path statusFile;
+    std::filesystem::path cancelFile;
+    long long             totalTicks = 1000;
+    long long             curTicks   = 0;
+    long long             stepTicks  = 1;
+    bool                  forward    = true;
+    int                   permille   = 0;
+    std::string           statusUtf8 = "Applying Windows Installer changes...";
+    std::string           errorUtf8;
+
+    void FlushToDisk() const {
+        if (statusFile.empty()) return;
+        std::ofstream out(statusFile, std::ios::binary | std::ios::trunc);
+        if (!out) return;
+        auto oneLine = [](std::string s) {
+            for (char& c : s) {
+                if (c == '\r' || c == '\n') c = ' ';
+            }
+            return s;
+        };
+        out << permille << "\n"
+            << oneLine(statusUtf8) << "\n"
+            << oneLine(errorUtf8)  << "\n";
+    }
+};
+
+INT CALLBACK OnElevatedMsiRecord(void* pvContext, UINT iMessageType, MSIHANDLE hRecord) {
+    auto* st = static_cast<ElevatedWorkerProgressState*>(pvContext);
+    if (!st) return 0;
+    std::error_code ec;
+    if (!st->cancelFile.empty() && std::filesystem::exists(st->cancelFile, ec)) {
+        return IDCANCEL;
+    }
+
+    const UINT msgKind = iMessageType & 0xFF000000u;
+    switch (msgKind) {
+        case INSTALLMESSAGE_ACTIONSTART: {
+            wchar_t descBuf[512]{};
+            DWORD cch = static_cast<DWORD>(std::size(descBuf));
+            if (::MsiRecordGetStringW(hRecord, 2, descBuf, &cch) == ERROR_SUCCESS && descBuf[0] != L'\0') {
+                st->statusUtf8 = rsw::WideToUtf8(descBuf);
+                st->FlushToDisk();
+            }
+            return IDOK;
+        }
+        case INSTALLMESSAGE_ERROR:
+        case INSTALLMESSAGE_FATALEXIT: {
+            wchar_t errBuf[1024]{};
+            DWORD cch = static_cast<DWORD>(std::size(errBuf));
+            ::MsiFormatRecordW(0, hRecord, errBuf, &cch);
+            if (errBuf[0] != L'\0') {
+                st->errorUtf8 = rsw::WideToUtf8(errBuf);
+                st->FlushToDisk();
+            }
+            return IDOK;
+        }
+        case INSTALLMESSAGE_PROGRESS: {
+            if (::MsiRecordGetFieldCount(hRecord) == 0) return IDOK;
+            const int subType = ::MsiRecordGetInteger(hRecord, 1);
+            const int f2      = ::MsiRecordGetInteger(hRecord, 2);
+            const int f3      = ::MsiRecordGetInteger(hRecord, 3);
+            if (subType == 0) {
+                st->totalTicks = std::max<long long>(1, f2);
+                st->forward    = (f3 == 0);
+                st->curTicks   = st->forward ? 0 : st->totalTicks;
+            } else if (subType == 1) {
+                if (f3 != 0) st->stepTicks = std::max<int>(1, f2);
+            } else if (subType == 2) {
+                const long long delta = (f2 != MSI_NULL_INTEGER && f2 > 0) ? f2 : st->stepTicks;
+                if (st->forward) st->curTicks += delta;
+                else st->curTicks = std::max<long long>(0, st->curTicks - delta);
+            } else if (subType == 3) {
+                st->totalTicks += std::max<int>(0, f2);
+            }
+            st->permille = static_cast<int>(
+                std::clamp<long long>((st->curTicks * 1000LL) / std::max<long long>(1, st->totalTicks), 0, 1000));
+            st->FlushToDisk();
+            return IDOK;
+        }
+        default:
+            break;
+    }
+    return 0;
+}
+
+int RunElevatedMsiWorkerFromJobFile(const std::filesystem::path& jobFile) {
+    std::ifstream in(jobFile, std::ios::binary);
+    if (!in) return ERROR_OPEN_FAILED;
+
+    std::map<std::string, std::string> kv;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        auto eq = line.find('=');
+        if (eq != std::string::npos) {
+            kv[line.substr(0, eq)] = line.substr(eq + 1);
+        }
+    }
+
+    const std::string mode        = kv["Mode"];
+    const std::wstring msiPath    = rsw::Utf8ToWide(kv["MsiPath"]);
+    const std::wstring prodCode   = rsw::Utf8ToWide(kv["ProductCode"]);
+    const std::wstring logPath    = rsw::Utf8ToWide(kv["LogPath"]);
+    const std::wstring props      = rsw::Utf8ToWide(kv["Props"]);
+
+    ElevatedWorkerProgressState st{};
+    st.statusFile = rsw::Utf8ToWide(kv["StatusFile"]);
+    st.cancelFile = rsw::Utf8ToWide(kv["CancelFile"]);
+    st.FlushToDisk();
+
+    ::MsiSetInternalUI(INSTALLUILEVEL_NONE, nullptr);
+    constexpr DWORD kFilter =
+        INSTALLLOGMODE_FATALEXIT | INSTALLLOGMODE_ERROR | INSTALLLOGMODE_WARNING |
+        INSTALLLOGMODE_ACTIONSTART | INSTALLLOGMODE_ACTIONDATA |
+        INSTALLLOGMODE_COMMONDATA | INSTALLLOGMODE_PROGRESS;
+
+    INSTALLUI_HANDLER_RECORD prevHandler = nullptr;
+    ::MsiSetExternalUIRecord(&OnElevatedMsiRecord, kFilter, &st, &prevHandler);
+    if (!logPath.empty()) {
+        ::MsiEnableLogW(INSTALLLOGMODE_VERBOSE, logPath.c_str(), INSTALLLOGATTRIBUTES_FLUSHEACHLINE);
+    }
+
+    UINT rc = ERROR_SUCCESS;
+    if (mode == "uninstall" && !prodCode.empty()) {
+        rc = ::MsiConfigureProductExW(prodCode.c_str(), INSTALLLEVEL_DEFAULT, INSTALLSTATE_ABSENT, props.c_str());
+    } else if (mode == "quickrepair" && !prodCode.empty()) {
+        rc = ::MsiReinstallProductW(
+            prodCode.c_str(),
+            REINSTALLMODE_FILEMISSING | REINSTALLMODE_FILEOLDERVERSION | REINSTALLMODE_FILEVERIFY |
+            REINSTALLMODE_MACHINEDATA | REINSTALLMODE_USERDATA | REINSTALLMODE_SHORTCUT);
+    } else if (mode == "fullreinstall") {
+        if (!msiPath.empty() && std::filesystem::exists(msiPath)) {
+            rc = ::MsiInstallProductW(msiPath.c_str(), L"REINSTALL=ALL REINSTALLMODE=vomus");
+        } else if (!prodCode.empty()) {
+            rc = ::MsiReinstallProductW(
+                prodCode.c_str(),
+                REINSTALLMODE_FILEREPLACE | REINSTALLMODE_SHORTCUT | REINSTALLMODE_MACHINEDATA | REINSTALLMODE_USERDATA);
+        }
+    } else {
+        rc = ::MsiInstallProductW(msiPath.c_str(), props.c_str());
+    }
+
+    ::MsiSetExternalUIRecord(prevHandler, 0, nullptr, nullptr);
+    if (rc == ERROR_SUCCESS || rc == ERROR_SUCCESS_REBOOT_REQUIRED) {
+        st.permille = 1000;
+    }
+    st.FlushToDisk();
+    return static_cast<int>(rc);
+}
+
+} // namespace
+
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     // 1. Parse command-line arguments via `CommandLineToArgvW`
     int argc = 0;
@@ -2093,8 +2516,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         ::LocalFree(argv);
     }
 
-    // Fast automated self-check & `--extract-msi` flags used by CI & enterprise IT admins
+    // Fast automated self-check, `--elevated-msi-worker`, & `--extract-msi` flags
     for (std::size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == L"--elevated-msi-worker") {
+            if (i + 1 >= args.size()) return ERROR_BAD_ARGUMENTS;
+            return RunElevatedMsiWorkerFromJobFile(std::filesystem::path(args[i + 1]));
+        }
         if (args[i] == L"--self-check") {
             const auto hp = rsw::QueryHostPlatform();
             return (hp.majorVersion >= 10) ? 0 : 1;

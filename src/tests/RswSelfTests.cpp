@@ -386,6 +386,73 @@ int wmain() {
               "msiprism.exe --inspect-summary inspects .msi, .msm, and .msp databases cleanly");
     }
 
+    // 6. Live Windows Installer (`msi.dll`) Engine Verification (`AppSearch`, `Signature`, `LaunchConditions`,
+    //    `CostFinalize`, & Full Service Transaction when `msiserver` RPC is accessible outside AppContainer!)
+    {
+        rsw::ScopedMsiHandle hVerifyDb;
+        bool hasSigTable = false;
+        if (::MsiOpenDatabaseW(v1Sum.msiPath.wstring().c_str(), MSIDBOPEN_READONLY, hVerifyDb.Put()) == ERROR_SUCCESS) {
+            hasSigTable = (::MsiDatabaseIsTablePersistentW(hVerifyDb.Get(), L"Signature") == MSICONDITION_TRUE);
+        }
+        Check(hasSigTable, "Compiled .msi includes persistent 'Signature' table required by AppSearch (no Error 2228)");
+
+        // 6a. Execute `AppSearch -> LaunchConditions -> CostInitialize -> FileCost -> CostFinalize`
+        //     directly inside `System32\msi.dll` (`MsiOpenPackageExW` works even in sandboxed CI!)
+        ::MsiSetInternalUI(INSTALLUILEVEL_NONE, nullptr);
+        rsw::ScopedMsiHandle hPkg;
+        const UINT openPkgRc = ::MsiOpenPackageExW(
+            v1Sum.msiPath.wstring().c_str(), MSIOPENPACKAGEFLAGS_IGNOREMACHINESTATE, hPkg.Put());
+        UINT appSearchRc = ERROR_INSTALL_FAILURE;
+        UINT launchCondRc= ERROR_INSTALL_FAILURE;
+        UINT costInitRc  = ERROR_INSTALL_FAILURE;
+        UINT fileCostRc  = ERROR_INSTALL_FAILURE;
+        UINT costFinRc   = ERROR_INSTALL_FAILURE;
+        wchar_t osBuildBuf[64]{};
+        DWORD osBuildLen = static_cast<DWORD>(std::size(osBuildBuf));
+
+        if (openPkgRc == ERROR_SUCCESS) {
+            appSearchRc  = ::MsiDoActionW(hPkg.Get(), L"AppSearch");
+            launchCondRc = ::MsiDoActionW(hPkg.Get(), L"LaunchConditions");
+            costInitRc   = ::MsiDoActionW(hPkg.Get(), L"CostInitialize");
+            fileCostRc   = ::MsiDoActionW(hPkg.Get(), L"FileCost");
+            costFinRc    = ::MsiDoActionW(hPkg.Get(), L"CostFinalize");
+            ::MsiGetPropertyW(hPkg.Get(), L"RSW_OSBUILD", osBuildBuf, &osBuildLen);
+            hPkg.Reset();
+        }
+        Check(openPkgRc == ERROR_SUCCESS &&
+              appSearchRc == ERROR_SUCCESS &&
+              launchCondRc == ERROR_SUCCESS &&
+              costInitRc == ERROR_SUCCESS &&
+              fileCostRc == ERROR_SUCCESS &&
+              costFinRc == ERROR_SUCCESS &&
+              std::wcstol(osBuildBuf, nullptr, 10) >= 22000,
+              "Live msi.dll AppSearch + LaunchConditions + CostFinalize succeed in-process",
+              "open=" + std::to_string(openPkgRc) + " appSearch=" + std::to_string(appSearchRc) +
+              " launch=" + std::to_string(launchCondRc) + " costFin=" + std::to_string(costFinRc));
+
+        // 6b. When `msiserver` service RPC is reachable (standard Windows desktop / CI runner; returns
+        //     `ERROR_INSTALL_SERVICE_FAILURE = 1601` inside restricted AppContainer sandboxes), execute
+        //     a full live install + file verification + clean uninstall round-trip!
+        const auto liveTargetDir = testWorkDir / L"live-install-target";
+        const std::wstring installProps = L"INSTALLDIR=\"" + liveTargetDir.wstring() + L"\" DESKTOP_SHORTCUT=0 REGISTER_ASSOC=0";
+        const UINT instRc = ::MsiInstallProductW(v1Sum.msiPath.wstring().c_str(), installProps.c_str());
+        if (instRc == ERROR_INSTALL_SERVICE_FAILURE) {
+            Check(true, "Live MsiInstallProductW skipped cleanly inside AppContainer sandbox (1601; in-process msi.dll actions verified above)");
+        } else {
+            const auto installedExe = liveTargetDir / payloadToUse.filename();
+            const bool instOk = (instRc == ERROR_SUCCESS && std::filesystem::exists(installedExe));
+            UINT uninstRc = ERROR_SUCCESS;
+            if (instRc == ERROR_SUCCESS) {
+                uninstRc = ::MsiConfigureProductExW(
+                    rsw::Utf8ToWide(v1Sum.productCode).c_str(),
+                    INSTALLLEVEL_DEFAULT, INSTALLSTATE_ABSENT, L"");
+            }
+            Check(instOk && uninstRc == ERROR_SUCCESS && !std::filesystem::exists(installedExe),
+                  "Live MsiInstallProductW + MsiConfigureProductExW(INSTALLSTATE_ABSENT) full round-trip",
+                  "inst=" + std::to_string(instRc) + " uninst=" + std::to_string(uninstRc));
+        }
+    }
+
     std::filesystem::remove_all(testWorkDir, ec);
 
     std::cout << "--------------------------------------------------------------------\n"
