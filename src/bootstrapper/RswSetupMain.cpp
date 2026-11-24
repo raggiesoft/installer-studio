@@ -1266,6 +1266,15 @@ public:
         hBtnPrimary = mkBtn(cfg.installBtnText.c_str(), IDC_NAV_PRIMARY, BS_DEFPUSHBUTTON);
         hBtnCancel  = mkBtn(L"Cancel",                 IDC_NAV_CANCEL,  BS_PUSHBUTTON);
 
+        // Subclass all push buttons so Dark Mode, Light Mode, & High Contrast render seamlessly
+        // without `ComCtl32`'s hardcoded `#FFFFFF` white button background!
+        rsw::ui::AttachAccessiblePushButtonSubclass(hFeatResetBtn, &theme, false, false);
+        rsw::ui::AttachAccessiblePushButtonSubclass(hDirBrowse,    &theme, false, false);
+        rsw::ui::AttachAccessiblePushButtonSubclass(hFinViewLog,   &theme, false, false);
+        rsw::ui::AttachAccessiblePushButtonSubclass(hBtnBack,      &theme, false, true);
+        rsw::ui::AttachAccessiblePushButtonSubclass(hBtnPrimary,   &theme, true,  true);
+        rsw::ui::AttachAccessiblePushButtonSubclass(hBtnCancel,    &theme, false, true);
+
         rsw::ui::ApplyDarkScrollbarTheme(hLicRich,    theme);
         rsw::ui::ApplyDarkScrollbarTheme(hReadMeEdit, theme);
         rsw::ui::ApplyDarkScrollbarTheme(hFeatTree,   theme);
@@ -2814,10 +2823,18 @@ public:
             case WM_SETTINGCHANGE:
             case WM_SYSCOLORCHANGE:
             case WM_THEMECHANGED:
-                self->theme.Refresh(self->cfg.accentPrimary, self->cfg.accentSecondary);
-                rsw::ui::ApplyWindowChromeAndA11y(hWnd, self->theme);
-                self->ApplyFontsAndLayout();
-                return 0;
+                if (rsw::ui::IsLiveThemeBroadcast(msg, wParam, lParam)) {
+                    self->theme.Refresh(self->cfg.accentPrimary, self->cfg.accentSecondary);
+                    rsw::ui::ApplyWindowChromeAndA11y(hWnd, self->theme);
+                    self->LoadEmbeddedRtfIntoControl();
+                    for (HWND sc : {self->hLicRich, self->hReadMeEdit, self->hFeatTree}) {
+                        rsw::ui::ApplyDarkScrollbarTheme(sc, self->theme);
+                    }
+                    self->ApplyFontsAndLayout();
+                    ::RedrawWindow(hWnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
+                    return 0;
+                }
+                break;
 
             case WM_NOTIFY: {
                 const auto* nm = reinterpret_cast<const NMHDR*>(lParam);
@@ -3334,6 +3351,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         const auto& a = args[i];
         if (a == L"--export-screenshots" && i + 1 < args.size()) {
             exportShotDir = args[i + 1];
+            rsw::ui::ForcedThemeOverride() = 1; // Export Dark Mode first, then live-swap via `WM_SETTINGCHANGE`!
             ++i;
         } else if (a == L"/s" || a == L"/S" || a == L"/qn" || a == L"/quiet" || a == L"--silent") {
             silentInstall = true;
@@ -3513,9 +3531,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         app.UpdateControlVisibilityForPage();
         const bool okTree = rsw::ui::CaptureWindowToPngFile(hWnd, exportShotDir / L"setupwizard-selection-tree.png");
 
+        // Live-test `WM_SETTINGCHANGE(L"ImmersiveColorSet")` hot-swapping from Dark -> Light without restarting!
+        app.currentPage = WizardPage::SetupType;
+        app.UpdateControlVisibilityForPage();
+        rsw::ui::ForcedThemeOverride() = 0;
+        ::SendMessageW(hWnd, WM_SETTINGCHANGE, 0, reinterpret_cast<LPARAM>(L"ImmersiveColorSet"));
+        const bool okLight = rsw::ui::CaptureWindowToPngFile(hWnd, exportShotDir / L"setupwizard-setup-type-light.png");
+
         ::DestroyWindow(hWnd);
         ::CoUninitialize();
-        return (okType && okTree) ? 0 : 2;
+        return (okType && okTree && okLight) ? 0 : 2;
     }
 
     // 5. Accessible keyboard-aware Win32 message loop (`IsDialogMessageW` powers `Tab`, `Shift+Tab`,

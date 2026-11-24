@@ -47,6 +47,7 @@
 #include "RswWin32UiTheme.hpp"
 
 #include <objidl.h>
+#include <shellapi.h>
 namespace Gdiplus {
     using std::min;
     using std::max;
@@ -61,6 +62,7 @@ namespace Gdiplus {
 #include <vector>
 
 #pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "shell32.lib")
 
 namespace rsw::ui {
 
@@ -1159,6 +1161,140 @@ inline void ApplyDarkScrollbarTheme(HWND hCtrl, const RswTheme& theme) noexcept 
     }
 }
 
+/// Applies Windows 11 Dark Mode (`DarkMode_CFD`) or Daylight (`CFD`) theme class onto `COMBOBOX` controls
+/// using the documented `SetWindowTheme` API (zero undocumented ordinals!).
+inline void ApplyDarkComboBoxTheme(HWND hCombo, const RswTheme& theme) noexcept {
+    if (!hCombo) return;
+    if (theme.isHighContrast) {
+        ::SetWindowTheme(hCombo, nullptr, nullptr);
+    } else {
+        ::SetWindowTheme(hCombo, theme.isDarkMode ? L"DarkMode_CFD" : L"CFD", nullptr);
+    }
+}
+
+/// Paints a WCAG 2.2 AA/AAA Dark/Light/High-Contrast Accessible Push Button (`BS_PUSHBUTTON` / `BS_DEFPUSHBUTTON`)!
+/// Why custom-paint push buttons via `SetWindowSubclass` instead of relying on `ComCtl32 v6` defaults?
+///   Stock Win32 `WC_BUTTON` controls paint a bright `#FFFFFF` light-mode fill with black text even when
+///   `DWMWA_USE_IMMERSIVE_DARK_MODE` is enabled on the parent window! Subclassing genuine `BUTTON` controls
+///   preserves 100% native UI Automation (`Button` role), `Enter` default action, `Spacebar` press, and
+///   `Alt+Key` mnemonics for NVDA/JAWS/Narrator while matching our Dark/Light Glass palette seamlessly!
+inline void DrawAccessiblePushButton(
+    HDC hdc,
+    Gdiplus::Graphics& g,
+    const RECT& rc,
+    UINT dpi,
+    const RswTheme& theme,
+    std::wstring_view labelWithMnemonic,
+    bool isPrimaryAccent,
+    bool onFooterSurface,
+    bool isEnabled,
+    bool hasFocus,
+    bool isHovered,
+    bool isPressed,
+    bool showUacShield,
+    HICON hShieldIcon) noexcept
+{
+    auto S = [&](int px) { return ScalePx(px, dpi, theme.textScalePercent); };
+    ::FillRect(hdc, &rc, onFooterSurface ? theme.hbrFooter : theme.hbrWindow);
+
+    const float w = static_cast<float>(rc.right - rc.left);
+    const float h = static_cast<float>(rc.bottom - rc.top);
+    if (w <= 12.0f || h <= 10.0f) return;
+
+    const float rad    = static_cast<float>(S(6));
+    const bool  activeTab = !labelWithMnemonic.empty() && labelWithMnemonic.front() == L'[';
+
+    COLORREF fillCol   = theme.cardBg;
+    COLORREF borderCol = theme.borderSubtle;
+    COLORREF textCol   = theme.textPrimary;
+    float    borderPx  = 1.3f;
+
+    if (theme.isHighContrast) {
+        fillCol   = (isPrimaryAccent && isEnabled) ? ::GetSysColor(COLOR_HIGHLIGHT) : ::GetSysColor(COLOR_BTNFACE);
+        textCol   = !isEnabled
+            ? ::GetSysColor(COLOR_GRAYTEXT)
+            : (isPrimaryAccent ? ::GetSysColor(COLOR_HIGHLIGHTTEXT) : ::GetSysColor(COLOR_BTNTEXT));
+        borderCol = ::GetSysColor((hasFocus || isPrimaryAccent || activeTab) ? COLOR_HIGHLIGHT : COLOR_WINDOWFRAME);
+        borderPx  = (hasFocus || isPrimaryAccent) ? 2.0f : 1.4f;
+    } else if (isPrimaryAccent) {
+        if (!isEnabled) {
+            fillCol   = theme.isDarkMode ? RGB(30, 41, 59)   : RGB(226, 232, 240);
+            borderCol = theme.isDarkMode ? RGB(71, 85, 105)  : RGB(148, 163, 184);
+            textCol   = theme.isDarkMode ? RGB(148, 163, 184): RGB(100, 116, 139);
+        } else {
+            // High-contrast Royal Cobalt (`#1D4ED8` = 6.70:1 with `#FFFFFF`!)
+            if (isPressed)      fillCol = RGB(30, 64, 175);  // #1E40AF (8.36:1)
+            else if (isHovered) fillCol = RGB(37, 99, 235);  // #2563EB (5.17:1)
+            else                fillCol = RGB(29, 78, 216);  // #1D4ED8 (6.70:1)
+            borderCol = theme.isDarkMode ? RGB(96, 165, 250) : RGB(30, 58, 138);
+            textCol   = RGB(255, 255, 255);
+            borderPx  = 1.5f;
+        }
+    } else {
+        if (!isEnabled) {
+            fillCol   = theme.isDarkMode ? RGB(20, 29, 48)   : RGB(241, 245, 249);
+            borderCol = theme.isDarkMode ? RGB(51, 65, 85)   : RGB(203, 213, 225);
+            textCol   = theme.isDarkMode ? RGB(100, 116, 139): RGB(148, 163, 184);
+        } else if (theme.isDarkMode) {
+            // Elevated Dark Slate-Navy (`#212D48` with `#F8FAFC` text = 12.8:1 WCAG AAA!)
+            if (isPressed)      fillCol = RGB(22, 31, 52);
+            else if (isHovered) fillCol = RGB(45, 61, 96);
+            else if (activeTab) fillCol = RGB(30, 48, 86);
+            else                fillCol = RGB(33, 45, 72);
+            borderCol = isHovered ? RGB(125, 211, 252) : (activeTab ? theme.accentPrimary : RGB(75, 93, 128));
+            textCol   = RGB(248, 250, 252);
+            if (activeTab) borderPx = 1.8f;
+        } else {
+            if (isPressed)      fillCol = RGB(226, 232, 240);
+            else if (isHovered) fillCol = RGB(241, 245, 249);
+            else if (activeTab) fillCol = RGB(239, 246, 255);
+            else                fillCol = RGB(255, 255, 255);
+            borderCol = (isHovered || activeTab) ? RGB(37, 99, 235) : RGB(148, 163, 184);
+            textCol   = RGB(15, 23, 42);
+            if (activeTab) borderPx = 1.8f;
+        }
+    }
+
+    Gdiplus::SolidBrush fillBr(ToGpColor(fillCol));
+    Gdiplus::Pen borderPen(ToGpColor(borderCol), borderPx);
+    FillAndStrokeRoundRect(g, 1.0f, 1.0f, w - 2.0f, h - 2.0f, rad, &fillBr, &borderPen);
+
+    // WCAG 2.4.11 / 2.4.13 High-Contrast Keyboard Focus Ring (`#FBBF24` Dark / `#1D4ED8` Light)
+    if (hasFocus) {
+        const COLORREF focusCol = theme.isHighContrast
+            ? ::GetSysColor(COLOR_HIGHLIGHT)
+            : (theme.isDarkMode ? brand::kWarmGold : (isPrimaryAccent ? RGB(255, 255, 255) : RGB(29, 78, 216)));
+        Gdiplus::Pen focusPen(ToGpColor(focusCol), 2.2f);
+        FillAndStrokeRoundRect(g, 2.5f, 2.5f, w - 5.0f, h - 5.0f, std::max(2.0f, rad - 1.5f), nullptr, &focusPen);
+    }
+
+    const int fontWeight = (isPrimaryAccent || activeTab) ? FW_BOLD : FW_SEMIBOLD;
+    HFONT hBtnFont = CreateScaledFont(L"Segoe UI", 9, fontWeight, dpi, theme.textScalePercent);
+    ::SetBkMode(hdc, TRANSPARENT);
+    HGDIOBJ oldF = ::SelectObject(hdc, hBtnFont);
+    ::SetTextColor(hdc, textCol);
+
+    RECT txtRc{S(6), 0, static_cast<int>(w) - S(6), static_cast<int>(h)};
+    if (showUacShield && hShieldIcon && isEnabled) {
+        const int icoSz = S(16);
+        RECT measRc{0, 0, static_cast<int>(w), static_cast<int>(h)};
+        ::DrawTextW(hdc, labelWithMnemonic.data(), static_cast<int>(labelWithMnemonic.size()), &measRc, DT_SINGLELINE | DT_CALCRECT);
+        const int textW  = measRc.right - measRc.left;
+        const int totalW = icoSz + S(6) + textW;
+        const int startX = std::max(S(6), (static_cast<int>(w) - totalW) / 2);
+        const int icoY   = (static_cast<int>(h) - icoSz) / 2;
+        ::DrawIconEx(hdc, startX, icoY, hShieldIcon, icoSz, icoSz, 0, nullptr, DI_NORMAL);
+        txtRc.left  = startX + icoSz + S(6);
+        txtRc.right = std::min<LONG>(static_cast<LONG>(w) - S(4), txtRc.left + textW + S(6));
+        ::DrawTextW(hdc, labelWithMnemonic.data(), static_cast<int>(labelWithMnemonic.size()), &txtRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    } else {
+        ::DrawTextW(hdc, labelWithMnemonic.data(), static_cast<int>(labelWithMnemonic.size()), &txtRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
+
+    ::SelectObject(hdc, oldF);
+    ::DeleteObject(hBtnFont);
+}
+
 namespace detail {
 
 struct SharedCheckboxSubclassState {
@@ -1412,6 +1548,160 @@ inline void AttachDarkAwareListViewSubclass(HWND hListView, const RswTheme* them
     ApplyDarkScrollbarTheme(hListView, *themePtr);
     ::SetWindowSubclass(hListView, &detail::SharedListViewSubclassProc, 0x52534C56u, reinterpret_cast<DWORD_PTR>(themePtr));
     detail::EnsureListViewHeaderSubclassed(hListView, themePtr);
+}
+
+namespace detail {
+
+struct SharedPushButtonSubclassState {
+    const RswTheme* themePtr        = nullptr;
+    bool            isPrimaryAccent = false;
+    bool            onFooterSurface = false;
+    bool            isHovered       = false;
+    bool            showUacShield   = false;
+    HICON           hShieldIcon     = nullptr;
+
+    ~SharedPushButtonSubclassState() {
+        if (hShieldIcon) {
+            ::DestroyIcon(hShieldIcon);
+            hShieldIcon = nullptr;
+        }
+    }
+};
+
+inline LRESULT CALLBACK SharedPushButtonSubclassProc(
+    HWND hWnd,
+    UINT uMsg,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR uIdSubclass,
+    DWORD_PTR dwRefData) noexcept
+{
+    auto* st = reinterpret_cast<SharedPushButtonSubclassState*>(dwRefData);
+    if (!st || !st->themePtr) {
+        return ::DefSubclassProc(hWnd, uMsg, wParam, lParam);
+    }
+
+    switch (uMsg) {
+        case WM_NCDESTROY:
+            ::RemoveWindowSubclass(hWnd, &SharedPushButtonSubclassProc, uIdSubclass);
+            delete st;
+            return ::DefSubclassProc(hWnd, uMsg, wParam, lParam);
+
+        case WM_ERASEBKGND:
+            return 1;
+
+        case BCM_SETSHIELD: {
+            const bool wantShield = (lParam != 0);
+            st->showUacShield = wantShield;
+            if (wantShield && !st->hShieldIcon) {
+                SHSTOCKICONINFO sii{};
+                sii.cbSize = sizeof(sii);
+                if (SUCCEEDED(::SHGetStockIconInfo(SIID_SHIELD, SHGSI_ICON | SHGSI_SMALLICON, &sii))) {
+                    st->hShieldIcon = sii.hIcon;
+                }
+            }
+            ::InvalidateRect(hWnd, nullptr, FALSE);
+            return 0;
+        }
+
+        case WM_MOUSEMOVE:
+            if (!st->isHovered) {
+                st->isHovered = true;
+                TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hWnd, 0};
+                ::TrackMouseEvent(&tme);
+                ::InvalidateRect(hWnd, nullptr, FALSE);
+            }
+            break;
+
+        case WM_MOUSELEAVE:
+            st->isHovered = false;
+            ::InvalidateRect(hWnd, nullptr, FALSE);
+            break;
+
+        case WM_SETTEXT:
+        case WM_ENABLE:
+        case BM_SETSTATE:
+        case BM_SETSTYLE: {
+            // Suppress `ComCtl32`'s internal GDI flash during text/enable/state updates!
+            ::SendMessageW(hWnd, WM_SETREDRAW, FALSE, 0);
+            const LRESULT res = ::DefSubclassProc(hWnd, uMsg, wParam, lParam);
+            ::SendMessageW(hWnd, WM_SETREDRAW, TRUE, 0);
+            ::InvalidateRect(hWnd, nullptr, FALSE);
+            return res;
+        }
+
+        case WM_SETFOCUS:
+        case WM_KILLFOCUS:
+        case WM_LBUTTONDOWN:
+        case WM_LBUTTONUP:
+        case WM_KEYDOWN:
+        case WM_KEYUP: {
+            const LRESULT res = ::DefSubclassProc(hWnd, uMsg, wParam, lParam);
+            ::InvalidateRect(hWnd, nullptr, FALSE);
+            return res;
+        }
+
+        case WM_PAINT:
+        case WM_PRINTCLIENT: {
+            RECT rc{};
+            ::GetClientRect(hWnd, &rc);
+            const int w = std::max<int>(1, rc.right - rc.left);
+            const int h = std::max<int>(1, rc.bottom - rc.top);
+
+            PAINTSTRUCT ps{};
+            HDC targetDc = (uMsg == WM_PRINTCLIENT) ? reinterpret_cast<HDC>(wParam) : ::BeginPaint(hWnd, &ps);
+            HDC memDc    = ::CreateCompatibleDC(targetDc);
+            HBITMAP bmp  = ::CreateCompatibleBitmap(targetDc, w, h);
+            HGDIOBJ oldB = ::SelectObject(memDc, bmp);
+
+            wchar_t txtBuf[256]{};
+            ::GetWindowTextW(hWnd, txtBuf, static_cast<int>(std::size(txtBuf)));
+            const bool isEnabled = (::IsWindowEnabled(hWnd) != FALSE);
+            const bool hasFocus  = (::GetFocus() == hWnd);
+            const UINT btnState  = static_cast<UINT>(::SendMessageW(hWnd, BM_GETSTATE, 0, 0));
+            const bool isPressed = (btnState & BST_PUSHED) != 0;
+            const DWORD styleLow = static_cast<DWORD>(::GetWindowLongW(hWnd, GWL_STYLE)) & 0x0Fu;
+            const bool isPrimary = st->isPrimaryAccent || (styleLow == BS_DEFPUSHBUTTON);
+            const UINT dpi       = ::GetDpiForWindow(hWnd);
+
+            {
+                Gdiplus::Graphics g(memDc);
+                g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+                g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
+                DrawAccessiblePushButton(
+                    memDc, g, RECT{0, 0, w, h}, dpi, *st->themePtr,
+                    txtBuf, isPrimary, st->onFooterSurface, isEnabled, hasFocus,
+                    st->isHovered, isPressed, st->showUacShield, st->hShieldIcon);
+            }
+
+            ::BitBlt(targetDc, 0, 0, w, h, memDc, 0, 0, SRCCOPY);
+            ::SelectObject(memDc, oldB);
+            ::DeleteObject(bmp);
+            ::DeleteDC(memDc);
+            if (uMsg == WM_PAINT) {
+                ::EndPaint(hWnd, &ps);
+            }
+            return 0;
+        }
+    }
+    return ::DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
+
+} // namespace detail
+
+/// Subclasses any Win32 `BS_PUSHBUTTON` / `BS_DEFPUSHBUTTON` so it renders in crisp Dark, Light, and
+/// High-Contrast styles (with native UAC shield + UI Automation support and zero `ComCtl32` white flashes)!
+inline void AttachAccessiblePushButtonSubclass(
+    HWND hButton,
+    const RswTheme* themePtr,
+    bool isPrimaryAccent = false,
+    bool onFooterSurface = false) noexcept
+{
+    if (!hButton || !themePtr) return;
+    auto* st = new detail::SharedPushButtonSubclassState{themePtr, isPrimaryAccent, onFooterSurface, false, false, nullptr};
+    if (!::SetWindowSubclass(hButton, &detail::SharedPushButtonSubclassProc, 0x52535042u, reinterpret_cast<DWORD_PTR>(st))) {
+        delete st;
+    }
 }
 
 /// Encodes a 32-bpp BGRA pixel buffer (`width x height`, stride `width * 4`) to a `.png` file via OS WIC!

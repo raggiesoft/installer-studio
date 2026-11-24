@@ -159,9 +159,11 @@ public:
     void CreateControls() {
         HINSTANCE hInst = ::GetModuleHandleW(nullptr);
         auto mkBtn = [&](const wchar_t* txt, int id) {
-            return ::CreateWindowExW(
+            HWND h = ::CreateWindowExW(
                 0, L"BUTTON", txt, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                 0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), hInst, nullptr);
+            rsw::ui::AttachAccessiblePushButtonSubclass(h, &theme, id == IDC_PRISM_OPEN, false);
+            return h;
         };
 
         hBtnOpen   = mkBtn(L"&Open .MSI / .MSM / .MSP...", IDC_PRISM_OPEN);
@@ -437,6 +439,21 @@ public:
                 self->LayoutChildren();
                 return 0;
             }
+            case WM_SETTINGCHANGE:
+            case WM_SYSCOLORCHANGE:
+            case WM_THEMECHANGED: {
+                if (rsw::ui::IsLiveThemeBroadcast(msg, wParam, lParam)) {
+                    self->theme.Refresh(RGB(14, 165, 233), RGB(251, 191, 36));
+                    rsw::ui::ApplyWindowChromeAndA11y(hWnd, self->theme);
+                    for (HWND sc : {self->hTableList, self->hRowGrid, self->hStatusEdit}) {
+                        rsw::ui::ApplyDarkScrollbarTheme(sc, self->theme);
+                    }
+                    self->LayoutChildren();
+                    ::RedrawWindow(hWnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
+                    return 0;
+                }
+                break;
+            }
             case WM_ERASEBKGND:
                 return 1;
             case WM_PAINT: {
@@ -547,6 +564,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     for (std::size_t i = 0; i < args.size(); ++i) {
         if (args[i] == L"--export-screenshots" && i + 1 < args.size()) {
             exportShotDir = args[i + 1];
+            rsw::ui::ForcedThemeOverride() = 1;
             ++i;
         } else if (std::filesystem::exists(args[i])) {
             initialDbFile = args[i];

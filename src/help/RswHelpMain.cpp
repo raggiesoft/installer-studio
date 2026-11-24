@@ -1031,9 +1031,14 @@ public:
         hRichEditDll = ::LoadLibraryW(L"Msftedit.dll");
 
         auto mkBtn = [&](const wchar_t* txt, int id, DWORD style = BS_PUSHBUTTON) {
-            return ::CreateWindowExW(
+            HWND h = ::CreateWindowExW(
                 0, L"BUTTON", txt, WS_CHILD | WS_VISIBLE | WS_TABSTOP | style,
                 0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), hInst, nullptr);
+            const DWORD lowType = style & 0x0Fu;
+            if (lowType == BS_PUSHBUTTON || lowType == BS_DEFPUSHBUTTON) {
+                rsw::ui::AttachAccessiblePushButtonSubclass(h, &theme, id == IDC_HLP_SRCH_BTN, false);
+            }
+            return h;
         };
 
         hModCombo = ::CreateWindowExW(
@@ -1044,6 +1049,7 @@ public:
             ::SendMessageW(hModCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
         }
         ::SendMessageW(hModCombo, CB_SETCURSEL, static_cast<WPARAM>(activeModIdx), 0);
+        rsw::ui::ApplyDarkComboBoxTheme(hModCombo, theme);
 
         hBtnBack    = mkBtn(L"< &Back",          IDC_HLP_BACK_BTN);
         hBtnFwd     = mkBtn(L"&Forward >",       IDC_HLP_FWD_BTN);
@@ -1495,6 +1501,24 @@ public:
                 return 0;
             }
 
+            case WM_SETTINGCHANGE:
+            case WM_SYSCOLORCHANGE:
+            case WM_THEMECHANGED: {
+                if (rsw::ui::IsLiveThemeBroadcast(msg, wParam, lParam)) {
+                    self->theme.Refresh(RGB(37, 99, 235), RGB(251, 191, 36));
+                    rsw::ui::ApplyWindowChromeAndA11y(hWnd, self->theme);
+                    rsw::ui::ApplyDarkComboBoxTheme(self->hModCombo, self->theme);
+                    for (HWND sc : {self->hTocTree, self->hIdxList, self->hSrchList, self->hReaderRich}) {
+                        rsw::ui::ApplyDarkScrollbarTheme(sc, self->theme);
+                    }
+                    self->NavigateToTopic(self->activeModIdx, self->activeTopicId, "", false);
+                    self->LayoutChildren();
+                    ::RedrawWindow(hWnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
+                    return 0;
+                }
+                break;
+            }
+
             case WM_ERASEBKGND:
                 return 1;
 
@@ -1665,6 +1689,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
             extraModuleDirs.emplace_back(args[++i]);
         } else if (a == L"--export-screenshots" && i + 1 < args.size()) {
             exportShotDir = args[++i];
+            rsw::ui::ForcedThemeOverride() = 1;
         }
     }
 

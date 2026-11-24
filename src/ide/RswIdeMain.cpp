@@ -488,9 +488,16 @@ public:
     void CreateControls() {
         HINSTANCE hInst = ::GetModuleHandleW(nullptr);
         auto mkBtn = [&](int view, const wchar_t* txt, int id, DWORD style = BS_PUSHBUTTON) {
-            return RegisterViewCtrl(view, ::CreateWindowExW(
+            HWND h = RegisterViewCtrl(view, ::CreateWindowExW(
                 0, L"BUTTON", txt, WS_CHILD | WS_TABSTOP | style,
                 0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), hInst, nullptr));
+            const DWORD lowType = style & 0x0Fu;
+            if (lowType == BS_PUSHBUTTON || lowType == BS_DEFPUSHBUTTON) {
+                const bool primary = (id == IDC_TB_BUILD_MSI || id == IDC_PKG_APPLY ||
+                                      id == IDC_UI_APPLY     || id == IDC_SIG_APPLY);
+                rsw::ui::AttachAccessiblePushButtonSubclass(h, &theme, primary, false);
+            }
+            return h;
         };
         auto mkLbl = [&](int view, const wchar_t* txt) {
             return RegisterViewCtrl(view, ::CreateWindowExW(
@@ -509,6 +516,7 @@ public:
                 ::SendMessageW(cb, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(s));
             }
             ::SendMessageW(cb, CB_SETCURSEL, defSel, 0);
+            rsw::ui::ApplyDarkComboBoxTheme(cb, theme);
             return cb;
         };
 
@@ -2317,6 +2325,29 @@ public:
                 self->LayoutChildren();
                 return 0;
             }
+            case WM_SETTINGCHANGE:
+            case WM_SYSCOLORCHANGE:
+            case WM_THEMECHANGED: {
+                if (rsw::ui::IsLiveThemeBroadcast(msg, wParam, lParam)) {
+                    self->theme.Refresh();
+                    rsw::ui::ApplyWindowChromeAndA11y(hWnd, self->theme);
+                    for (HWND lv : {self->hPayGrid, self->hPrGrid, self->hFaGrid, self->hScGrid}) {
+                        rsw::ui::ApplyDarkScrollbarTheme(lv, self->theme);
+                    }
+                    for (HWND sc : {self->hNavViews, self->hDestTree, self->hDesignTree, self->hSourceEdit, self->hConsoleEdit}) {
+                        rsw::ui::ApplyDarkScrollbarTheme(sc, self->theme);
+                    }
+                    for (HWND cb : {self->hArchCombo, self->hSuiteCombo, self->hPkgScope, self->hCompRoot, self->hCompKpKind,
+                                    self->hPrPreset, self->hPrDist, self->hUiLayout, self->hUiPreviewStep,
+                                    self->hMsiPreset, self->hMsiDlgSelect, self->hMsiCtrlType}) {
+                        rsw::ui::ApplyDarkComboBoxTheme(cb, self->theme);
+                    }
+                    self->LayoutChildren();
+                    ::RedrawWindow(hWnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
+                    return 0;
+                }
+                break;
+            }
             case WM_ERASEBKGND:
                 return 1;
             case WM_PAINT: {
@@ -2936,6 +2967,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     ::InitCommonControlsEx(&icc);
 
     InstallerStudioIde ide{};
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == L"--export-screenshots") {
+            rsw::ui::ForcedThemeOverride() = 1;
+            break;
+        }
+    }
     ide.theme.Refresh();
 
     wchar_t exeBuf[MAX_PATH * 4]{};
@@ -2974,6 +3011,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     for (std::size_t i = 0; i < args.size(); ++i) {
         if (args[i] == L"--export-screenshots" && i + 1 < args.size()) {
             exportShotDir = args[i + 1];
+            rsw::ui::ForcedThemeOverride() = 1;
             ++i;
         } else if (std::filesystem::exists(args[i])) {
             initialProjectArg = args[i];

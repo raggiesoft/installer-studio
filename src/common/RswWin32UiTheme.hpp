@@ -132,7 +132,14 @@ inline HFONT CreateScaledFont(
         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, faceName);
 }
 
-/// Theme state & GDI brush cache shared by `rsswsetup.exe` and `rsswide.exe`.
+/// Optional process-wide theme override (`-1` = follow OS `AppsUseLightTheme`, `1` = force Dark, `0` = force Light)
+/// used by `--export-screenshots` and live `WM_SETTINGCHANGE(ImmersiveColorSet)` verification!
+inline int& ForcedThemeOverride() noexcept {
+    static int mode = -1;
+    return mode;
+}
+
+/// Theme state & GDI brush cache shared by `SetupWizard.exe`, `InstallerStudio.exe`, `msiprism.exe`, & `RaggieSoftHelp.exe`.
 struct RswTheme {
     bool     isHighContrast   = false;
     bool     isDarkMode       = true;
@@ -217,6 +224,9 @@ struct RswTheme {
                 ::RegCloseKey(hPers);
             }
             isDarkMode = (appsUseLight == 0);
+            if (ForcedThemeOverride() >= 0) {
+                isDarkMode = (ForcedThemeOverride() == 1);
+            }
 
             bannerNavyLeft  = RGB(11, 19, 43);   // #0B132B Midnight Navy
             bannerNavyRight = RGB(20, 38, 78);   // #14264E Deep Royal Navy
@@ -258,6 +268,27 @@ inline void ApplyWindowChromeAndA11y(HWND hWnd, const RswTheme& theme) noexcept 
 
     // Ensure keyboard focus rings and `&` mnemonics are ALWAYS visible immediately!
     ::SendMessageW(hWnd, WM_CHANGEUISTATE, MAKEWPARAM(UIS_CLEAR, UISF_HIDEFOCUS | UISF_HIDEACCEL), 0);
+}
+
+/// Detects live Windows 11 Light <-> Dark Mode (`WM_SETTINGCHANGE` `lParam == L"ImmersiveColorSet"`),
+/// Contrast Theme (`SPI_SETHIGHCONTRAST` / `WM_SYSCOLORCHANGE`), and Visual Style (`WM_THEMECHANGED`)
+/// broadcasts so open windows hot-swap their entire palette in <16ms without restarting!
+inline bool IsLiveThemeBroadcast(UINT msg, WPARAM wParam, LPARAM lParam) noexcept {
+    if (msg == WM_SYSCOLORCHANGE || msg == WM_THEMECHANGED) {
+        return true;
+    }
+    if (msg == WM_SETTINGCHANGE) {
+        if (wParam == SPI_SETHIGHCONTRAST || lParam == 0) {
+            return true;
+        }
+        const auto* area = reinterpret_cast<const wchar_t*>(lParam);
+        if (_wcsicmp(area, L"ImmersiveColorSet") == 0 ||
+            _wcsicmp(area, L"WindowsThemeElement") == 0 ||
+            _wcsicmp(area, L"WindowMetrics") == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /// Paints a smooth horizontal 2-stop `GradientFill` rectangle using `msimg32.lib`.

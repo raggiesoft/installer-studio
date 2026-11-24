@@ -10,7 +10,7 @@
 Name                  = RaggieSoft Installer Studio
 Tagline               = Install Without Limits - AeroWizard IDE, MSI Compiler, Prism & Help
 WebsiteLabel          = raggiesoftstudio.com
-Version               = 0.4.0
+Version               = 0.4.1
 Manufacturer          = RaggieSoft
 UpgradeCode           = {D9C0EF36-990C-519C-A9C7-D7E19FDD5627}
 Architecture          = $(ARCH)

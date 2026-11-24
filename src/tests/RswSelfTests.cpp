@@ -67,11 +67,16 @@ int wmain() {
     ::GetModuleFileNameW(nullptr, exeBuf, static_cast<DWORD>(std::size(exeBuf)));
     const std::filesystem::path binDir = std::filesystem::path(exeBuf).parent_path();
 
-    // 1. OS & Silicon Detection
+    // 1. OS, Silicon, & Live `ImmersiveColorSet` Theme Broadcast Detection
     const auto hp = rsw::QueryHostPlatform();
     const std::string hostArch(hp.NativeArchSlug());
     Check(hp.majorVersion >= 10 && hp.buildNumber >= 22000, "RtlGetVersion detects Windows 11 Build >= 22000");
     Check(hostArch == "arm64" || hostArch == "x64", "IsWow64Process2 detects native host silicon");
+    Check(rsw::ui::IsLiveThemeBroadcast(WM_SETTINGCHANGE, 0, reinterpret_cast<LPARAM>(L"ImmersiveColorSet")) &&
+          rsw::ui::IsLiveThemeBroadcast(WM_SETTINGCHANGE, SPI_SETHIGHCONTRAST, 0) &&
+          rsw::ui::IsLiveThemeBroadcast(WM_SYSCOLORCHANGE, 0, 0) &&
+          !rsw::ui::IsLiveThemeBroadcast(WM_SETTINGCHANGE, 0, reinterpret_cast<LPARAM>(L"Environment")),
+          "IsLiveThemeBroadcast filters WM_SETTINGCHANGE(ImmersiveColorSet) & High Contrast live hot-swaps");
 
     // 2. Lossless AST Comment & `@include` Round-Trip
     const std::string sampleRsip =
