@@ -5,11 +5,16 @@
 // LICENSE: MIT License (Copyright (c) 2026 Michael P. Ragsdale / RaggieSoft)
 //
 // PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
-//   Generates `llms.txt`, `llms-full.txt`, and `SKILL.md` (`raggiesoft-installer-studio`)
-//   deterministically from `RswSchema.hpp`'s `constexpr` tables so AI coding agents
-//   author, lint (`instbuild.exe --validate --diagnostics=json`), and compile
-//   standalone `.rsip` projects, `.rsis` multi-project suites, and `@include` `.rsii`
-//   headers with zero schema drift!
+//   What does this header do, and why is it critical for AI coding agents?
+//     `EmitAiSpecifications(...)` generates `llms.txt`, `llms-full.txt`, and
+//     `SKILL.md` (`raggiesoft-installer-studio`) deterministically from the exact
+//     C++20 `constexpr` field descriptors in `RswSchema.hpp`.
+//
+//     Because the compiler, validator (`--validate --diagnostics=json`), IDE, and
+//     AI documentation all share one compile-time source of truth, an AI coding
+//     agent can read `llms-full.txt` and author a complete, production-grade
+//     `.rsip` project or `.rsis` multi-project suite from scratch with zero
+//     hallucinated keys and zero schema drift!
 // ================================================================================
 
 #pragma once
@@ -52,38 +57,39 @@ inline bool EmitAiSpecifications(const std::filesystem::path& outDir, std::strin
         return false;
     }
 
-    // 1. `llms.txt`
+    // 1. `llms.txt` — Concise High-Signal Entrypoint for Coding Agents
     {
         std::ostringstream s;
         s << "# " << kSuiteTitle << " (" << kProductTagline << ") — v" << kVersionString << "\n\n"
-          << "> First-party, zero-dependency native Win32 C++20 Windows packaging suite (`InstallerStudio.exe` Visual IDE, `instbuild.exe` CLI compiler, `SetupWizard.exe` accessible runtime wizard, and `msiprism.exe` 64-bit MSI/MST/MSP SQL inspector) targeting `x64` and `ARM64`. Official portal: https://raggiesoftstudio.com | Open-source dev hub: https://raggiesoft.dev\n\n"
+          << "> First-party, zero-dependency native Win32 C++20 Windows packaging suite (`InstallerStudio.exe` 10-view Visual IDE, `instbuild.exe` CLI compiler & JSON linter, `SetupWizard.exe` WCAG 2.2 AA runtime wizard, `msiprism.exe` 64-bit MSI/MSM/MST/MSP SQL inspector, and `RaggieSoftHelp.exe` native offline Help Viewer) targeting Windows 11 `x64` and `ARM64`. Official portal: https://raggiesoftstudio.com | Open-source dev hub: https://raggiesoft.dev\n\n"
           << "## Hybrid Project Architecture (`.rsip` + `.rsis` + `.rsii`)\n"
-          << "- **`.rsip` (*RaggieSoft Installer Project*)**: 100% standalone single-file project manifest (like Inno Setup `.iss` or `.csproj`).\n"
-          << "- **`.rsis` (*RaggieSoft Installer Suite*)**: Optional multi-project workspace (like Visual Studio `.slnx`) with `[Suite]`, `[Variable]`, and ordered `[Project.<Id>]` entries.\n"
+          << "- **`.rsip` (*RaggieSoft Installer Project*)**: 100% standalone single-file INI-style project manifest (similar to a standalone `.csproj`).\n"
+          << "- **`.rsis` (*RaggieSoft Installer Suite*)**: Optional multi-project workspace (similar to `.slnx`) with `[Suite]`, `[Variable]`, and ordered `[Project.<Id>]` entries.\n"
           << "- **`.rsii` (*RaggieSoft Installer Include*)**: Optional `@include \"shared.rsii\"` header inherited losslessly across projects.\n\n"
-          << "## Why Comment-Preserving `.rsip` Beats JSON & XML\n"
-          << "- **Beats JSON**: No backslash double-escaping (`C:\\\\Program Files\\\\...`) and full `;` / `#` comments allowed.\n"
-          << "- **Beats XML**: Zero closing-tag bloat; minimal LLM token footprint.\n"
-          << "- **100% Lossless IDE Parity & White-Label Output**: `InstallerStudio.exe` preserves every comment and `@include` byte-for-byte, and Community/Indie/Enterprise builds contain zero UI watermarks (`VERSIONINFO` & wizard footers belong 100% to `[Package] Manufacturer`).\n\n"
-          << "## Core Commands\n"
-          << "- `instbuild.exe --validate --diagnostics=json <project.rsip|suite.rsis> [--arch=x64|arm64]`: Sub-millisecond structural, GUID, MSI 3-part version, filesystem, and `&` mnemonic linter.\n"
-          << "- `instbuild.exe <project.rsip|suite.rsis> [--arch=x64|arm64] [--category=<cat>] [--project=<id>]`: Compiles standalone Enterprise `<OutputName>.msi` + accessible `<OutputName>-setup.exe` (or `<OutputName>.msm` when `PackageKind = msm`).\n"
+          << "## Why Comment-Preserving `.rsip` Excels for AI Coding Agents & Git\n"
+          << "- **Zero Backslash Escaping**: Write Windows paths naturally (`DefaultSubdir = Sample Studio\\My App`) with full `;` and `#` inline/block comments.\n"
+          << "- **Minimal Token Footprint**: Clean `[Section]` and `[Prefix.<Id>]` blocks without verbose XML closing tags.\n"
+          << "- **100% Lossless IDE Parity & White-Label Output**: `InstallerStudio.exe` preserves every comment and `@include` byte-for-byte, and Community Edition maintains 100% feature parity with Premier Edition with zero UI watermarks (`VERSIONINFO` & wizard footers belong 100% to `[Package] Manufacturer`).\n\n"
+          << "## Core CLI Commands (`instbuild.exe`, `msiprism.exe`, & `RaggieSoftHelp.exe`)\n"
+          << "- `instbuild.exe --validate --diagnostics=json <project.rsip|suite.rsis> [--arch=x64|arm64]`: Sub-millisecond schema, GUID, 3-part MSI version, Component rule (`RSW031`/`RSW032`), filesystem, and `&` mnemonic linter.\n"
+          << "- `instbuild.exe <project.rsip|suite.rsis> [--arch=x64|arm64] [--category=<cat>] [--project=<id>] [--with-vpat]`: Compiles standalone Enterprise `<OutputName>.msi` + LZMS-compressed `<OutputName>-setup.exe` (or `<OutputName>.msm` when `PackageKind = msm`).\n"
           << "- `instbuild.exe --emit-vpat <project.rsip> <out-dir>`: Generates an audited WCAG 2.2 AA & Revised Section 508 HTML5 VPAT 2.5 Conformance Report.\n"
-          << "- `instbuild.exe --emit-msm <project.rsip> <out.msm> [--arch=x64|arm64]`: Compiles a Merge Module (`.msm`).\n"
+          << "- `instbuild.exe --emit-msm <project.rsip> <out.msm> [--arch=x64|arm64]`: Compiles a 64-bit Windows Installer Merge Module (`.msm`).\n"
           << "- `instbuild.exe --generate-mst <base.msi> <target.msi> <out.mst>`: Generates a GPO Transform (`.mst`).\n"
           << "- `instbuild.exe --generate-msp <base.msi> <upgraded.msi> <out.msp>`: Generates a Patch Package (`.msp`).\n"
-          << "- `instbuild.exe --verify-msi <file.msi>`: Runs SQL & ICE80 consistency checks on a compiled `.msi`.\n"
+          << "- `instbuild.exe --verify-msi <file.msi>`: Runs SQL & ICE80 64-bit consistency checks on a compiled `.msi`.\n"
           << "- `instbuild.exe --emit-ai-spec <dir>`: Regenerates `llms.txt`, `llms-full.txt`, and `SKILL.md`.\n"
-          << "- `msiprism.exe [file.msi|msm|msp]`: Opens any Windows Installer database in RaggieSoft MSI Prism.\n"
-          << "- `<product>-setup.exe --extract-msi <dir>`: Extracts the embedded `Product.msi` for Intune / SCCM / GPO.\n\n"
+          << "- `msiprism.exe [--inspect-summary] <file.msi|msm|msp>`: Inspects any Windows Installer database in RaggieSoft MSI Prism.\n"
+          << "- `RaggieSoftHelp.exe [--module raggiesoft.installer-studio] [--topic <id>]`: Opens the offline C++20 Help Viewer.\n"
+          << "- `<product>-setup.exe --extract-msi <dir>`: Extracts the embedded `Product.msi` for enterprise deployment.\n\n"
           << "## `.rsip` Manifest Sections (`v" << kManifestSchemaVer << "`)\n";
         for (const auto& sd : kSectionDescriptors) {
             const char* suffix = (sd.cardinality == SectionCardinality::NamedRepeatable) ? ".<id>" : "";
             s << "- `[" << sd.nameOrPrefix << suffix << "]`: " << sd.summary << "\n";
         }
         s << "\n## Detailed Reference\n"
-          << "- [llms-full.txt](llms-full.txt): Complete `constexpr` `.rsip` & `.rsis` field tables and annotated examples.\n"
-          << "- [SKILL.md](SKILL.md): Autonomous AI agent authoring workflow.\n";
+          << "- [llms-full.txt](llms-full.txt): Complete `constexpr` `.rsip` & `.rsis` field tables, AI Pre-Flight Checklist, and copy-paste Golden Blueprints.\n"
+          << "- [SKILL.md](SKILL.md): Autonomous 4-step AI agent authoring workflow.\n";
 
         std::ofstream f(outDir / "llms.txt", std::ios::binary);
         if (!f) { outError = "Could not write llms.txt"; return false; }
@@ -91,18 +97,20 @@ inline bool EmitAiSpecifications(const std::filesystem::path& outDir, std::strin
         f.write(text.data(), static_cast<std::streamsize>(text.size()));
     }
 
-    // 2. `llms-full.txt`
+    // 2. `llms-full.txt` — Authoritative From-Scratch Reference & Golden Blueprints
     {
         std::ostringstream s;
         s << "# " << kSuiteTitle << " — Complete `.rsip`, `.rsis` & `.rsii` Reference (v" << kVersionString << ")\n\n"
           << "Generated deterministically by `" << kGeneratorSignature << " --emit-ai-spec`.\n\n"
-          << "## 1. Architectural Rules\n"
-          << "1. **Native MSI, MSM, MST, MSP & SetupWizard.exe Output**: Calls `msiquery.h` (`msi.lib`) and `fci.h` (`Cabinet.lib`) directly from static `/MT` C++20.\n"
-          << "2. **100% White-Label Attribution**: Visible dialogs and `Setup.exe` `VERSIONINFO` use `[Package] Manufacturer` and `Name` exclusively; `" << kGeneratorSignature << "` is recorded solely in MSI `SummaryInformation` `PID_APPNAME`.\n"
-          << "3. **Hybrid `.rsip` + `.rsis` + `.rsii` Model**: Build a single `.rsip` standalone, share common blocks via `@include \"common.rsii\"`, or orchestrate multi-package fleets via `.rsis`.\n"
-          << "4. **Deterministic SHA-1 UUIDv5 Component GUIDs**: Derived from `UpgradeCode + arch + targetRelPath`.\n"
-          << "5. **True OS & Silicon Detection**: `RtlGetVersion` (`Build >= 22000`) + `IsWow64Process2` (pierces ARM64 Prism emulation).\n"
-          << "6. **Lossless AST Comments**: `;` and `#` comments plus `@include` directives survive `InstallerStudio.exe` GUI edits byte-for-byte.\n\n"
+          << "## 1. Architectural Rules & AI Pre-Flight Checklist\n"
+          << "1. **Native MSI, MSM, MST, MSP & LZMS SetupWizard.exe Output**: Calls `msiquery.h` (`msi.lib`), `fci.h`/`fdi.h`, and `COMPRESS_ALGORITHM_LZMS` (`Cabinet.lib`) directly from static `/MT` C++20.\n"
+          << "2. **100% White-Label Attribution (`Community == Premier`)**: Visible dialogs and `Setup.exe` `VERSIONINFO` use `[Package] Manufacturer` and `Name` exclusively; `" << kGeneratorSignature << "` is recorded solely in MSI `SummaryInformation` `PID_APPNAME`.\n"
+          << "3. **3-Part MSI Version Rule**: `[Package] Version` MUST use 3-part `Major.Minor.Build` format (`0..255.0..255.0..65535`, e.g., `1.2.0` — never a 4-part `1.2.0.0` string).\n"
+          << "4. **Uppercase Braced `UpgradeCode` GUID**: `[Package] UpgradeCode` MUST be a permanent `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}` GUID kept identical across all releases of the same product.\n"
+          << "5. **Mandatory `&` Keyboard Mnemonics**: Custom interactive labels (`[UI] InstallButtonText = &Install`, `FinishLaunchCheckbox = &Launch app`) MUST include `&` for WCAG 2.2 AA keyboard access.\n"
+          << "6. **Microsoft Component Rules (`RSW031` & `RSW032`)**: Every `[Payload.*]` assigned to an explicit `[Component.<Id>]` must share one destination directory (`RSW031`), and components targeting per-user folders (`AppDataFolder`, `LocalAppDataFolder`, `StartMenu`, `Desktop`) must use `KeyPathKind = registry` (`HKCU`, `RSW032`).\n"
+          << "7. **Pre-MSI `[Prerequisite.<Id>]` Execution**: Runtimes (`DotNet10Desktop`, `DotNet10AspNet`, `DotNet9Desktop`, `DotNet8Desktop`, `EdgeWebView2`, `VcRedist2022`, or `Custom`) execute BEFORE `msiexec` under a single UAC prompt (`download`, `embedded` LZMS, or `side-by-side` `Redist\\`) and latch `RebootExitCodes` (`3010, 1641, 23`).\n"
+          << "8. **Lossless AST Comments**: `;` and `#` comments plus `@include` directives survive `InstallerStudio.exe` GUI edits byte-for-byte.\n\n"
           << "## 2. Complete `.rsip` Project Schema (`v" << kManifestSchemaVer << "`)\n\n";
 
         for (const auto& sd : kSectionDescriptors) {
@@ -115,14 +123,14 @@ inline bool EmitAiSpecifications(const std::filesystem::path& outDir, std::strin
             AppendFieldsMarkdownTable(s, sd.nameOrPrefix);
         }
 
-        s << "## 3. `.rsis` Multi-Project Suite Schema (Optional — Like Visual Studio `.slnx`)\n\n"
+        s << "## 3. `.rsis` Multi-Project Suite Schema (Optional — Multi-Package Workspace)\n\n"
           << "```ini\n"
           << "[Suite]\n"
-          << "Name          = Acme Enterprise Suite\n"
+          << "Name          = Sample Studio Workspace\n"
           << "Version       = 1.0.0\n"
           << "Architectures = arm64|x64\n\n"
           << "[Variable]\n"
-          << "PUBLISHER     = Acme Corporation\n\n"
+          << "PUBLISHER     = Sample Studio\n\n"
           << "[Project.CoreMsm]\n"
           << "Path          = shared\\core-runtime.rsip\n"
           << "Category      = MergeModules\n"
@@ -132,33 +140,123 @@ inline bool EmitAiSpecifications(const std::filesystem::path& outDir, std::strin
           << "Category      = CoreApps\n"
           << "BuildOrder    = 20\n"
           << "```\n\n"
-          << "## 4. Minimal Annotated `.rsip` Project Example\n\n"
+          << "## 4. Minimal From-Scratch `.rsip` Project Blueprint\n\n"
           << "```ini\n"
-          << "; Sample RaggieSoft Installer Project (.rsip) — builds both x64 and arm64!\n"
+          << "; Minimal standalone RaggieSoft Installer Project (.rsip) — compiles x64 and arm64!\n"
           << "[Package]\n"
-          << "Name              = Hello App\n"
+          << "Name              = Hello Studio App\n"
           << "Tagline           = Fast, Accessible Native Windows Application\n"
           << "Version           = 1.0.0\n"
-          << "Manufacturer      = Acme Open Source\n"
+          << "Manufacturer      = Sample Studio\n"
           << "UpgradeCode       = {A18F4E20-7C93-4D62-9B44-524147474945}\n"
           << "Architecture      = $(ARCH)\n"
+          << "Scope             = machine\n"
           << "BuildBootstrapper = true\n\n"
           << "[Install]\n"
-          << "DefaultSubdir     = Acme\\Hello App\n"
+          << "DefaultSubdir     = Sample Studio\\Hello App\n"
           << "MainExecutable    = HelloApp.exe\n\n"
           << "[UI]\n"
-          << "WizardLayout      = standard\n"
+          << "WizardLayout      = aerowizard\n"
           << "AccentPrimaryHex  = #2563EB\n"
           << "AccentSecondaryHex= #FBBF24\n"
-          << "LicenseRtf        = License.rtf\n"
           << "InstallButtonText = &Install\n\n"
           << "[Payload.App]\n"
           << "Source            = ..\\..\\bin\\$(ARCH)\\HelloApp.exe\n\n"
           << "[Shortcut.StartMenu]\n"
-          << "Name              = Hello App\n"
+          << "Name              = Hello Studio App\n"
           << "TargetFile        = HelloApp.exe\n"
           << "Location          = StartMenu\n"
-          << "Description       = Launch Hello App\n"
+          << "Description       = Launch Hello Studio App\n"
+          << "```\n\n"
+          << "## 5. Complete Enterprise `.rsip` Blueprint (SelectionTree Features, Pre-MSI Runtimes, `.MSM`, FileAssoc & Custom MSI Dialog)\n\n"
+          << "```ini\n"
+          << "; Full-featured enterprise .rsip demonstrating SelectionTree hierarchy, Pre-MSI\n"
+          << "; Prerequisites, 64-bit .MSM Merge Modules, File Associations, & Custom MSI SQL Dialogs.\n"
+          << "[Package]\n"
+          << "Name              = Studio Workbench\n"
+          << "Tagline           = Accessible Desktop Authoring Environment\n"
+          << "WebsiteLabel      = raggiesoftstudio.com\n"
+          << "Version           = 2.1.0\n"
+          << "Manufacturer      = RaggieSoft\n"
+          << "UpgradeCode       = {7F4E91C2-58B4-4D21-8E77-314159265358}\n"
+          << "Architecture      = $(ARCH)\n"
+          << "Scope             = machine\n"
+          << "OutputName        = studio-workbench-$(ARCH)\n"
+          << "OutputDir         = out\n"
+          << "BuildBootstrapper = true\n\n"
+          << "[Requirements]\n"
+          << "MinWindowsBuild   = 22000\n\n"
+          << "[Install]\n"
+          << "DefaultSubdir     = RaggieSoft\\Studio Workbench\n"
+          << "StartMenuFolder   = RaggieSoft Studio Workbench\n"
+          << "MainExecutable    = Workbench.exe\n\n"
+          << "[UI]\n"
+          << "WizardLayout          = aerowizard\n"
+          << "MsiDialogPreset       = express_custom\n"
+          << "AccentPrimaryHex      = #2563EB\n"
+          << "AccentSecondaryHex    = #FBBF24\n"
+          << "LicenseRtf            = License.rtf\n"
+          << "InstallButtonText     = &Install\n"
+          << "FinishLaunchCheckbox  = &Launch Studio Workbench when setup finishes\n\n"
+          << "; Hierarchical MSI SelectionTree Features (Core locked via DisallowAbsent = true)\n"
+          << "[Feature.Main]\n"
+          << "Title                 = Core Workbench Application\n"
+          << "Description           = Primary executable and core authoring engine.\n"
+          << "Level                 = 1\n"
+          << "DisallowAbsent        = true\n\n"
+          << "[Feature.Templates]\n"
+          << "Parent                = Main\n"
+          << "Title                 = Starter Project Templates\n"
+          << "Description           = Optional starter blueprints and offline documentation.\n"
+          << "Level                 = 1\n\n"
+          << "; Pre-MSI Runtime Prerequisite (runs BEFORE msiexec under one UAC prompt)\n"
+          << "[Prerequisite.DotNet10]\n"
+          << "Preset                = DotNet10Desktop\n"
+          << "Distribution          = download\n"
+          << "RebootExitCodes       = 3010, 1641, 23\n\n"
+          << "; Optional 64-Bit Merge Module (.msm) merged natively into Product.msi\n"
+          << "[MergeModule.SharedCodec]\n"
+          << "Source                = ..\\shared\\out\\shared-codec-$(ARCH).msm\n"
+          << "Feature               = Main\n"
+          << "TargetRoot            = INSTALLDIR\n\n"
+          << "[Component.CoreExeComp]\n"
+          << "Feature               = Main\n"
+          << "TargetRoot            = INSTALLDIR\n"
+          << "Guid                  = *\n"
+          << "KeyPathKind           = file\n"
+          << "KeyPathTarget         = Workbench.exe\n\n"
+          << "[Payload.MainExe]\n"
+          << "Source                = ..\\bin\\$(ARCH)\\Workbench.exe\n"
+          << "Component             = CoreExeComp\n\n"
+          << "[Payload.TemplatesDir]\n"
+          << "Source                = ..\\templates\n"
+          << "TargetRoot            = INSTALLDIR\n"
+          << "TargetSubdir          = templates\n"
+          << "Feature               = Templates\n\n"
+          << "[FileAssociation.WorkbenchDoc]\n"
+          << "Extension             = .rswb\n"
+          << "ProgId                = RaggieSoft.Workbench.Document\n"
+          << "Description           = Studio Workbench Project\n"
+          << "TargetFile            = Workbench.exe\n"
+          << "Verbs                 = open:&Open in Workbench:\"%1\"\n"
+          << "Advertise             = false\n\n"
+          << "[Shortcut.StartMenuApp]\n"
+          << "Name                  = Studio Workbench\n"
+          << "TargetFile            = Workbench.exe\n"
+          << "Location              = StartMenu\n\n"
+          << "[MsiDialog.WorkspaceUrlDlg]\n"
+          << "HeaderTitle           = Default Asset Endpoint\n"
+          << "PrevDialog            = SetupTypeDlg\n"
+          << "NextDialog            = VerifyReadyDlg\n\n"
+          << "[MsiControl.EndpointEdit]\n"
+          << "Dialog                = WorkspaceUrlDlg\n"
+          << "Type                  = Edit\n"
+          << "X                     = 20\n"
+          << "Y                     = 74\n"
+          << "Width                 = 330\n"
+          << "Height                = 18\n"
+          << "Property              = ASSET_ENDPOINT\n"
+          << "DefaultValue          = https://assets.raggiesoft.com\n"
           << "```\n";
 
         std::ofstream f(outDir / "llms-full.txt", std::ios::binary);
@@ -167,25 +265,26 @@ inline bool EmitAiSpecifications(const std::filesystem::path& outDir, std::strin
         f.write(text.data(), static_cast<std::streamsize>(text.size()));
     }
 
-    // 3. `SKILL.md`
+    // 3. `SKILL.md` — Autonomous Agent Skill Definition
     {
         std::ostringstream s;
         s << "---\n"
           << "name: raggiesoft-installer-studio\n"
-          << "description: Author, lint, audit VPAT 2.5 accessibility, and compile Windows 11 x64 and ARM64 .msi, .msm, .mst, .msp, and Setup.exe installers using RaggieSoft Installer Studio (instbuild.exe, InstallerStudio.exe, SetupWizard.exe, msiprism.exe) and plain-text .rsip projects, .rsis suites, and .rsii includes.\n"
+          << "description: Author, lint, audit VPAT 2.5 accessibility, and compile Windows 11 x64 and ARM64 .msi, .msm, .mst, .msp, and Setup.exe installers using RaggieSoft Installer Studio (instbuild.exe, InstallerStudio.exe, SetupWizard.exe, msiprism.exe, RaggieSoftHelp.exe) and plain-text .rsip projects, .rsis suites, and .rsii includes.\n"
           << "---\n\n"
           << "# RaggieSoft Installer Studio (`.rsip` / `.rsis`) Authoring Skill\n\n"
           << "Always read [`llms-full.txt`](llms-full.txt) in this folder for the authoritative `v" << kManifestSchemaVer
-          << "` `.rsip` project and `.rsis` suite grammar emitted directly by `instbuild.exe`.\n\n"
+          << "` `.rsip` project and `.rsis` suite grammar, AI Pre-Flight Checklist, and copy-paste blueprints emitted directly by `instbuild.exe`.\n\n"
           << "## Mandatory 4-Step Agent Workflow\n\n"
-          << "1. **Author Heavily Commented `.rsip` (or `.rsis` Suite) Manifests**:\n"
-          << "   - Include clear `;` explanation comments above each section, use a permanent `{GUID}` for `UpgradeCode`, use 3-part `Major.Minor.Build` `Version` values (`<= 255.255.65535`), and include `&` keyboard mnemonics on custom UI labels (`InstallButtonText`, `FinishLaunchCheckbox`).\n"
+          << "1. **Author Heavily Commented `.rsip` (or `.rsis` Suite) Manifests from Scratch**:\n"
+          << "   - Include clear `;` explanation comments above each section, use a permanent `{GUID}` for `UpgradeCode`, use 3-part `Major.Minor.Build` `Version` values (`<= 255.255.65535`), use `$(ARCH)` in multi-architecture payload paths, and include `&` keyboard mnemonics on custom UI labels (`InstallButtonText`, `FinishLaunchCheckbox`).\n"
+          << "   - Declare `[Prerequisite.<Id>]` for any required `.NET`, `WebView2`, `VC++`, or custom runtimes so `SetupWizard.exe` runs them before `msiexec` and latches `RebootExitCodes`.\n"
           << "2. **Run Instant JSON Validation Before Compiling**:\n"
-          << "   - Execute `instbuild.exe --validate --diagnostics=json <project.rsip|suite.rsis> --arch=arm64` (and `--arch=x64`) until `\"ok\": true`.\n"
+          << "   - Execute `instbuild.exe --validate --diagnostics=json <project.rsip|suite.rsis> --arch=arm64` (and `--arch=x64`) until `\"ok\": true` (`0` errors).\n"
           << "3. **Compile & Verify MSI / MSM / MST / MSP Integrity**:\n"
           << "   - Execute `instbuild.exe <project.rsip|suite.rsis> --arch=arm64` and `--arch=x64` (and optionally inspect SQL tables via `msiprism.exe --inspect-summary <out.msi>`).\n"
           << "4. **Optional Compliance Export**:\n"
-          << "   - Execute `instbuild.exe --emit-vpat <project.rsip> <out-dir>` when generating WCAG 2.2 AA / Revised Section 508 procurement documentation.\n";
+          << "   - Execute `instbuild.exe --emit-vpat <project.rsip> <out-dir>` (or pass `--with-vpat`) when generating WCAG 2.2 AA / Revised Section 508 procurement documentation.\n";
 
         std::ofstream f(outDir / "SKILL.md", std::ios::binary);
         if (!f) { outError = "Could not write SKILL.md"; return false; }

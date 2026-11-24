@@ -1,6 +1,6 @@
 ; ==============================================================================
 ; FILE: projects/apps/installer-studio/installer-studio.rsip
-; APPLICATION: RaggieSoft Installer Studio (v0.3.0 Technical Preview)
+; APPLICATION: RaggieSoft Installer Studio (v0.4.0 Technical Preview)
 ; COMPILER: RaggieSoft Installer Studio (instbuild.exe -> .msi + Setup.exe)
 ; ==============================================================================
 
@@ -8,9 +8,9 @@
 
 [Package]
 Name                  = RaggieSoft Installer Studio
-Tagline               = Install Without Limits - AeroWizard IDE, MSI Compiler & Prism
+Tagline               = Install Without Limits - AeroWizard IDE, MSI Compiler, Prism & Help
 WebsiteLabel          = raggiesoftstudio.com
-Version               = 0.3.0
+Version               = 0.4.0
 Manufacturer          = RaggieSoft
 UpgradeCode           = {D9C0EF36-990C-519C-A9C7-D7E19FDD5627}
 Architecture          = $(ARCH)
@@ -37,10 +37,16 @@ FinishLaunchCheckbox  = &Open RaggieSoft Installer Studio when setup finishes
 
 ; Hierarchical MSI SelectionTree Features (shown in Custom Setup & Maintenance -> Modify!)
 [Feature.Main]
-Title                 = Visual IDE, CLI Compiler & MSI Prism
-Description           = Core 64-bit native Win32 C++20 executables (InstallerStudio.exe, instbuild.exe, SetupWizard.exe, msiprism.exe).
+Title                 = Visual IDE, CLI Compiler, MSI Prism & Help Viewer
+Description           = Core 64-bit native Win32 C++20 executables (InstallerStudio.exe, instbuild.exe, SetupWizard.exe, msiprism.exe, RaggieSoftHelp.exe).
 Level                 = 1
 DisallowAbsent        = true
+
+[Feature.HelpDocs]
+Parent                = Main
+Title                 = Offline Documentation Module (.rshm.json)
+Description           = Searchable offline HTML5 help topics for F1 context navigation inside RaggieSoftHelp.exe.
+Level                 = 1
 
 [Feature.Templates]
 Title                 = Reusable Dialog & Workflow Presets
@@ -52,6 +58,18 @@ Parent                = Templates
 Title                 = AI Agent Grammar & SKILL.md Specs
 Description           = Machine-readable llms.txt, llms-full.txt, and SKILL.md documentation for autonomous AI packaging.
 Level                 = 1
+
+[Payload.HelpManifest]
+Source                = ..\..\..\help\raggiesoft.installer-studio\module.rshm.json
+TargetRoot            = INSTALLDIR
+TargetSubdir          = HelpModules\raggiesoft.installer-studio
+Feature               = HelpDocs
+
+[Payload.HelpTopics]
+Source                = ..\..\..\help\raggiesoft.installer-studio\topics
+TargetRoot            = INSTALLDIR
+TargetSubdir          = HelpModules\raggiesoft.installer-studio\topics
+Feature               = HelpDocs
 
 [Payload.CoreBinaries]
 Source                = ..\..\..\bin\$(ARCH)
@@ -102,6 +120,11 @@ Name                  = RaggieSoft MSI Prism
 TargetFile            = msiprism.exe
 Location              = StartMenu
 
+[Shortcut.HelpViewer]
+Name                  = RaggieSoft Help Viewer
+TargetFile            = RaggieSoftHelp.exe
+Location              = StartMenu
+
 [Shortcut.StudioDesktop]
 Name                  = RaggieSoft Installer Studio
 TargetFile            = InstallerStudio.exe
@@ -112,3 +135,9 @@ Root                  = HKLM
 Key                   = Software\RaggieSoft\Installer Studio
 Name                  = Install Path
 Value                 = [INSTALLDIR]
+
+[Registry.HelpModulePath]
+Root                  = HKLM
+Key                   = Software\RaggieSoft\HelpModules
+Name                  = raggiesoft.installer-studio
+Value                 = [INSTALLDIR]HelpModules\raggiesoft.installer-studio

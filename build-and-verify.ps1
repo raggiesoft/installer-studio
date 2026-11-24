@@ -1,4 +1,4 @@
-﻿<#
+<#
 ================================================================================
 FILE: build-and-verify.ps1
 PROJECT: RaggieSoft Installer Studio ("Install Without Limits")
@@ -10,9 +10,10 @@ PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
   C++20 toolkit (`x64` + `ARM64`, static `/MT`, zero external dependencies):
     - `instbuild.exe`       : CLI compiler (`.rsip` & `.rsis`), `--emit-ai-spec`, & `--emit-vpat`
     - `SetupWizard.exe`     : Accessible customer-facing runtime wizard stub
-    - `InstallerStudio.exe` : 7-view native Win32 C++20 Visual IDE (`.rsip` & `.rsis`)
+    - `InstallerStudio.exe` : 10-view native Win32 C++20 Visual IDE (`.rsip` & `.rsis`)
     - `msiprism.exe`        : Native 64-bit MSI, MSM, MST & MSP SQL table inspector ("MSI Prism")
-    - `insttests.exe`       : Automated C++20 unit & integration self-tests (20 assertions)
+    - `RaggieSoftHelp.exe`  : Zero-dependency C++20 offline Help Viewer (`.rshm.json` + Named Pipe F1 IPC)
+    - `insttests.exe`       : Automated C++20 unit & integration self-tests
     - `HelloRaggieSoft.exe` : Sample target payload executable
 ================================================================================
 #>
@@ -22,7 +23,7 @@ $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Set-Location $RepoRoot
 
 Write-Host "======================================================================" -ForegroundColor Cyan
-Write-Host "  RaggieSoft Installer Studio — x64 + ARM64 Build & Verification Suite" -ForegroundColor Cyan
+Write-Host "  RaggieSoft Installer Studio v0.4.0 - x64 + ARM64 Build & Test Suite" -ForegroundColor Cyan
 Write-Host "======================================================================" -ForegroundColor Cyan
 
 # Step 1: Locate Visual Studio `vcvarsall.bat` for `cl.exe`, `rc.exe`, & Windows 11 SDK
@@ -69,11 +70,13 @@ foreach ($targetArch in @("arm64", "x64")) {
         "rc.exe /nologo /fo `"$objDir\RswSetup.res`" `"$RepoRoot\src\bootstrapper\RswSetupBootstrapper.rc`" || exit /b 1",
         "rc.exe /nologo /fo `"$objDir\RswIde.res`" `"$RepoRoot\src\ide\RswIde.rc`" || exit /b 1",
         "rc.exe /nologo /fo `"$objDir\MsiPrism.res`" `"$RepoRoot\src\prism\MsiPrism.rc`" || exit /b 1",
+        "rc.exe /nologo /fo `"$objDir\RswHelp.res`" `"$RepoRoot\src\help\RswHelpViewer.rc`" || exit /b 1",
         "rc.exe /nologo /fo `"$objDir\Hello.res`" `"$RepoRoot\examples\hello-raggiesoft\HelloRaggieSoft.rc`" || exit /b 1",
         "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 `"$RepoRoot\src\compiler\RswBuildMain.cpp`" `"$objDir\RswBuild.res`" /Fo`"$objDir\RswBuildMain.obj`" /Fe`"$outBinDir\instbuild.exe`" /link /INCREMENTAL:NO || exit /b 1",
         "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 `"$RepoRoot\src\bootstrapper\RswSetupMain.cpp`" `"$objDir\RswSetup.res`" /Fo`"$objDir\RswSetupMain.obj`" /Fe`"$outBinDir\SetupWizard.exe`" /link /INCREMENTAL:NO /SUBSYSTEM:WINDOWS || exit /b 1",
         "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 `"$RepoRoot\src\ide\RswIdeMain.cpp`" `"$objDir\RswIde.res`" /Fo`"$objDir\RswIdeMain.obj`" /Fe`"$outBinDir\InstallerStudio.exe`" /link /INCREMENTAL:NO /SUBSYSTEM:WINDOWS || exit /b 1",
         "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 `"$RepoRoot\src\prism\MsiPrismMain.cpp`" `"$objDir\MsiPrism.res`" /Fo`"$objDir\MsiPrismMain.obj`" /Fe`"$outBinDir\msiprism.exe`" /link /INCREMENTAL:NO /SUBSYSTEM:WINDOWS || exit /b 1",
+        "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 `"$RepoRoot\src\help\RswHelpMain.cpp`" `"$objDir\RswHelp.res`" /Fo`"$objDir\RswHelpMain.obj`" /Fe`"$outBinDir\RaggieSoftHelp.exe`" /link /INCREMENTAL:NO /SUBSYSTEM:WINDOWS || exit /b 1",
         "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 `"$RepoRoot\src\tests\RswSelfTests.cpp`" /Fo`"$objDir\RswSelfTests.obj`" /Fe`"$outBinDir\insttests.exe`" /link /INCREMENTAL:NO || exit /b 1",
         "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 `"$RepoRoot\examples\hello-raggiesoft\HelloRaggieSoft.cpp`" `"$objDir\Hello.res`" /Fo`"$objDir\Hello.obj`" /Fe`"$outBinDir\HelloRaggieSoft.exe`" /link /INCREMENTAL:NO /SUBSYSTEM:WINDOWS || exit /b 1"
     )
@@ -81,12 +84,20 @@ foreach ($targetArch in @("arm64", "x64")) {
 
     & cmd.exe /c "`"$batchPath`""
     if ($LASTEXITCODE -ne 0) { throw "C++20 compilation failed for [$targetArch]!" }
-    Write-Host "      [OK] Built instbuild.exe, SetupWizard.exe, InstallerStudio.exe, msiprism.exe & insttests.exe ($targetArch)." -ForegroundColor Green
+
+    # Stage offline `.rshm.json` Help Module into `bin\<arch>\HelpModules\raggiesoft.installer-studio`
+    $helpSrcDir = Join-Path $RepoRoot "help\raggiesoft.installer-studio"
+    $helpDstDir = Join-Path $outBinDir "HelpModules\raggiesoft.installer-studio"
+    New-Item -ItemType Directory -Force -Path $helpDstDir | Out-Null
+    Copy-Item -Recurse -Force (Join-Path $helpSrcDir "*") $helpDstDir
+
+    Write-Host "      [OK] Built instbuild.exe, SetupWizard.exe, InstallerStudio.exe, msiprism.exe, RaggieSoftHelp.exe & insttests.exe ($targetArch)." -ForegroundColor Green
 }
 
 $nativeArch = if ($hostIsArm64) { "arm64" } else { "x64" }
 $instBuild  = Join-Path $RepoRoot "bin\$nativeArch\instbuild.exe"
 $instStudio = Join-Path $RepoRoot "bin\$nativeArch\InstallerStudio.exe"
+$rswHelp    = Join-Path $RepoRoot "bin\$nativeArch\RaggieSoftHelp.exe"
 $instTests  = Join-Path $RepoRoot "bin\$nativeArch\insttests.exe"
 
 # Step 3: Emit AI Specs (`specs/` + `.agents/skills/raggiesoft-installer-studio/`)
@@ -123,16 +134,18 @@ foreach ($a in @("arm64", "x64")) {
     if ($LASTEXITCODE -ne 0) { throw "Merge Module (.msm) build failed ($a)!" }
 }
 
-# Step 5: Smoke-test 7-View Visual IDE (`InstallerStudio.exe`)
-Write-Host "[5/6] Verifying 7-View Visual IDE (InstallerStudio.exe --headless-smoke-test)..." -ForegroundColor Cyan
+# Step 5: Smoke-test 10-View Visual IDE (`InstallerStudio.exe`) & Native C++ Help Viewer (`RaggieSoftHelp.exe`)
+Write-Host "[5/6] Verifying Visual IDE & Native C++ Help Viewer (--headless-smoke-test)..." -ForegroundColor Cyan
 & $instStudio --headless-smoke-test $stdManifest
 if ($LASTEXITCODE -ne 0) { throw "InstallerStudio.exe headless smoke test failed ($LASTEXITCODE)!" }
-Write-Host "      [OK] InstallerStudio.exe AST load, @include resolution, comment preservation, & VPAT export passed." -ForegroundColor Green
+& $rswHelp --headless-smoke-test
+if ($LASTEXITCODE -ne 0) { throw "RaggieSoftHelp.exe headless smoke test failed ($LASTEXITCODE)!" }
+Write-Host "      [OK] InstallerStudio.exe & RaggieSoftHelp.exe headless smoke tests passed." -ForegroundColor Green
 
-# Step 6: Run 20-assertion C++20 self-test suite (`insttests.exe`)
+# Step 6: Run automated C++20 self-test suite (`insttests.exe`)
 Write-Host "[6/6] Running automated C++20 self-test suite (insttests.exe)..." -ForegroundColor Cyan
 & $instTests
 if ($LASTEXITCODE -ne 0) { throw "insttests.exe reported failures!" }
 
 Write-Host ""
-Write-Host "ALL RAGGIESOFT INSTALLER STUDIO x64 + ARM64 BINARIES, AI SPECS, SUITE, VPAT, AND TESTS PASSED!" -ForegroundColor Green
+Write-Host "ALL RAGGIESOFT INSTALLER STUDIO v0.4.0 x64 + ARM64 BINARIES, HELP VIEWER, AI SPECS, SUITE, VPAT, AND TESTS PASSED!" -ForegroundColor Green

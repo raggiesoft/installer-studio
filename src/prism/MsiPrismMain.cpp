@@ -6,9 +6,8 @@
 //
 // PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
 //   What is `msiprism.exe` ("RaggieSoft MSI Prism")?
-//     Microsoft's classic Windows SDK database viewer (`Orca.exe`) is still a
-//     32-bit Windows 2000 binary tucked inside an `.msi` installer with no Dark
-//     Mode, no ARM64 build, and no Per-Monitor V2 DPI scaling.
+//     Legacy SDK database table viewers were built as 32-bit era utilities with
+//     no Dark Mode, no native ARM64 build, and no Per-Monitor V2 DPI scaling.
 //
 //     `msiprism.exe` is a zero-dependency static `/MT` Win32 C++20 database
 //     inspector (`x64` & `ARM64`) built right into **RaggieSoft Installer Studio**:
@@ -16,13 +15,14 @@
 //          `.msp` (Patch Package via `MSIDBOPEN_READONLY + MSIDBOPEN_PATCHFILE`).
 //       2. Lists `SummaryInformation` plus every relational SQL table (`_Tables`)
 //          in the left pane, and renders all columns and rows inside a fast,
-//          keyboard-accessible Win32 `SysListView32` table!
+//          keyboard-accessible, Dark-Mode-aware Win32 `SysListView32` table!
 //       3. Runs instant relational/ICE80 audits and generates `.mst` Transforms
 //          or `.msp` Patch Packages by diffing two `.msi` files!
-//       4. Supports `--inspect-summary <file>` for headless CI/CD & self-tests!
+//       4. Supports `--inspect-summary <file>` and `--export-screenshots <dir> [db]`
+//          for headless CI/CD & automated UI verification!
 // ================================================================================
 
-#include "../common/RswWin32UiTheme.hpp"
+#include "../common/RswGlassRenderer.hpp"
 #include "../common/RswPlatform.hpp"
 #include "../common/RswVersion.hpp"
 #include "../compiler/RswExtraPackages.hpp"
@@ -179,11 +179,15 @@ public:
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
             0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PRISM_ROWGRID)), hInst, nullptr);
         ListView_SetExtendedListViewStyle(hRowGrid, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+        rsw::ui::AttachDarkAwareListViewSubclass(hRowGrid, &theme);
 
         hStatusEdit = ::CreateWindowExW(
             WS_EX_CLIENTEDGE, L"EDIT", L"Open an .msi, .msm, or .msp database in MSI Prism to inspect its SummaryInformation and relational SQL tables.",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_READONLY | WS_VSCROLL,
             0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PRISM_STATUS)), hInst, nullptr);
+
+        rsw::ui::ApplyDarkScrollbarTheme(hTableList,  theme);
+        rsw::ui::ApplyDarkScrollbarTheme(hStatusEdit, theme);
     }
 
     void LayoutChildren() {
@@ -533,8 +537,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         }
     }
 
+    ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    rsw::ui::ScopedGdiPlusSession gdiPlusSession;
     INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES};
     ::InitCommonControlsEx(&icc);
+
+    std::filesystem::path exportShotDir;
+    std::filesystem::path initialDbFile;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == L"--export-screenshots" && i + 1 < args.size()) {
+            exportShotDir = args[i + 1];
+            ++i;
+        } else if (std::filesystem::exists(args[i])) {
+            initialDbFile = args[i];
+        }
+    }
 
     MsiPrismWindow prism{};
     prism.theme.Refresh(RGB(14, 165, 233), RGB(251, 191, 36));
@@ -557,14 +574,29 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         CW_USEDEFAULT, CW_USEDEFAULT, W, H,
         nullptr, nullptr, hInstance, &prism);
-    if (!hWnd) return 1;
+    if (!hWnd) {
+        ::CoUninitialize();
+        return 1;
+    }
 
-    if (!args.empty() && std::filesystem::exists(args.front())) {
-        prism.LoadDatabaseFile(args.front());
+    if (!initialDbFile.empty()) {
+        prism.LoadDatabaseFile(initialDbFile);
     }
 
     ::ShowWindow(hWnd, nCmdShow);
     ::UpdateWindow(hWnd);
+
+    if (!exportShotDir.empty()) {
+        const LRESULT featIdx = ::SendMessageW(prism.hTableList, LB_FINDSTRINGEXACT, static_cast<WPARAM>(-1), reinterpret_cast<LPARAM>(L"Feature"));
+        if (featIdx != LB_ERR) {
+            ::SendMessageW(prism.hTableList, LB_SETCURSEL, static_cast<WPARAM>(featIdx), 0);
+            prism.PopulateSelectedTable();
+        }
+        const bool ok = rsw::ui::CaptureWindowToPngFile(hWnd, exportShotDir / L"msiprism-sql-inspector.png");
+        ::DestroyWindow(hWnd);
+        ::CoUninitialize();
+        return ok ? 0 : 2;
+    }
 
     MSG msg{};
     while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -573,5 +605,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
             ::DispatchMessageW(&msg);
         }
     }
+    ::CoUninitialize();
     return 0;
 }

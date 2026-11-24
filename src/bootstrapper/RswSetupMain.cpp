@@ -393,7 +393,7 @@ bool ExtractEmbeddedMsiToFile(const std::filesystem::path& destFile, std::wstrin
     return ExtractEmbeddedResourceToFile(rsw::kResIdEmbeddedMsi, destFile, outError);
 }
 
-/// Eliminates InstallAware's infamous `"Copying New File: [1]"` bug by stripping any unexpanded
+/// Eliminates the common external-UI `"Copying New File: [1]"` bug by stripping any unexpanded
 /// Windows Installer `[1]`..`[99]` field placeholders and cleaning dangling `: ` separators!
 std::wstring SanitizeUnexpandedMsiTokens(std::wstring s) {
     std::wstring out;
@@ -1265,6 +1265,10 @@ public:
         hBtnBack    = mkBtn(L"< &Back",                IDC_NAV_BACK,    BS_PUSHBUTTON);
         hBtnPrimary = mkBtn(cfg.installBtnText.c_str(), IDC_NAV_PRIMARY, BS_DEFPUSHBUTTON);
         hBtnCancel  = mkBtn(L"Cancel",                 IDC_NAV_CANCEL,  BS_PUSHBUTTON);
+
+        rsw::ui::ApplyDarkScrollbarTheme(hLicRich,    theme);
+        rsw::ui::ApplyDarkScrollbarTheme(hReadMeEdit, theme);
+        rsw::ui::ApplyDarkScrollbarTheme(hFeatTree,   theme);
     }
 
     void RefreshAutorunMenuLabels() {
@@ -2479,14 +2483,17 @@ public:
                         theme);
 
                     ::SelectObject(memDc, hFontSmall);
-                    ::SetTextColor(memDc, theme.accentPrimary);
+                    const COLORREF stateTextCol = theme.isHighContrast
+                        ? theme.textPrimary
+                        : (theme.isDarkMode ? RGB(125, 211, 252) : RGB(30, 64, 175));
+                    ::SetTextColor(memDc, stateTextCol);
                     const std::wstring stTxt = rsw::DescribeMsiTreeState(fn.currentState);
-                    RECT stRc{detCard.left + S(50), detCard.top + S(40), detCard.right - S(12), detCard.top + S(74)};
+                    RECT stRc{detCard.left + S(50), detCard.top + S(39), detCard.right - S(12), detCard.top + S(88)};
                     ::DrawTextW(memDc, stTxt.c_str(), -1, &stRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
 
                     ::SelectObject(memDc, hFontBody);
                     ::SetTextColor(memDc, theme.textSecondary);
-                    RECT dRc{detCard.left + S(14), detCard.top + S(78), detCard.right - S(14), detCard.bottom - S(72)};
+                    RECT dRc{detCard.left + S(14), detCard.top + S(92), detCard.right - S(14), detCard.bottom - S(72)};
                     ::DrawTextW(memDc, fn.description.c_str(), -1, &dRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
 
                     std::wstring volLbl;
@@ -3319,11 +3326,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         }
     }
 
-    // Silent CLI install mode (`/s`, `/qn`, `--silent`, `/quiet`)
+    // Silent CLI install mode (`/s`, `/S`, `/qn`, `--silent`, `/quiet`) & `--export-screenshots`
     bool silentInstall = false;
     std::wstring silentExtraProps;
-    for (const auto& a : args) {
-        if (a == L"/s" || a == L"/S" || a == L"/qn" || a == L"/quiet" || a == L"--silent") {
+    std::filesystem::path exportShotDir;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const auto& a = args[i];
+        if (a == L"--export-screenshots" && i + 1 < args.size()) {
+            exportShotDir = args[i + 1];
+            ++i;
+        } else if (a == L"/s" || a == L"/S" || a == L"/qn" || a == L"/quiet" || a == L"--silent") {
             silentInstall = true;
         } else if (a.find(L'=') != std::wstring::npos && a.front() != L'-' && a.front() != L'/') {
             if (!silentExtraProps.empty()) silentExtraProps += L" ";
@@ -3480,6 +3492,31 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
 
     ::ShowWindow(hWnd, nCmdShow);
     ::UpdateWindow(hWnd);
+
+    if (!exportShotDir.empty()) {
+        app.alreadyInstalled = false;
+        app.selectedAction   = SelectedAction::InstallCustom;
+
+        if (app.cfg.hasLicenseRtf) {
+            app.currentPage = WizardPage::License;
+            ::SendMessageW(app.hLicAccept, BM_SETCHECK, BST_CHECKED, 0);
+            app.UpdateControlVisibilityForPage();
+            rsw::ui::CaptureWindowToPngFile(hWnd, exportShotDir / L"setupwizard-license.png");
+        }
+
+        app.currentPage = WizardPage::SetupType;
+        app.UpdateControlVisibilityForPage();
+        const bool okType = rsw::ui::CaptureWindowToPngFile(hWnd, exportShotDir / L"setupwizard-setup-type.png");
+
+        app.EnsureFeatureTreeLoaded();
+        app.currentPage = WizardPage::CustomFeatures;
+        app.UpdateControlVisibilityForPage();
+        const bool okTree = rsw::ui::CaptureWindowToPngFile(hWnd, exportShotDir / L"setupwizard-selection-tree.png");
+
+        ::DestroyWindow(hWnd);
+        ::CoUninitialize();
+        return (okType && okTree) ? 0 : 2;
+    }
 
     // 5. Accessible keyboard-aware Win32 message loop (`IsDialogMessageW` powers `Tab`, `Shift+Tab`,
     //    `Arrow` keys across subclassed `BS_AUTORADIOBUTTON` cards, `Enter`, `Esc`, and `Alt+Key`!)

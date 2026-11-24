@@ -55,8 +55,10 @@ namespace Gdiplus {
 
 #include <cmath>
 #include <cwctype>
+#include <filesystem>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #pragma comment(lib, "gdiplus.lib")
 
@@ -1144,6 +1146,389 @@ inline void DrawAccessibleCheckbox(
     ::DrawTextW(hdc, labelWithMnemonic.data(), static_cast<int>(labelWithMnemonic.size()), &txtRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     ::SelectObject(hdc, oldF);
     ::DeleteObject(hChkFont);
+}
+
+/// Applies Windows 11 Dark Mode (`DarkMode_Explorer`) or Daylight (`Explorer`) scrollbar chrome
+/// onto standard Win32 scrollable controls (`SysListView32`, `SysTreeView32`, `LISTBOX`, `EDIT`, `RichEdit`).
+inline void ApplyDarkScrollbarTheme(HWND hCtrl, const RswTheme& theme) noexcept {
+    if (!hCtrl) return;
+    if (theme.isHighContrast) {
+        ::SetWindowTheme(hCtrl, nullptr, nullptr);
+    } else {
+        ::SetWindowTheme(hCtrl, theme.isDarkMode ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+    }
+}
+
+namespace detail {
+
+struct SharedCheckboxSubclassState {
+    const RswTheme* themePtr      = nullptr;
+    bool            onCardSurface = false;
+    bool            isHovered     = false;
+};
+
+inline LRESULT CALLBACK SharedCheckboxSubclassProc(
+    HWND hWnd,
+    UINT uMsg,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR uIdSubclass,
+    DWORD_PTR dwRefData) noexcept
+{
+    auto* st = reinterpret_cast<SharedCheckboxSubclassState*>(dwRefData);
+    if (!st || !st->themePtr) {
+        return ::DefSubclassProc(hWnd, uMsg, wParam, lParam);
+    }
+
+    switch (uMsg) {
+        case WM_NCDESTROY:
+            ::RemoveWindowSubclass(hWnd, &SharedCheckboxSubclassProc, uIdSubclass);
+            delete st;
+            return ::DefSubclassProc(hWnd, uMsg, wParam, lParam);
+
+        case WM_ERASEBKGND:
+            return 1;
+
+        case WM_MOUSEMOVE:
+            if (!st->isHovered) {
+                st->isHovered = true;
+                TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hWnd, 0};
+                ::TrackMouseEvent(&tme);
+                ::InvalidateRect(hWnd, nullptr, FALSE);
+            }
+            break;
+
+        case WM_MOUSELEAVE:
+            st->isHovered = false;
+            ::InvalidateRect(hWnd, nullptr, FALSE);
+            break;
+
+        case WM_SETFOCUS:
+        case WM_KILLFOCUS:
+        case BM_SETCHECK: {
+            const LRESULT res = ::DefSubclassProc(hWnd, uMsg, wParam, lParam);
+            ::InvalidateRect(hWnd, nullptr, FALSE);
+            return res;
+        }
+
+        case WM_LBUTTONUP:
+        case WM_KEYUP: {
+            const LRESULT res = ::DefSubclassProc(hWnd, uMsg, wParam, lParam);
+            ::InvalidateRect(hWnd, nullptr, FALSE);
+            return res;
+        }
+
+        case WM_PAINT:
+        case WM_PRINTCLIENT: {
+            RECT rc{};
+            ::GetClientRect(hWnd, &rc);
+            const int w = std::max<int>(1, rc.right - rc.left);
+            const int h = std::max<int>(1, rc.bottom - rc.top);
+
+            PAINTSTRUCT ps{};
+            HDC targetDc = (uMsg == WM_PRINTCLIENT) ? reinterpret_cast<HDC>(wParam) : ::BeginPaint(hWnd, &ps);
+            HDC memDc    = ::CreateCompatibleDC(targetDc);
+            HBITMAP bmp  = ::CreateCompatibleBitmap(targetDc, w, h);
+            HGDIOBJ oldB = ::SelectObject(memDc, bmp);
+
+            wchar_t txtBuf[512]{};
+            ::GetWindowTextW(hWnd, txtBuf, static_cast<int>(std::size(txtBuf)));
+            const bool checked  = (::SendMessageW(hWnd, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            const bool hasFocus = (::GetFocus() == hWnd);
+            const UINT dpi      = ::GetDpiForWindow(hWnd);
+
+            {
+                Gdiplus::Graphics g(memDc);
+                g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+                g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
+                DrawAccessibleCheckbox(
+                    memDc, g, RECT{0, 0, w, h}, dpi, *st->themePtr,
+                    txtBuf, checked, hasFocus, st->isHovered, st->onCardSurface);
+            }
+
+            ::BitBlt(targetDc, 0, 0, w, h, memDc, 0, 0, SRCCOPY);
+            ::SelectObject(memDc, oldB);
+            ::DeleteObject(bmp);
+            ::DeleteDC(memDc);
+            if (uMsg == WM_PAINT) {
+                ::EndPaint(hWnd, &ps);
+            }
+            return 0;
+        }
+    }
+    return ::DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
+
+/// Custom-paints `SysHeader32` (including any unoccupied trailing strip to the right of the last column!)
+/// so `SysListView32` report grids NEVER show blinding white header bars or black-on-dark text in Dark Mode!
+inline LRESULT CALLBACK SharedHeaderSubclassProc(
+    HWND hHdr,
+    UINT uMsg,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR uIdSubclass,
+    DWORD_PTR dwRefData) noexcept
+{
+    const auto* themePtr = reinterpret_cast<const RswTheme*>(dwRefData);
+    if (!themePtr) {
+        return ::DefSubclassProc(hHdr, uMsg, wParam, lParam);
+    }
+
+    switch (uMsg) {
+        case WM_NCDESTROY:
+            ::RemoveWindowSubclass(hHdr, &SharedHeaderSubclassProc, uIdSubclass);
+            return ::DefSubclassProc(hHdr, uMsg, wParam, lParam);
+
+        case WM_ERASEBKGND:
+            return 1;
+
+        case WM_PAINT:
+        case WM_PRINTCLIENT: {
+            RECT rc{};
+            ::GetClientRect(hHdr, &rc);
+            const int w = std::max<int>(1, rc.right - rc.left);
+            const int h = std::max<int>(1, rc.bottom - rc.top);
+
+            PAINTSTRUCT ps{};
+            HDC targetDc = (uMsg == WM_PRINTCLIENT) ? reinterpret_cast<HDC>(wParam) : ::BeginPaint(hHdr, &ps);
+            HDC memDc    = ::CreateCompatibleDC(targetDc);
+            HBITMAP bmp  = ::CreateCompatibleBitmap(targetDc, w, h);
+            HGDIOBJ oldB = ::SelectObject(memDc, bmp);
+
+            const RswTheme& th = *themePtr;
+            const COLORREF hdrBg = th.isHighContrast
+                ? ::GetSysColor(COLOR_BTNFACE)
+                : (th.isDarkMode ? RGB(11, 19, 43) : RGB(226, 232, 240));
+            const COLORREF hdrFg = th.isHighContrast
+                ? ::GetSysColor(COLOR_BTNTEXT)
+                : (th.isDarkMode ? RGB(248, 250, 252) : RGB(15, 23, 42));
+            const COLORREF hdrDiv = th.isHighContrast
+                ? ::GetSysColor(COLOR_WINDOWFRAME)
+                : (th.isDarkMode ? RGB(51, 65, 85) : RGB(148, 163, 184));
+
+            HBRUSH bgBrush = ::CreateSolidBrush(hdrBg);
+            RECT fullRc{0, 0, w, h};
+            ::FillRect(memDc, &fullRc, bgBrush);
+            ::DeleteObject(bgBrush);
+
+            HPEN divPen = ::CreatePen(PS_SOLID, 1, hdrDiv);
+            HGDIOBJ oldPen = ::SelectObject(memDc, divPen);
+            ::MoveToEx(memDc, 0, h - 1, nullptr);
+            ::LineTo(memDc, w, h - 1);
+
+            const UINT dpi   = ::GetDpiForWindow(hHdr);
+            const int padX   = ScalePx(8, dpi, th.textScalePercent);
+            HFONT hHdrFont   = CreateScaledFont(L"Segoe UI", 9, FW_SEMIBOLD, dpi, th.textScalePercent);
+            HGDIOBJ oldFont  = ::SelectObject(memDc, hHdrFont);
+            ::SetBkMode(memDc, TRANSPARENT);
+            ::SetTextColor(memDc, hdrFg);
+
+            const int colCount = Header_GetItemCount(hHdr);
+            for (int i = 0; i < colCount; ++i) {
+                RECT itemRc{};
+                if (!Header_GetItemRect(hHdr, i, &itemRc)) continue;
+
+                wchar_t colText[256]{};
+                HDITEMW hdi{};
+                hdi.mask       = HDI_TEXT | HDI_FORMAT;
+                hdi.pszText    = colText;
+                hdi.cchTextMax = static_cast<int>(std::size(colText));
+                Header_GetItem(hHdr, i, &hdi);
+
+                UINT align = DT_LEFT;
+                if ((hdi.fmt & HDF_JUSTIFYMASK) == HDF_RIGHT)       align = DT_RIGHT;
+                else if ((hdi.fmt & HDF_JUSTIFYMASK) == HDF_CENTER) align = DT_CENTER;
+
+                RECT txtRc{itemRc.left + padX, itemRc.top, std::max(itemRc.left + padX, itemRc.right - padX), itemRc.bottom - 1};
+                ::DrawTextW(memDc, colText, -1, &txtRc, align | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+                ::MoveToEx(memDc, itemRc.right - 1, itemRc.top + 4, nullptr);
+                ::LineTo(memDc, itemRc.right - 1, itemRc.bottom - 4);
+            }
+
+            ::SelectObject(memDc, oldFont);
+            ::DeleteObject(hHdrFont);
+            ::SelectObject(memDc, oldPen);
+            ::DeleteObject(divPen);
+
+            ::BitBlt(targetDc, 0, 0, w, h, memDc, 0, 0, SRCCOPY);
+            ::SelectObject(memDc, oldB);
+            ::DeleteObject(bmp);
+            ::DeleteDC(memDc);
+            if (uMsg == WM_PAINT) {
+                ::EndPaint(hHdr, &ps);
+            }
+            return 0;
+        }
+    }
+    return ::DefSubclassProc(hHdr, uMsg, wParam, lParam);
+}
+
+inline void EnsureListViewHeaderSubclassed(HWND hListView, const RswTheme* themePtr) noexcept {
+    if (!hListView || !themePtr) return;
+    HWND hHdr = ListView_GetHeader(hListView);
+    if (hHdr) {
+        ::SetWindowSubclass(hHdr, &SharedHeaderSubclassProc, 0x52534844u, reinterpret_cast<DWORD_PTR>(themePtr));
+        ::InvalidateRect(hHdr, nullptr, TRUE);
+    }
+}
+
+inline LRESULT CALLBACK SharedListViewSubclassProc(
+    HWND hListView,
+    UINT uMsg,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR uIdSubclass,
+    DWORD_PTR dwRefData) noexcept
+{
+    const auto* themePtr = reinterpret_cast<const RswTheme*>(dwRefData);
+    if (uMsg == WM_NCDESTROY) {
+        ::RemoveWindowSubclass(hListView, &SharedListViewSubclassProc, uIdSubclass);
+        return ::DefSubclassProc(hListView, uMsg, wParam, lParam);
+    }
+    const LRESULT res = ::DefSubclassProc(hListView, uMsg, wParam, lParam);
+    if (uMsg == LVM_INSERTCOLUMNW || uMsg == LVM_INSERTCOLUMNA || uMsg == WM_STYLECHANGED) {
+        EnsureListViewHeaderSubclassed(hListView, themePtr);
+    }
+    return res;
+}
+
+} // namespace detail
+
+/// Subclasses any Win32 `BS_AUTOCHECKBOX` so its checkmark, focus ring, and label text maintain
+/// `>= 15.8:1` WCAG AAA contrast in Dark Mode, Light Mode, and Windows High Contrast!
+inline void AttachAccessibleCheckboxSubclass(HWND hCheckbox, const RswTheme* themePtr, bool onCardSurface = false) noexcept {
+    if (!hCheckbox || !themePtr) return;
+    auto* st = new detail::SharedCheckboxSubclassState{themePtr, onCardSurface, false};
+    if (!::SetWindowSubclass(hCheckbox, &detail::SharedCheckboxSubclassProc, 0x5253434Bu, reinterpret_cast<DWORD_PTR>(st))) {
+        delete st;
+    }
+}
+
+/// Subclasses any `SysListView32` (`LVS_REPORT`) and its child `SysHeader32` so column headers,
+/// trailing header space, and scrollbars render cleanly in Dark Mode, Light Mode, and High Contrast!
+inline void AttachDarkAwareListViewSubclass(HWND hListView, const RswTheme* themePtr) noexcept {
+    if (!hListView || !themePtr) return;
+    ApplyDarkScrollbarTheme(hListView, *themePtr);
+    ::SetWindowSubclass(hListView, &detail::SharedListViewSubclassProc, 0x52534C56u, reinterpret_cast<DWORD_PTR>(themePtr));
+    detail::EnsureListViewHeaderSubclassed(hListView, themePtr);
+}
+
+/// Encodes a 32-bpp BGRA pixel buffer (`width x height`, stride `width * 4`) to a `.png` file via OS WIC!
+inline bool SaveBgraPixelsToPngFile(
+    const std::uint8_t* pixels,
+    int width,
+    int height,
+    const std::filesystem::path& outPngPath) noexcept
+{
+    if (!pixels || width <= 0 || height <= 0) return false;
+    std::error_code ec;
+    if (outPngPath.has_parent_path()) {
+        std::filesystem::create_directories(outPngPath.parent_path(), ec);
+    }
+
+    IWICImagingFactory* pFactory = nullptr;
+    if (FAILED(::CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pFactory))) || !pFactory) {
+        return false;
+    }
+
+    IWICStream* pStream = nullptr;
+    IWICBitmapEncoder* pEncoder = nullptr;
+    IWICBitmapFrameEncode* pFrame = nullptr;
+    IPropertyBag2* pProps = nullptr;
+    bool ok = false;
+
+    if (SUCCEEDED(pFactory->CreateStream(&pStream)) && pStream &&
+        SUCCEEDED(pStream->InitializeFromFilename(outPngPath.wstring().c_str(), GENERIC_WRITE)) &&
+        SUCCEEDED(pFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &pEncoder)) && pEncoder &&
+        SUCCEEDED(pEncoder->Initialize(pStream, WICBitmapEncoderNoCache)) &&
+        SUCCEEDED(pEncoder->CreateNewFrame(&pFrame, &pProps)) && pFrame &&
+        SUCCEEDED(pFrame->Initialize(pProps)) &&
+        SUCCEEDED(pFrame->SetSize(static_cast<UINT>(width), static_cast<UINT>(height)))) {
+
+        WICPixelFormatGUID fmt = GUID_WICPixelFormat32bppBGRA;
+        if (SUCCEEDED(pFrame->SetPixelFormat(&fmt))) {
+            const UINT stride = static_cast<UINT>(width) * 4u;
+            const UINT bufSz  = stride * static_cast<UINT>(height);
+            if (SUCCEEDED(pFrame->WritePixels(static_cast<UINT>(height), stride, bufSz, const_cast<BYTE*>(pixels))) &&
+                SUCCEEDED(pFrame->Commit()) &&
+                SUCCEEDED(pEncoder->Commit())) {
+                ok = true;
+            }
+        }
+    }
+
+    if (pProps)   pProps->Release();
+    if (pFrame)   pFrame->Release();
+    if (pEncoder) pEncoder->Release();
+    if (pStream)  pStream->Release();
+    pFactory->Release();
+    return ok;
+}
+
+/// Pumps pending Win32 messages and captures `hWnd` (full window chrome + all child controls) to a `.png` file!
+inline bool CaptureWindowToPngFile(HWND hWnd, const std::filesystem::path& outPngPath) noexcept {
+    if (!hWnd || !::IsWindow(hWnd)) return false;
+
+    ::RedrawWindow(hWnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
+    MSG msg{};
+    for (int pass = 0; pass < 4; ++pass) {
+        while (::PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            ::TranslateMessage(&msg);
+            ::DispatchMessageW(&msg);
+        }
+        ::Sleep(25);
+    }
+    ::RedrawWindow(hWnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+
+    RECT winRc{};
+    if (!::GetWindowRect(hWnd, &winRc)) return false;
+    const int w = winRc.right - winRc.left;
+    const int h = winRc.bottom - winRc.top;
+    if (w <= 16 || h <= 16) return false;
+
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth       = w;
+    bmi.bmiHeader.biHeight      = -h; // Top-down 32-bpp BGRA DIB
+    bmi.bmiHeader.biPlanes      = 1;
+    bmi.bmiHeader.biBitCount    = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* pvBits = nullptr;
+    HDC screenDc = ::GetDC(nullptr);
+    HDC memDc    = ::CreateCompatibleDC(screenDc);
+    HBITMAP hDib = ::CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &pvBits, nullptr, 0);
+    ::ReleaseDC(nullptr, screenDc);
+    if (!hDib || !pvBits) {
+        if (hDib) ::DeleteObject(hDib);
+        ::DeleteDC(memDc);
+        return false;
+    }
+
+    HGDIOBJ oldBmp = ::SelectObject(memDc, hDib);
+    // `PW_RENDERFULLCONTENT` (`0x00000002`) captures DWM window chrome + all child windows accurately!
+    if (!::PrintWindow(hWnd, memDc, 0x00000002u)) {
+        if (!::PrintWindow(hWnd, memDc, 0)) {
+            ::SendMessageW(hWnd, WM_PRINT, reinterpret_cast<WPARAM>(memDc),
+                           PRF_NONCLIENT | PRF_CLIENT | PRF_CHILDREN | PRF_ERASEBKGND);
+        }
+    }
+    ::GdiFlush();
+
+    // Force alpha channel to `255` (`0xFF`) across all pixels because classic GDI text/controls leave the
+    // 4th byte of 32-bit DIBs at `0x00`, which would otherwise appear transparent in 32-bpp RGBA PNGs!
+    auto* bytes = static_cast<std::uint8_t*>(pvBits);
+    const std::size_t totalPx = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
+    for (std::size_t i = 0; i < totalPx; ++i) {
+        bytes[i * 4 + 3] = 0xFF;
+    }
+
+    const bool saved = SaveBgraPixelsToPngFile(bytes, w, h, outPngPath);
+    ::SelectObject(memDc, oldBmp);
+    ::DeleteObject(hDib);
+    ::DeleteDC(memDc);
+    return saved;
 }
 
 } // namespace rsw::ui

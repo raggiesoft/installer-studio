@@ -10,7 +10,7 @@
 //     Tree (`SelectionTree`)** for our C++20 external UI (`SetupWizard.exe`) and
 //     IDE Live Preview (`InstallerStudio.exe`)!
 //
-//   How does it match (and surpass) InstallAware's external UI `SelectionTree`?
+//   How does our native C++20 external-UI `SelectionTree` work?
 //     1. **Genuine MSI Feature-State Split Icons (`[Drive/State | v]`)**:
 //        Builds a Per-Monitor V2 DPI-scaled 32-bit ARGB `HIMAGELIST` (`TVSIL_STATE`)
 //        with all 5 Windows Installer visual feature states:

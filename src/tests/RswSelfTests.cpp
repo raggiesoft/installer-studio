@@ -199,14 +199,68 @@ int wmain() {
     const auto samplePayload = binDir / L"HelloRaggieSoft.exe";
     const auto payloadToUse  = std::filesystem::exists(samplePayload) ? samplePayload : std::filesystem::path(exeBuf);
 
-    // Emit AI specs
+    // Emit AI specs & enforce permanent Zero-Competitor-Mention policy across `llms.txt`, `llms-full.txt`, & `SKILL.md`!
     std::string err;
     const auto aiDir = testWorkDir / L"ai-spec";
-    Check(rsw::EmitAiSpecifications(aiDir, err) &&
-          std::filesystem::exists(aiDir / L"llms.txt") &&
-          std::filesystem::exists(aiDir / L"llms-full.txt") &&
-          std::filesystem::exists(aiDir / L"SKILL.md"),
-          "--emit-ai-spec emits llms.txt, llms-full.txt, and SKILL.md", err);
+    const bool aiEmitted = rsw::EmitAiSpecifications(aiDir, err) &&
+                           std::filesystem::exists(aiDir / L"llms.txt") &&
+                           std::filesystem::exists(aiDir / L"llms-full.txt") &&
+                           std::filesystem::exists(aiDir / L"SKILL.md");
+    Check(aiEmitted, "--emit-ai-spec emits llms.txt, llms-full.txt, and SKILL.md", err);
+    if (aiEmitted) {
+        auto readLower = [](const std::filesystem::path& p) {
+            std::ifstream in(p, std::ios::binary);
+            std::ostringstream ss;
+            ss << in.rdbuf();
+            return rsw::AsciiLower(ss.str());
+        };
+        const std::string combinedAi =
+            readLower(aiDir / L"llms.txt") + "\n" +
+            readLower(aiDir / L"llms-full.txt") + "\n" +
+            readLower(aiDir / L"SKILL.md");
+        const char* bannedCompetitors[] = {
+            "installaware", "installshield", "inno setup", ".iss",
+            "advanced installer", "wix", "nsis", "orca.exe", "msicode"
+        };
+        auto hasWholeToken = [](const std::string& hay, std::string_view tok) {
+            std::size_t p = 0;
+            while ((p = hay.find(tok, p)) != std::string::npos) {
+                const bool leftAlpha  = (p > 0) && (hay[p - 1] >= 'a' && hay[p - 1] <= 'z');
+                const std::size_t end = p + tok.size();
+                const bool rightAlpha = (end < hay.size()) && (hay[end] >= 'a' && hay[end] <= 'z');
+                if ((tok.front() == '.' || !leftAlpha) && !rightAlpha) return true;
+                p = end;
+            }
+            return false;
+        };
+        std::string foundBanned;
+        for (const char* b : bannedCompetitors) {
+            if (hasWholeToken(combinedAi, b)) {
+                foundBanned = b;
+                break;
+            }
+        }
+        Check(foundBanned.empty(), "AI specs (llms.txt, llms-full.txt, SKILL.md) contain zero competitor mentions", foundBanned);
+    }
+
+    // Verify native C++20 `RaggieSoftHelp.exe --headless-smoke-test` loads `.rshm.json` & renders all HTML5 topics to RTF!
+    const auto helpExe = binDir / L"RaggieSoftHelp.exe";
+    Check(std::filesystem::exists(helpExe), "RaggieSoftHelp.exe native C++20 Help Viewer present alongside insttests.exe");
+    if (std::filesystem::exists(helpExe)) {
+        std::wstring hCmd = L"\"" + helpExe.wstring() + L"\" --headless-smoke-test";
+        STARTUPINFOW si{sizeof(si)};
+        PROCESS_INFORMATION pi{};
+        bool helpSmokeOk = false;
+        if (::CreateProcessW(nullptr, hCmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+            ::WaitForSingleObject(pi.hProcess, INFINITE);
+            DWORD code = 1;
+            ::GetExitCodeProcess(pi.hProcess, &code);
+            ::CloseHandle(pi.hThread);
+            ::CloseHandle(pi.hProcess);
+            helpSmokeOk = (code == 0);
+        }
+        Check(helpSmokeOk, "RaggieSoftHelp.exe --headless-smoke-test validates module.rshm.json & HTML5->RTF reader");
+    }
 
     // Build v1.0.0 Enterprise `.msi` + `-setup.exe` exercising `v0.3` Components, CreateFolder,
     // FileAssociations (both HKMU & Advertised ProgId/Verb!), Express/Custom MSI Dialogs, & Custom [MsiDialog.*]!

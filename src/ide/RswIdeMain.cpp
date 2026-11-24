@@ -6,13 +6,13 @@
 //
 // PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
 //   What is `InstallerStudio.exe` ("RaggieSoft Installer Studio")?
-//     `InstallerStudio.exe` is our **9-View Enterprise Win32 C++20 Visual IDE**
-//     and **4-Wizard AeroWizard Suite** for authoring standalone `.rsip` projects,
+//     `InstallerStudio.exe` is our **10-View Enterprise Win32 C++20 Visual IDE**
+//     and **5-Wizard AeroWizard Suite** for authoring standalone `.rsip` projects,
 //     `@include` `.rsii` dialog/component presets, and multi-project `.rsis` suites!
 //     Compiled directly with `cl.exe` + the stock Windows 11 SDK (`/MT` static
 //     binary, zero .NET, zero Electron, zero Delphi VCL bloat), it provides:
 //       1. **Package & Identity**          : Product metadata, GUIDs, & scope.
-//       2. **Destination Files & Folders** : InstallShield-style `SysTreeView32`
+//       2. **Destination Files & Folders** : Hierarchical `SysTreeView32`
 //          Destination Computer folder tree (`INSTALLDIR`, `CommonFiles64`,
 //          `ProgramData`, `AppData`, `LocalAppData`, `StartMenu`, `Desktop`,
 //          `System64`, `Fonts` + custom `CreateFolder` subfolders) paired with a
@@ -20,18 +20,20 @@
 //       3. **Setup Design (Components)**   : Hierarchical `Features -> Sub-Features
 //          -> Components -> KeyPaths` (`File`, `Registry` per ICE38, or `Folder`
 //          per ICE18) enforcing Microsoft's Official Component Rules!
-//       4. **File Associations & Verbs**   : Visual `[FileAssociation.*]` table &
+//       4. **Runtimes & Merge Modules**    : Pre-MSI `[Prerequisite.*]` catalog &
+//          native 64-bit `[MergeModule.*]` (`.msm`) consumption!
+//       5. **File Associations & Verbs**   : Visual `[FileAssociation.*]` table &
 //          editor (`HKMU\Software\Classes` clean mode + Advertised MSI SQL tables).
-//       5. **Shortcuts & Registry**        : Visual `[Shortcut.*]` & `[Registry.*]`.
-//       6. **C++ Wizard Designer**         : Live GDI+ Designer for `SetupWizard.exe`
+//       6. **Shortcuts & Registry**        : Visual `[Shortcut.*]` & `[Registry.*]`.
+//       7. **C++ Wizard Designer**         : Live GDI+ Designer for `SetupWizard.exe`
 //          (`standard` Glass, `aerowizard` AeroWizard, & `autorun16x9`).
-//       7. **MSI.DLL Dialog Designer**     : Dedicated `370x270` DLU visual form
+//       8. **MSI.DLL Dialog Designer**     : Dedicated `370x270` DLU visual form
 //          designer for Windows Installer `Dialog` & `Control` SQL tables (`Express
 //          vs. Custom` workflow + custom `[MsiDialog.*]` & `[MsiControl.*]`)!
-//       8. **Signing, .MST & .MSP**        : Dual-layer Authenticode + GPO `.mst`
+//       9. **Signing, .MST & .MSP**        : Dual-layer Authenticode + GPO `.mst`
 //          transforms & `.msp` patches.
-//       9. **.RSIP Source (Lossless AST)** : 100% comment- & `@include`-preserving
-//          monospace manifest editor!
+//      10. **.RSIP Source (Lossless AST)** : 100% comment- & `@include`-preserving
+//          monospace manifest editor + `F1` native C++ `RaggieSoftHelp.exe`!
 // ================================================================================
 
 #include "../common/RswGlassRenderer.hpp"
@@ -100,12 +102,13 @@ enum IdeId : int {
     IDM_LAUNCH_MSIPRISM      = 2015,
     IDM_OPEN_OUTDIR          = 2016,
 
-    // Editions & About Menu (`Community == 100% Premier Feature Parity`!)
+    // Editions & Help Menu (`Community == 100% Premier Feature Parity`!)
     IDM_EDITION_COMMUNITY    = 2020,
     IDM_EDITION_EXPRESS      = 2021,
     IDM_EDITION_PROFESSIONAL = 2022,
     IDM_EDITION_PREMIER      = 2023,
     IDM_HELP_ABOUT           = 2024,
+    IDM_HELP_TOPICS          = 2025,
 
     // Persistent Toolbar & Navigation
     IDC_TB_WIZARD            = 2100,
@@ -461,6 +464,8 @@ public:
         ::AppendMenuW(hBuild, MF_STRING, IDM_OPEN_OUTDIR,     L"Open &Output Folder in Explorer");
 
         HMENU hEd = ::CreatePopupMenu();
+        ::AppendMenuW(hEd, MF_STRING,              IDM_HELP_TOPICS,          L"&Help Topics (Offline C++ Help Viewer)\tF1");
+        ::AppendMenuW(hEd, MF_SEPARATOR, 0, nullptr);
         ::AppendMenuW(hEd, MF_STRING | MF_CHECKED, IDM_EDITION_COMMUNITY,    L"&Community Edition (100% Premier Feature Parity)");
         ::AppendMenuW(hEd, MF_STRING,              IDM_EDITION_EXPRESS,      L"&Express Edition (Placeholder Tier)");
         ::AppendMenuW(hEd, MF_STRING,              IDM_EDITION_PROFESSIONAL, L"&Professional Edition (Placeholder Tier)");
@@ -623,7 +628,7 @@ public:
         hPrAddBtn      = mkBtn(VIEW_PREREQS, L"+ Add [&Prerequisite]",       IDC_PR_ADD_BTN);
         hPrAddMsmBtn   = mkBtn(VIEW_PREREQS, L"+ Add .&MSM Merge Module...", IDC_PR_ADD_MSM_BTN);
         hPrRemBtn      = mkBtn(VIEW_PREREQS, L"&Remove Selected",            IDC_PR_REMOVE_BTN);
-        hPrWizBtn      = mkBtn(VIEW_PREREQS, L"Runtime & .MSM &AeroWizard...", IDC_PR_WIZ_BTN);
+        hPrWizBtn      = mkBtn(VIEW_PREREQS, L"Runtime && .MSM &AeroWizard...", IDC_PR_WIZ_BTN);
 
         // --- VIEW 4: File Associations & Shell Verbs ---
         hFaGrid = RegisterViewCtrl(VIEW_FILE_ASSOC, ::CreateWindowExW(
@@ -675,7 +680,7 @@ public:
         hUiIconBtn = mkBtn(VIEW_CPP_WIZARD, L"Pick .&ico...", IDC_UI_ICON_BROWSE);
         mkLbl(VIEW_CPP_WIZARD, L"Artwork (.png/.jpg):");  hUiArt     = mkEd(VIEW_CPP_WIZARD, IDC_UI_ART_PATH);
         hUiArtBtn  = mkBtn(VIEW_CPP_WIZARD, L"Pick &Art...", IDC_UI_ART_BROWSE);
-        hUiApply   = mkBtn(VIEW_CPP_WIZARD, L"&Apply C++ Wizard Branding & Refresh Canvas", IDC_UI_APPLY);
+        hUiApply   = mkBtn(VIEW_CPP_WIZARD, L"&Apply C++ Wizard Branding && Refresh Canvas", IDC_UI_APPLY);
 
         // --- VIEW 6: Traditional `MSI.DLL` `Dialog` Table Designer (`370 x 270` DLU) ---
         mkLbl(VIEW_MSI_DIALOGS, L"MSI Workflow:");
@@ -736,6 +741,16 @@ public:
         ::SendMessageW(hConsoleEdit, EM_SETLIMITTEXT, 0, 0);
 
         InitListViewColumns();
+
+        // Enforce Windows 11 Dark Mode contrast on all checkboxes, ListView column headers, & scrollbars!
+        rsw::ui::AttachAccessibleCheckboxSubclass(hFaAdvChk,  &theme, false);
+        rsw::ui::AttachAccessibleCheckboxSubclass(hSigEnable, &theme, false);
+        for (HWND lv : {hPayGrid, hPrGrid, hFaGrid, hScGrid}) {
+            rsw::ui::AttachDarkAwareListViewSubclass(lv, &theme);
+        }
+        for (HWND sc : {hNavViews, hDestTree, hDesignTree, hSourceEdit, hConsoleEdit}) {
+            rsw::ui::ApplyDarkScrollbarTheme(sc, theme);
+        }
     }
 
     void InitListViewColumns() {
@@ -1138,7 +1153,7 @@ public:
     }
 
     // ----------------------------------------------------------------------------
-    // POPULATE INSTALLSHIELD-STYLE DESTINATION COMPUTER TREE & SETUP DESIGN TREE
+    // POPULATE HIERARCHICAL DESTINATION COMPUTER TREE & SETUP DESIGN TREE
     // ----------------------------------------------------------------------------
     void RebuildDestinationTreeAndPayloadGrid(const rsw::RswManifestDocument& doc) {
         TreeView_DeleteAllItems(hDestTree);
@@ -1548,6 +1563,32 @@ public:
         ::SetWindowTextW(hWnd, title.c_str());
     }
 
+    /// Launches the zero-dependency native C++20 `RaggieSoftHelp.exe` viewer mapped to the active IDE view (`F1`)!
+    void LaunchContextHelp() {
+        const wchar_t* topicId = L"welcome-overview";
+        switch (activeView) {
+            case VIEW_PACKAGE:      topicId = L"welcome-overview";          break;
+            case VIEW_DEST_FOLDERS: topicId = L"components-and-keypaths";   break;
+            case VIEW_SETUP_DESIGN: topicId = L"components-and-keypaths";   break;
+            case VIEW_PREREQS:      topicId = L"runtimes-and-merge-modules";break;
+            case VIEW_FILE_ASSOC:   topicId = L"ide-and-aerowizards";       break;
+            case VIEW_SHORTCUTS:    topicId = L"ide-and-aerowizards";       break;
+            case VIEW_CPP_WIZARD:   topicId = L"selection-tree-and-dialogs";break;
+            case VIEW_MSI_DIALOGS:  topicId = L"selection-tree-and-dialogs";break;
+            case VIEW_SIGN_REL:     topicId = L"msiprism-and-patches";      break;
+            case VIEW_SOURCE:       topicId = L"cli-and-ai-agents";         break;
+            default: break;
+        }
+        const auto helpExe = ideExeDir / L"RaggieSoftHelp.exe";
+        std::error_code ec;
+        if (!std::filesystem::exists(helpExe, ec)) {
+            AppendConsole(L"[WARN] RaggieSoftHelp.exe was not found next to InstallerStudio.exe.\r\n");
+            return;
+        }
+        const std::wstring params = L"--module raggiesoft.installer-studio --topic " + std::wstring(topicId);
+        ::ShellExecuteW(hWnd, L"open", helpExe.wstring().c_str(), params.c_str(), ideExeDir.wstring().c_str(), SW_SHOWNORMAL);
+    }
+
     void OpenProjectOrSuiteFile(const std::filesystem::path& path) {
         rsw::RswManifestDocument d;
         std::string err;
@@ -1916,13 +1957,6 @@ public:
 
             if (aeroMode) {
                 rsw::ui::DrawAeroWizardTopHeader(pvDc, pvG, pvW, pvDpi, pvTheme, prodName + L" Setup", kicker, hPreviewIcon, stepGlyph, stepCol, pubName);
-                // Circular Aero `<-` Back glyph preview in top-left!
-                Gdiplus::SolidBrush bkBr(rsw::ui::ToGpColor(pvTheme.accentPrimary, 210));
-                pvG.FillEllipse(&bkBr, static_cast<float>(PS(14)), static_cast<float>(PS(7)), static_cast<float>(PS(24)), static_cast<float>(PS(24)));
-                Gdiplus::Pen arrPen(Gdiplus::Color(255, 255, 255, 255), 2.0f);
-                pvG.DrawLine(&arrPen, static_cast<float>(PS(31)), static_cast<float>(PS(19)), static_cast<float>(PS(20)), static_cast<float>(PS(19)));
-                pvG.DrawLine(&arrPen, static_cast<float>(PS(25)), static_cast<float>(PS(14)), static_cast<float>(PS(20)), static_cast<float>(PS(19)));
-                pvG.DrawLine(&arrPen, static_cast<float>(PS(25)), static_cast<float>(PS(24)), static_cast<float>(PS(20)), static_cast<float>(PS(19)));
             } else {
                 rsw::ui::DrawGlassTopHeader(pvDc, pvG, pvW, pvDpi, pvTheme, pubName, rsw::ui::UpperWide(kicker), prodName, hPreviewIcon, stepGlyph, stepCol);
             }
@@ -1984,7 +2018,7 @@ public:
                     const int ry = bTop + PS(10 + r * 28);
                     rsw::PaintSingleMsiStateCell(pvG, static_cast<float>(rx), static_cast<float>(ry), static_cast<float>(PS(30)), static_cast<float>(PS(18)), previewRows[r].st, pvTheme);
                     RECT lblRc{rx + PS(36), ry, cx + treeW - PS(6), ry + PS(20)};
-                    ::DrawTextW(pvDc, previewRows[r].label, -1, &lblRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                    ::DrawTextW(pvDc, previewRows[r].label, -1, &lblRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
                 }
                 ::SelectObject(pvDc, fHd);
                 RECT dtRc{cx + treeW + PS(18), bTop + PS(10), cx + cw - PS(8), bTop + PS(32)};
@@ -2375,6 +2409,10 @@ public:
                 }
 
                 switch (id) {
+                    case IDM_HELP_TOPICS:
+                        self->LaunchContextHelp();
+                        return 0;
+
                     // --- Editions & About Menu (`Community == 100% Premier Parity`) ---
                     case IDM_EDITION_COMMUNITY:
                     case IDM_EDITION_EXPRESS:
@@ -2839,6 +2877,9 @@ public:
                 }
                 break;
             }
+            case WM_HELP:
+                self->LaunchContextHelp();
+                return TRUE;
             case WM_DESTROY:
                 ::PostQuitMessage(0);
                 return 0;
@@ -2928,14 +2969,26 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         return 1;
     }
 
-    if (!args.empty() && std::filesystem::exists(args.front())) {
-        ide.OpenProjectOrSuiteFile(args.front());
+    std::filesystem::path exportShotDir;
+    std::filesystem::path initialProjectArg;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == L"--export-screenshots" && i + 1 < args.size()) {
+            exportShotDir = args[i + 1];
+            ++i;
+        } else if (std::filesystem::exists(args[i])) {
+            initialProjectArg = args[i];
+        }
+    }
+
+    if (!initialProjectArg.empty()) {
+        ide.OpenProjectOrSuiteFile(initialProjectArg);
     } else {
         ide.LoadProjectText(BuildStarterRsipTemplate(), {});
     }
-    ide.AppendConsole(L"RaggieSoft Installer Studio ready. Click 'Project Wizard...' (Ctrl+W) for the 5-step AeroWizard, explore Destination Folders & Setup Design, or press F5 to build.\r\n");
+    ide.AppendConsole(L"RaggieSoft Installer Studio ready. Press F1 for the Offline C++ Help Viewer, Ctrl+W for the Aero Project Assistant, or F5 to build.\r\n");
 
     ACCEL accels[] = {
+        {FVIRTKEY,            VK_F1, IDM_HELP_TOPICS},
         {FCONTROL | FVIRTKEY, 'W',   IDM_WIZ_PROJECT},
         {FCONTROL | FVIRTKEY, 'N',   IDM_FILE_NEW},
         {FCONTROL | FVIRTKEY, 'O',   IDM_FILE_OPEN},
@@ -2948,6 +3001,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
 
     ::ShowWindow(hWnd, nCmdShow);
     ::UpdateWindow(hWnd);
+
+    if (!exportShotDir.empty()) {
+        auto snapView = [&](int viewIdx, const wchar_t* fileName) {
+            ide.activeView = viewIdx;
+            ::SendMessageW(ide.hNavViews, LB_SETCURSEL, static_cast<WPARAM>(viewIdx), 0);
+            ide.UpdateActiveViewVisibility();
+            return rsw::ui::CaptureWindowToPngFile(hWnd, exportShotDir / fileName);
+        };
+        const bool ok1 = snapView(VIEW_DEST_FOLDERS, L"ide-destination-folders.png");
+        const bool ok2 = snapView(VIEW_PREREQS,      L"ide-runtimes-msm.png");
+        ::SendMessageW(ide.hUiPreviewStep, CB_SETCURSEL, 5, 0); // `Select Features (MSI SelectionTree)`
+        const bool ok3 = snapView(VIEW_CPP_WIZARD,   L"ide-wizard-designer.png");
+        if (hAccel) ::DestroyAcceleratorTable(hAccel);
+        ::DestroyWindow(hWnd);
+        ::CoUninitialize();
+        return (ok1 && ok2 && ok3) ? 0 : 2;
+    }
 
     MSG msg{};
     while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {

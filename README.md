@@ -2,9 +2,10 @@
 
 **Official Product Portal:** [https://raggiesoftstudio.com](https://raggiesoftstudio.com) *(301 target of `installwithoutlimits.com`)*  
 **Developer & AI Spec Hub:** [https://raggiesoft.dev](https://raggiesoft.dev)  
+**Current Milestone:** `v0.4.0` Open Technical Preview (`x64` & `ARM64`)  
 **License:** MIT License (Core Toolchain Source)
 
-**RaggieSoft Installer Studio** is a 100% first-party, zero-dependency native Win32 C++20 Windows packaging suite compiled directly with `cl.exe` and the stock Windows 11 SDK (`/MT` static binaries across `x64` and `ARM64`—zero `.NET`, zero Electron, zero third-party runtimes, zero telemetry, and zero crypto/blockchain bloat).
+**RaggieSoft Installer Studio** is a 100% first-party, zero-dependency native Win32 C++20 Windows packaging suite compiled directly with `cl.exe` and the stock Windows 11 SDK (`/MT` static binaries across `x64` and `ARM64`—zero `.NET`, zero WebView2, zero Electron, zero third-party runtimes, zero telemetry, and zero crypto/blockchain bloat).
 
 ---
 
@@ -12,11 +13,12 @@
 
 | Executable | Role |
 | :--- | :--- |
-| **`InstallerStudio.exe`** | **7-View Native Win32 C++20 Visual IDE** for standalone `.rsip` projects & multi-project `.rsis` suites with a real-time GDI Wizard Preview Canvas and 100% lossless comment/`@include`-preserving AST. |
-| **`instbuild.exe`** | **Headless CLI Compiler, JSON Linter, AI Spec & VPAT 2.5 Emitter** driving `msiquery.h` (`msi.lib`) and `fci.h` (`Cabinet.lib`) to output `.msi`, `.msm`, `.mst`, `.msp`, branded `Setup.exe`, `llms.txt`/`SKILL.md`, and HTML5 VPAT 2.5 Conformance Reports. |
-| **`SetupWizard.exe`** | **White-Label Accessible Runtime Wizard** (`MsiSetInternalUI(INSTALLUILEVEL_NONE)` + `MsiSetExternalUIRecord`) with Express/Compact/Custom modes, `640x480` `16:9` Autorun mode, Dark Mode Mica, Windows Contrast Themes, and Per-Monitor V2 DPI. |
-| **`msiprism.exe`** | **RaggieSoft MSI Prism** — Native 64-bit (`x64` & `ARM64`) Dark Mode SQL database inspector and `.mst`/`.msp` differ replacing legacy 32-bit `Orca.exe`. |
-| **`insttests.exe`** | **Automated C++20 Verification Suite** running 20 unit and end-to-end packaging assertions on every build. |
+| **`InstallerStudio.exe`** | **10-View Native Win32 C++20 Visual IDE + 5 Guided AeroWizards** for standalone `.rsip` projects & multi-project `.rsis` suites with a Destination Computer folder tree, Setup Design (`Features -> Components -> KeyPaths`), Runtime Prerequisites & `.MSM` Merge Modules, Dual C++ & `MSI.DLL` Dialog Designers, and a 100% comment/`@include`-preserving AST. |
+| **`instbuild.exe`** | **Headless CLI Compiler, JSON Linter, AI Spec & VPAT 2.5 Emitter** driving `msiquery.h` (`msi.lib`) and `fci.h` (`Cabinet.lib`) to output `.msi`, `.msm`, `.mst`, `.msp`, LZMS-compressed `Setup.exe`, `llms.txt`/`SKILL.md`, and HTML5 VPAT 2.5 Conformance Reports. |
+| **`SetupWizard.exe`** | **White-Label Accessible Runtime Wizard** (`MsiSetInternalUI(INSTALLUILEVEL_NONE)` + `MsiSetExternalUIRecord`) with Express/Compact/Custom modes, authentic Windows Installer `SelectionTree`, Pre-MSI `[Prerequisite.*]` runtime broker, `640x480` `16:9` Autorun mode, Dark Mode Mica, Windows Contrast Themes, and Per-Monitor V2 DPI. |
+| **`msiprism.exe`** | **RaggieSoft MSI Prism** — Native 64-bit (`x64` & `ARM64`) Dark Mode SQL database inspector and `.mst`/`.msp` differ for `.msi`, `.msm`, and `.msp` packages. |
+| **`RaggieSoftHelp.exe`** | **RaggieSoft Help Viewer** — Zero-dependency native C++20 offline documentation viewer supporting pluggable `module.rshm.json` HTML5 modules, Contents/Index/Search panes, Dark/Light/High-Contrast typography, and instant Named Pipe `F1` context navigation. |
+| **`insttests.exe`** | **Automated C++20 Verification Suite** running unit, SQL, compression, accessibility, and zero-competitor documentation assertions on every build. |
 
 ---
 
@@ -24,7 +26,7 @@
 
 Just like `.NET 10` pairs single-project `.csproj` files with optional `.slnx` solutions:
 
-1. **`.rsip` (*RaggieSoft Installer Project*)**: 100% standalone single-file manifest (like Inno Setup `.iss`). Build one app with zero multi-file ceremony:
+1. **`.rsip` (*RaggieSoft Installer Project*)**: 100% standalone single-file manifest. Build one app from scratch with zero multi-file ceremony:
    ```powershell
    .\bin\arm64\instbuild.exe .\examples\hello-raggiesoft\hello-raggiesoft.rsip --arch=arm64
    ```
@@ -37,11 +39,12 @@ Just like `.NET 10` pairs single-project `.csproj` files with optional `.slnx` s
 
 ---
 
-## 100% Uncrippled 3-Tier Lineup
+## Product Editions (`Community == 100% Premier Parity`)
 
-- **Community Edition (`$0`)**: Free for students, coursework, academic research, personal non-commercial hobbyware, and OSI-approved open-source projects. **100% uncrippled** (`x64` + `ARM64`, zero online login, zero telemetry, zero UI watermarks—`VERSIONINFO` and wizard footers belong 100% to `[Package] Manufacturer`).
-- **Indie / Pro (`$249` Perpetual)**: Commercial closed-source software redistribution for solo developers and 1–2 seat ISVs (`100%` offline perpetual license).
-- **Enterprise & Compliance (`$2,499` Team / Site)**: Multi-seat engineering teams, universities, and government agencies—includes unlimited ephemeral CI/CD build runners, formal signed **VPAT 2.5 (WCAG 2.2 AA, Revised Section 508 & ADA Title II)** documentation, GPO `.mst`/`.msp` workflows, and Net-30 PO invoicing.
+Commercial pricing is intentionally omitted while **RaggieSoft Installer Studio** is in active Technical Preview. The IDE models four edition badges (`Community`, `Express`, `Professional`, and `Premier`) with a permanent architectural rule:
+
+- **Community Edition**: Permanently maintains **100% technical feature parity with Premier Edition**—every MSI table, Pre-MSI Runtime Prerequisite, `.MSM` Merge Module, AeroWizard, VPAT 2.5 generator, and CLI command is unlocked with zero UI watermarks (`VERSIONINFO` and wizard footers belong 100% to `[Package] Manufacturer`).
+- **Express / Professional / Premier**: Placeholder organizational tiers reserved for future commercial licensing once dogfood validation completes.
 
 ---
 
