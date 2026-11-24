@@ -1,6 +1,6 @@
 ; ==============================================================================
 ; FILE: projects/apps/installer-studio/installer-studio.rsip
-; APPLICATION: RaggieSoft Installer Studio (v0.1.0)
+; APPLICATION: RaggieSoft Installer Studio (v0.2.0 Technical Preview)
 ; COMPILER: RaggieSoft Installer Studio (instbuild.exe -> .msi + Setup.exe)
 ; ==============================================================================
 
@@ -8,9 +8,9 @@
 
 [Package]
 Name                  = RaggieSoft Installer Studio
-Tagline               = Install Without Limits - Visual IDE, Compiler & MSI Prism
+Tagline               = Install Without Limits - AeroWizard IDE, MSI Compiler & Prism
 WebsiteLabel          = raggiesoftstudio.com
-Version               = 0.1.0
+Version               = 0.2.0
 Manufacturer          = RaggieSoft
 UpgradeCode           = {D9C0EF36-990C-519C-A9C7-D7E19FDD5627}
 Architecture          = $(ARCH)
@@ -26,7 +26,8 @@ StartMenuFolder       = RaggieSoft Installer Studio
 MainExecutable        = InstallerStudio.exe
 
 [UI]
-WizardLayout          = standard
+WizardLayout          = aerowizard
+MsiDialogPreset       = express_custom
 AccentPrimaryHex      = #2563EB
 AccentSecondaryHex    = #FBBF24
 LicenseRtf            = License.rtf
@@ -34,13 +35,53 @@ IconFile              = ..\..\..\..\windows\RaggieSoftApps\RaggieSoftLauncher\As
 InstallButtonText     = &Install
 FinishLaunchCheckbox  = &Open RaggieSoft Installer Studio when setup finishes
 
+[Feature.Main]
+Title                 = Visual IDE, CLI Compiler & MSI Prism
+Description           = Core 64-bit native Win32 C++20 executables (InstallerStudio.exe, instbuild.exe, SetupWizard.exe, msiprism.exe).
+Level                 = 1
+
+[Feature.Templates]
+Title                 = Dialog Presets & AI Agent Specifications
+Description           = Reusable .rsii dialog workflow includes plus llms.txt and SKILL.md documentation.
+Level                 = 1
+
 [Payload.CoreBinaries]
 Source                = ..\..\..\bin\$(ARCH)
+TargetRoot            = INSTALLDIR
 Feature               = Main
 
 [Payload.AiSpecs]
 Source                = ..\..\..\specs
+TargetRoot            = INSTALLDIR
 TargetSubdir          = specs
+Feature               = Templates
+
+[Payload.DialogTemplates]
+Source                = ..\..\..\templates
+TargetRoot            = INSTALLDIR
+TargetSubdir          = templates
+Feature               = Templates
+
+[FileAssociation.RsipProject]
+Extension             = .rsip
+ProgId                = RaggieSoft.InstallerStudio.Project
+Description           = RaggieSoft Installer Project
+TargetFile            = InstallerStudio.exe
+ContentType           = text/x-raggiesoft-rsip
+PerceivedType         = text
+Verbs                 = open:&Open in Installer Studio:"%1"
+Advertise             = false
+Feature               = Main
+
+[FileAssociation.RsisSuite]
+Extension             = .rsis
+ProgId                = RaggieSoft.InstallerStudio.Suite
+Description           = RaggieSoft Installer Suite
+TargetFile            = InstallerStudio.exe
+ContentType           = text/x-raggiesoft-rsis
+PerceivedType         = text
+Verbs                 = open:&Open Suite in Installer Studio:"%1"
+Advertise             = false
 Feature               = Main
 
 [Shortcut.StudioIde]
@@ -58,27 +99,3 @@ Root                  = HKLM
 Key                   = Software\RaggieSoft\Installer Studio
 Name                  = Install Path
 Value                 = [INSTALLDIR]
-
-[Registry.RsipExt]
-Root                  = HKCR
-Key                   = .rsip
-Name                  = @
-Value                 = RaggieSoft.InstallerStudio.Project
-
-[Registry.RsipProgId]
-Root                  = HKCR
-Key                   = RaggieSoft.InstallerStudio.Project
-Name                  = @
-Value                 = RaggieSoft Installer Project
-
-[Registry.RsisExt]
-Root                  = HKCR
-Key                   = .rsis
-Name                  = @
-Value                 = RaggieSoft.InstallerStudio.Suite
-
-[Registry.RsisProgId]
-Root                  = HKCR
-Key                   = RaggieSoft.InstallerStudio.Suite
-Name                  = @
-Value                 = RaggieSoft Installer Suite

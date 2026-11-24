@@ -399,6 +399,100 @@ inline ValidationReport ValidateManifestDocument(
         }
     }
 
+    // 4. Microsoft Official Windows Installer Component Rules (Single-Directory, ICE18, ICE38, & FileAssociation checks!)
+    auto normalizeRelDir = [](std::string s) -> std::string {
+        for (char& c : s) if (c == '\\') c = '/';
+        while (!s.empty() && s.front() == '/') s.erase(s.begin());
+        while (!s.empty() && s.back() == '/') s.pop_back();
+        return AsciiLower(s);
+    };
+
+    std::set<std::string> definedCompIdsLower;
+    for (const auto& cid : doc.GetNamedSectionIds("Component")) {
+        definedCompIdsLower.insert(AsciiLower(cid));
+        const std::string tRoot  = doc.GetString("Component", cid, "TargetRoot", "INSTALLDIR");
+        const std::string kpKind = AsciiLower(doc.GetString("Component", cid, "KeyPathKind", "auto"));
+        const std::string kpTarg = doc.GetString("Component", cid, "KeyPathTarget");
+
+        // Microsoft ICE38 Rule: A Component installing into a User Profile folder (`AppDataFolder`,
+        // `DesktopFolder`, `ProgramMenuFolder`, etc.) MUST use an `HKCU` Registry value as its KeyPath!
+        if (IsPerUserProfileRootDir(tRoot) && (kpKind == "file" || kpKind == "folder")) {
+            addErr("RSW032", 1, "Component." + cid, "KeyPathKind",
+                   "Microsoft ICE38 Component Rule: Component '" + cid + "' installs to per-user folder '" +
+                   tRoot + "' and therefore MUST use KeyPathKind = 'registry' (under HKCU) or 'auto'.");
+        }
+        if ((kpKind == "file" || kpKind == "registry") && kpTarg.empty()) {
+            addErr("RSW033", 1, "Component." + cid, "KeyPathTarget",
+                   "Component '" + cid + "' specifies KeyPathKind = '" + kpKind + "' but KeyPathTarget is empty.");
+        }
+        if (kpKind == "registry" && !kpTarg.empty()) {
+            bool regFound = false;
+            for (const auto& rid : doc.GetNamedSectionIds("Registry")) {
+                if (EqualsIgnoreCase(rid, kpTarg)) {
+                    regFound = true;
+                    const std::string rRoot = doc.GetString("Registry", rid, "Root", "HKLM");
+                    if (IsPerUserProfileRootDir(tRoot) && !EqualsIgnoreCase(rRoot, "HKCU")) {
+                        addErr("RSW032", 1, "Registry." + rid, "Root",
+                               "Microsoft ICE38 Component Rule: Registry KeyPath '" + rid + "' for per-user Component '" +
+                               cid + "' must set Root = HKCU.");
+                    }
+                    break;
+                }
+            }
+            if (!regFound) {
+                addErr("RSW033", 1, "Component." + cid, "KeyPathTarget",
+                       "Component '" + cid + "' KeyPathTarget '" + kpTarg + "' does not match any [Registry.<id>] section.");
+            }
+        }
+    }
+
+    // Microsoft Single-Directory Component Rule: Every payload bound to `[Component.<id>]`
+    // MUST install to that Component's exact single `(TargetRoot, TargetSubdir)` directory
+    // (and cannot recursively span subdirectories under one single Component!).
+    for (const auto& pid : doc.GetNamedSectionIds("Payload")) {
+        const std::string refComp = TrimAscii(doc.GetString("Payload", pid, "Component"));
+        if (refComp.empty()) continue;
+        if (definedCompIdsLower.find(AsciiLower(refComp)) == definedCompIdsLower.end()) {
+            addErr("RSW030", 1, "Payload." + pid, "Component",
+                   "Payload '" + pid + "' references undefined [Component." + refComp + "].");
+            continue;
+        }
+        const std::string cRoot = AsciiLower(doc.GetString("Component", refComp, "TargetRoot", "INSTALLDIR"));
+        const std::string cSub  = normalizeRelDir(ExpandArchToken(doc.GetString("Component", refComp, "TargetSubdir"), rep.resolvedArchitecture));
+        const std::string pRoot = AsciiLower(doc.GetString("Payload", pid, "TargetRoot", doc.GetString("Component", refComp, "TargetRoot", "INSTALLDIR")));
+        const std::string pSub  = normalizeRelDir(ExpandArchToken(doc.GetString("Payload", pid, "TargetSubdir", doc.GetString("Component", refComp, "TargetSubdir")), rep.resolvedArchitecture));
+        if (pRoot != cRoot || pSub != cSub) {
+            addErr("RSW031", 1, "Payload." + pid, "TargetSubdir",
+                   "Microsoft Single-Directory Component Rule: Payload '" + pid + "' target folder does not match [Component." +
+                   refComp + "]. A single Windows Installer Component cannot span multiple directories.");
+        }
+        const std::string rawSrc = doc.GetString("Payload", pid, "Source");
+        if (!rawSrc.empty()) {
+            const auto absSrc = resolvePathStd(rawSrc);
+            if (std::filesystem::is_directory(absSrc, ec) && doc.GetBool("Payload", pid, "Recursive", true)) {
+                for (const auto& de : std::filesystem::directory_iterator(absSrc, ec)) {
+                    if (de.is_directory(ec)) {
+                        addErr("RSW031", 1, "Payload." + pid, "Recursive",
+                               "Microsoft Single-Directory Component Rule: Directory Payload '" + pid +
+                               "' contains subdirectories and cannot be collapsed into a single explicit [Component." +
+                               refComp + "]. Leave 'Component' blank for automatic per-file UUIDv5 components or set Recursive = false.");
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Validate `[FileAssociation.<id>]` extensions & ProgIds
+    for (const auto& aid : doc.GetNamedSectionIds("FileAssociation")) {
+        std::string ext = TrimAscii(doc.GetString("FileAssociation", aid, "Extension"));
+        if (!ext.empty() && ext.front() == '.') ext.erase(ext.begin());
+        if (ext.empty() || ext.find_first_of("\\/ :*?\"<>|") != std::string::npos) {
+            addErr("RSW034", 1, "FileAssociation." + aid, "Extension",
+                   "Invalid file extension in [FileAssociation." + aid + "]. Expected e.g. '.rsip' or 'rsip'.");
+        }
+    }
+
     return rep;
 }
 

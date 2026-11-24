@@ -609,6 +609,72 @@ inline void DrawGlassTopHeader(
         static_cast<float>(clientW - S(36)), static_cast<float>(S(4)), theme);
 }
 
+/// Paints the Modern Windows **AeroWizard** Header (`WizardLayout = aerowizard`):
+///   - Top titlebar-integrated strip (`0..38px`) with circular Aero `<-` Back glyph zone & window title
+///   - Clean `AW_HEADERAREA` (`38..92px`) with `14pt` Aero Main Instruction (`mainInstruction`) + `48x48` Step Medallion!
+inline void DrawAeroWizardTopHeader(
+    HDC hdc,
+    Gdiplus::Graphics& g,
+    int clientW,
+    UINT dpi,
+    const RswTheme& theme,
+    std::wstring_view windowCaption,
+    std::wstring_view mainInstruction,
+    HICON hProductIcon,
+    GlassGlyph stepGlyph,
+    COLORREF stepBadgeColor,
+    std::wstring_view manufacturer = L"RaggieSoft") noexcept
+{
+    auto S = [&](int px) { return ScalePx(px, dpi, theme.textScalePercent); };
+
+    // Top DWM-styled Aero title band (`0..38`) + clean Main Instruction band (`38..90`)
+    RECT topBand{0, 0, clientW, S(38)};
+    RECT instrBand{0, S(38), clientW, S(90)};
+    if (theme.isHighContrast) {
+        ::FillRect(hdc, &topBand, theme.hbrFooter);
+        ::FillRect(hdc, &instrBand, theme.hbrWindow);
+    } else if (theme.isDarkMode) {
+        FillHorizontalGradient(hdc, topBand, RGB(9, 15, 31), RGB(15, 25, 48));
+        ::FillRect(hdc, &instrBand, theme.hbrWindow);
+    } else {
+        FillHorizontalGradient(hdc, topBand, RGB(230, 238, 249), RGB(241, 245, 252));
+        HBRUSH hWhite = ::CreateSolidBrush(RGB(255, 255, 255));
+        ::FillRect(hdc, &instrBand, hWhite);
+        ::DeleteObject(hWhite);
+    }
+
+    // Window icon + caption right next to the top-left `<-` Aero Back button (`x = 52`)
+    DrawBrandSquircleBadge(g, static_cast<float>(S(50)), static_cast<float>(S(8)), static_cast<float>(S(22)), theme, manufacturer);
+    HFONT hCapFont   = CreateScaledFont(L"Segoe UI",  9, FW_SEMIBOLD, dpi, theme.textScalePercent);
+    HFONT hInstrFont = CreateScaledFont(L"Segoe UI", 14, FW_SEMIBOLD, dpi, theme.textScalePercent);
+    ::SetBkMode(hdc, TRANSPARENT);
+    HGDIOBJ oldF = ::SelectObject(hdc, hCapFont);
+    ::SetTextColor(hdc, theme.textSecondary);
+    RECT capRc{S(78), 0, clientW - S(18), S(38)};
+    ::DrawTextW(hdc, windowCaption.data(), static_cast<int>(windowCaption.size()), &capRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+    // Aero Main Instruction (`AW_HEADERAREA` — `TEXT_MAININSTRUCTION` equivalent with >= 7.5:1 WCAG contrast!)
+    const COLORREF aeroInstrCol = theme.isHighContrast
+        ? theme.textPrimary
+        : (theme.isDarkMode ? RGB(125, 211, 252) : RGB(0, 51, 153));
+    ::SelectObject(hdc, hInstrFont);
+    ::SetTextColor(hdc, aeroInstrCol);
+    const int medalSz = S(48);
+    const int medalX  = clientW - S(18) - medalSz;
+    RECT insRc{S(22), S(44), medalX - S(12), S(86)};
+    ::DrawTextW(hdc, mainInstruction.data(), static_cast<int>(mainInstruction.size()), &insRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+    ::SelectObject(hdc, oldF);
+    ::DeleteObject(hCapFont);
+    ::DeleteObject(hInstrFont);
+
+    DrawStepProductMedallion(hdc, g, medalX, S(40), medalSz, hProductIcon, stepGlyph, stepBadgeColor, theme, manufacturer);
+
+    // Subtle 1px Aero header divider
+    Gdiplus::Pen sepPen(ToGpColor(theme.borderSubtle), 1.0f);
+    g.DrawLine(&sepPen, 0.0f, static_cast<float>(S(90)), static_cast<float>(clientW), static_cast<float>(S(90)));
+}
+
 /// Paints the Signature RaggieSoft `Hero Brand Card` (`render_hero_brand_card` 1:1 in native GDI+!)
 /// displayed on Welcome, Maintenance Welcome, Ready to Install, Progress, Safe Uninstall, & Finish!
 inline void DrawHeroBrandCard(

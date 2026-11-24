@@ -1,0 +1,23 @@
+; ==============================================================================
+; FILE: templates/dialogs/autorun-16x9-media-edition.rsii
+; PRESET: 640x480 Widescreen 16:9 CD-Autorun Micro-Installer Preset
+; USAGE:
+;   @include "templates/dialogs/autorun-16x9-media-edition.rsii"
+;
+; PLAIN-ENGLISH OVERVIEW:
+;   Configures `SetupWizard.exe` into the widescreen `640x480` `16:9` OpenGraph
+;   CD-Autorun layout (`Install Edition`, `View ReadMe`, `Change Folder...`,
+;   `Exit Installer`) with automatic `144x74` mini-cover interior headers!
+; ==============================================================================
+
+[Package]
+Scope                 = user
+HideFromInstalledApps = true
+
+[UI]
+WizardLayout          = autorun16x9
+MsiDialogPreset       = minimal
+AccentPrimaryHex      = #0EA5E9
+AccentSecondaryHex    = #FBBF24
+InstallButtonText     = &Install Edition
+OfferLaunchOnFinish   = false

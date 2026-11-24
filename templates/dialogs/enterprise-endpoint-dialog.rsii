@@ -1,0 +1,65 @@
+; ==============================================================================
+; FILE: templates/dialogs/enterprise-endpoint-dialog.rsii
+; PRESET: Custom MSI.DLL Dialog Sample (`[MsiDialog.*]` + `[MsiControl.*]`)
+; USAGE:
+;   @include "templates/dialogs/enterprise-endpoint-dialog.rsii"
+;
+; PLAIN-ENGLISH OVERVIEW:
+;   Demonstrates authoring a custom 370x270 Windows Installer SQL `Dialog` table
+;   screen (`ServerConfigDlg`) spliced automatically between `SetupTypeDlg` and
+;   `VerifyReadyDlg`! All uppercase bound properties (`ENDPOINT_URL`,
+;   `DEPLOY_RING`, `ENABLE_CRASH_DUMPS`) are automatically added to
+;   `SecureCustomProperties` so enterprise IT admins can also pass them silently
+;   on the command line (`msiexec /i Product.msi /qn ENDPOINT_URL="https://..."`)!
+; ==============================================================================
+
+[MsiDialog.ServerConfigDlg]
+Title          = [ProductName] Setup - Connection Settings
+Width          = 370
+Height         = 270
+Banner         = true
+HeaderTitle    = Enterprise Connection & Channel Settings
+HeaderSubtitle = Configure your organization endpoint and update channel.
+PrevDialog     = SetupTypeDlg
+NextDialog     = VerifyReadyDlg
+
+[MsiControl.EndpointLabel]
+Dialog         = ServerConfigDlg
+Type           = Text
+X              = 20
+Y              = 58
+Width          = 330
+Height         = 14
+Text           = &Service Endpoint URL:
+
+[MsiControl.EndpointEdit]
+Dialog         = ServerConfigDlg
+Type           = Edit
+X              = 20
+Y              = 74
+Width          = 330
+Height         = 18
+Property       = ENDPOINT_URL
+DefaultValue   = https://raggiesoftstudio.com
+
+[MsiControl.RingGroup]
+Dialog         = ServerConfigDlg
+Type           = RadioButtonGroup
+X              = 20
+Y              = 104
+Width          = 330
+Height         = 52
+Property       = DEPLOY_RING
+DefaultValue   = Stable
+Items          = Stable:&Stable Release Channel (Recommended)|Preview:&Preview Evaluation Channel
+
+[MsiControl.DiagCheck]
+Dialog         = ServerConfigDlg
+Type           = CheckBox
+X              = 20
+Y              = 170
+Width          = 330
+Height         = 18
+Property       = ENABLE_LOCAL_LOGS
+DefaultValue   = 1
+Text           = &Write local installation diagnostic logs for IT troubleshooting

@@ -114,6 +114,26 @@ int wmain() {
     Check(!badRep.IsOk() && badRep.ErrorCount() >= 4 && badJson.find("\"ok\": false") != std::string::npos,
           "Validator catches 4-part version, bad GUID, missing payload, and missing '&' mnemonic");
 
+    // 4b. Verify Microsoft Official Component Rules (`RSW031` Single-Directory & `RSW032` ICE38 User-Profile KeyPath!)
+    {
+        const std::string badCompRsip =
+            "[Package]\nName = BadComp\nVersion = 1.0.0\nManufacturer = RaggieSoft\n"
+            "UpgradeCode = {A18F4E20-7C93-4D62-9B44-524147474945}\n"
+            "[Install]\nDefaultSubdir = RaggieSoft\\BadComp\n"
+            "[Component.UserComp]\nTargetRoot = AppDataFolder\nKeyPathKind = file\nKeyPathTarget = a.exe\n"
+            "[Component.SharedComp]\nTargetRoot = INSTALLDIR\nTargetSubdir = Bin\n"
+            "[Payload.P1]\nSource = " + rsw::WideToUtf8(std::filesystem::path(exeBuf).wstring()) +
+            "\nTargetRoot = INSTALLDIR\nTargetSubdir = OtherSubdir\nComponent = SharedComp\n";
+        const auto bcDoc = rsw::ParseManifestText(badCompRsip);
+        const auto bcRep = rsw::ValidateManifestDocument(bcDoc, hostArch);
+        bool saw31 = false, saw32 = false;
+        for (const auto& d : bcRep.diagnostics) {
+            if (d.code == "RSW031") saw31 = true;
+            if (d.code == "RSW032") saw32 = true;
+        }
+        Check(saw31 && saw32, "Validator enforces Microsoft Single-Directory (RSW031) & ICE38 HKCU KeyPath (RSW032) rules");
+    }
+
     // 5. Temp workspace for `@include` `.rsii`, `.rsis` Suite, & End-to-End MSI/MSM/MST/MSP/VPAT tests
     std::error_code ec;
     const auto testWorkDir = std::filesystem::temp_directory_path(ec) / L"installer-studio-selftest";
@@ -185,7 +205,8 @@ int wmain() {
           std::filesystem::exists(aiDir / L"SKILL.md"),
           "--emit-ai-spec emits llms.txt, llms-full.txt, and SKILL.md", err);
 
-    // Build v1.0.0 Enterprise `.msi` + `-setup.exe`
+    // Build v1.0.0 Enterprise `.msi` + `-setup.exe` exercising `v0.3` Components, CreateFolder,
+    // FileAssociations (both HKMU & Advertised ProgId/Verb!), Express/Custom MSI Dialogs, & Custom [MsiDialog.*]!
     std::ostringstream v1Text;
     v1Text << "[Package]\n"
            << "Name = SelfTest Suite App\n"
@@ -201,9 +222,60 @@ int wmain() {
            << "DefaultSubdir = RaggieSoft\\SelfTest\n"
            << "MainExecutable = " << rsw::WideToUtf8(payloadToUse.filename().wstring()) << "\n"
            << "[UI]\n"
+           << "WizardLayout = aerowizard\n"
+           << "MsiDialogPreset = express_custom\n"
            << "InstallButtonText = &Install\n"
+           << "[Feature.Main]\n"
+           << "Title = Core Engine\n"
+           << "Level = 1\n"
+           << "[Feature.Extras]\n"
+           << "Title = Optional Templates\n"
+           << "Parent = Main\n"
+           << "Level = 2\n"
+           << "[Component.CoreExeComp]\n"
+           << "Feature = Main\n"
+           << "TargetRoot = INSTALLDIR\n"
+           << "KeyPathKind = file\n"
+           << "KeyPathTarget = " << rsw::WideToUtf8(payloadToUse.filename().wstring()) << "\n"
+           << "[Component.EmptyCacheComp]\n"
+           << "Feature = Extras\n"
+           << "TargetRoot = INSTALLDIR\n"
+           << "TargetSubdir = Cache\n"
+           << "KeyPathKind = folder\n"
+           << "[Folder.PluginDir]\n"
+           << "TargetRoot = AppDataFolder\n"
+           << "TargetSubdir = RaggieSoft\\SelfTestPlugins\n"
+           << "Feature = Extras\n"
            << "[Payload.Core]\n"
-           << "Source = " << rsw::WideToUtf8(payloadToUse.wstring()) << "\n";
+           << "Source = " << rsw::WideToUtf8(payloadToUse.wstring()) << "\n"
+           << "Component = CoreExeComp\n"
+           << "[FileAssociation.CleanExt]\n"
+           << "Extension = .stclean\n"
+           << "ProgId = RaggieSoft.SelfTest.Clean\n"
+           << "Description = SelfTest Clean Document\n"
+           << "TargetFile = " << rsw::WideToUtf8(payloadToUse.filename().wstring()) << "\n"
+           << "Verbs = open:&Open:\"%1\"|edit:&Edit:--edit \"%1\"\n"
+           << "Advertise = false\n"
+           << "[FileAssociation.AdvExt]\n"
+           << "Extension = .stadv\n"
+           << "ProgId = RaggieSoft.SelfTest.Adv\n"
+           << "Description = SelfTest Advertised Document\n"
+           << "TargetFile = " << rsw::WideToUtf8(payloadToUse.filename().wstring()) << "\n"
+           << "ContentType = application/x-selftest-adv\n"
+           << "Advertise = true\n"
+           << "[MsiDialog.CustomEndpointDlg]\n"
+           << "HeaderTitle = Custom Endpoint\n"
+           << "PrevDialog = SetupTypeDlg\n"
+           << "NextDialog = VerifyReadyDlg\n"
+           << "[MsiControl.UrlBox]\n"
+           << "Dialog = CustomEndpointDlg\n"
+           << "Type = Edit\n"
+           << "X = 20\n"
+           << "Y = 70\n"
+           << "Width = 330\n"
+           << "Height = 18\n"
+           << "Property = CUSTOM_ENDPOINT\n"
+           << "DefaultValue = https://raggiesoftstudio.com\n";
 
     auto v1Doc = rsw::ParseManifestText(v1Text.str(), testWorkDir / L"v1.rsip");
     rsw::CompiledMsiSummary v1Sum{};

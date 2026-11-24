@@ -1,31 +1,30 @@
 // ================================================================================
 // FILE: src/common/RswSchema.hpp
 // PROJECT: RaggieSoft Installer Studio ("Install Without Limits")
+// WEBSITE: https://raggiesoftstudio.com  |  DEV HUB: https://raggiesoft.dev
 // LICENSE: MIT License (Copyright (c) 2026 Michael P. Ragsdale / RaggieSoft)
 //
 // PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
 //   What is this file?
 //     This file is the **Single Source of Truth Grammar (`constexpr` Descriptor Table)**
-//     for `.rsip` (RaggieSoft Installer Project) manifests!
+//     for `.rsip` (RaggieSoft Installer Project) and `.rsii` (Include) manifests!
 //
-//   Why put the entire manifest schema into a `constexpr` C++ table instead of
-//   hand-writing separate validator `if` chains and Markdown docs?
-//     In C++20, `constexpr` data lives directly in read-only compile-time memory
-//     with zero startup cost. By defining every valid `.rsip` section, key name,
-//     value type, default value, allowed enum choices, and plain-English explanation
-//     right here in `kSectionDescriptors` and `kFieldDescriptors`, THREE subsystems
-//     stay 100% synchronized forever:
+//   Why put the entire manifest schema (`v0.3`) into `constexpr` C++ tables?
+//     In C++20, `constexpr` arrays live directly in read-only compile-time memory
+//     with zero startup overhead. Defining every valid `.rsip` section, key name,
+//     type, default value, allowed enum tokens, and plain-English description here
+//     keeps THREE subsystems 100% synchronized forever:
 //       1. `RswValidator.hpp` (`instbuild.exe --validate --diagnostics=json`):
-//          Flags unknown sections, typos in key names, missing required keys, bad
-//          GUIDs, invalid MSI `Major.Minor.Build` versions, and missing `&` keyboard
-//          accelerators in under 1 millisecond!
+//          Checks syntax, GUIDs, 3-part MSI versions, `&` mnemonics, AND Microsoft's
+//          official Windows Installer Component Rules (Single-Directory Rule, ICE18
+//          `CreateFolder`, ICE38 per-user Registry KeyPaths, ICE64 `RemoveFolder`)!
 //       2. `RswAiSpecEmitter.hpp` (`instbuild.exe --emit-ai-spec <dir>`):
 //          Deterministically generates `llms.txt`, `llms-full.txt`, and `SKILL.md`
-//          straight from this compiled binary—so AI docs can NEVER drift from the
-//          actual parser!
-//       3. `InstallerStudio.exe` (Native Win32 C++ Visual IDE):
-//          Iterates over `kFieldDescriptors` to inspect, validate, and edit `.rsip`
-//          manifests without stripping a single comment or `@include` directive!
+//          straight from the compiled binary with zero documentation drift!
+//       3. `InstallerStudio.exe` (Native Win32 C++20 Visual IDE):
+//          Powers the Destination Computer folder tree, Setup Design (Features ->
+//          Components -> KeyPaths), File Associations, Dual Dialog Designer, and
+//          Lossless AST Source Editor!
 // ================================================================================
 
 #pragma once
@@ -35,11 +34,11 @@
 
 namespace rsw {
 
-/// Distinguishes singleton sections (`[Package]`) from repeatable named sections (`[Payload.App]`).
+/// Distinguishes singleton sections (`[Package]`) from repeatable named sections (`[Component.<id>]`).
 enum class SectionCardinality {
-    SingletonRequired, // Must appear once (e.g., `[Package]`, `[Install]`)
-    SingletonOptional, // May appear 0 or 1 times (e.g., `[Requirements]`, `[UI]`, `[Signing]`)
-    NamedRepeatable    // Appears as `[Prefix.<id>]` 0 or more times (`[Feature.Main]`, `[Payload.Core]`, etc.)
+    SingletonRequired, // Must appear once in a complete `.rsip` project (`[Package]`, `[Install]`)
+    SingletonOptional, // May appear 0 or 1 times (`[Requirements]`, `[UI]`, `[Signing]`)
+    NamedRepeatable    // Appears 0 or more times as `[Prefix.<id>]` (`[Feature.*]`, `[Component.*]`, etc.)
 };
 
 /// Value data types checked by `RswValidator` before `cabinet.dll` or `msi.dll` ever run.
@@ -48,16 +47,16 @@ enum class FieldValueKind {
     AcceleratorString, // Interactive UI label that MUST contain a Windows `&` mnemonic (WCAG / Section 508)
     MsiVersion,        // 3-part `Major.Minor.Build` (`0..255 . 0..255 . 0..65535`)
     Guid,              // Uppercase or lowercase `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}`
-    GuidOrAuto,        // `*` (auto-generate per build) OR explicit `{GUID}`
+    GuidOrAuto,        // `*` (deterministic UUIDv5 or auto-generated GUID) OR explicit `{GUID}`
     Integer,           // Base-10 integer
     Boolean,           // `true` / `false` / `yes` / `no` / `1` / `0`
-    EnumChoice,        // Pipe-delimited allowed tokens in `allowedValues` (e.g. `"x64|arm64"`)
+    EnumChoice,        // Pipe-delimited allowed tokens in `allowedValues`
     Path,              // Local build-machine file or directory path (supports `$(ARCH)`)
     RelativePath       // Relative target directory/file path inside the installed image
 };
 
 struct SectionDescriptor {
-    std::string_view   nameOrPrefix; // Exact name (`"Package"`) or prefix (`"Payload"` for `[Payload.<id>]`)
+    std::string_view   nameOrPrefix; // Exact name (`"Package"`) or prefix (`"Component"` for `[Component.<id>]`)
     SectionCardinality cardinality;
     bool               atLeastOneRequired;
     std::string_view   summary;
@@ -65,7 +64,7 @@ struct SectionDescriptor {
 
 struct FieldDescriptor {
     std::string_view sectionPrefix;  // Matches `SectionDescriptor::nameOrPrefix`
-    std::string_view key;            // Exact key name (case-insensitive lookup, canonical PascalCase display)
+    std::string_view key;            // Canonical PascalCase key name (case-insensitive lookup)
     FieldValueKind   kind;
     bool             required;
     std::string_view defaultValue;
@@ -73,37 +72,52 @@ struct FieldDescriptor {
     std::string_view description;
 };
 
+/// Standard Windows Installer system directory roots supported across `[Payload.*]`, `[Component.*]`, & `[Folder.*]`.
+inline constexpr std::string_view kAllowedTargetRoots =
+    "INSTALLDIR|CommonFiles64Folder|CommonAppDataFolder|AppDataFolder|LocalAppDataFolder|"
+    "ProgramMenuFolder|ApplicationProgramsFolder|DesktopFolder|System64Folder|FontsFolder";
+
 // ================================================================================
-// 1. CANONICAL `.RSW` SECTION DESCRIPTOR TABLE
+// 1. CANONICAL `.RSIP` SECTION DESCRIPTOR TABLE (`14` SECTIONS)
 // ================================================================================
-inline constexpr std::array<SectionDescriptor, 9> kSectionDescriptors{{
-    {"Package",      SectionCardinality::SingletonRequired, true,
+inline constexpr std::array<SectionDescriptor, 14> kSectionDescriptors{{
+    {"Package",         SectionCardinality::SingletonRequired, true,
      "Core product identity, MSI Summary Information, target CPU architecture (x64/arm64), and output settings."},
-    {"Requirements", SectionCardinality::SingletonOptional, false,
+    {"Requirements",    SectionCardinality::SingletonOptional, false,
      "Minimum Windows 11 build gate (RtlGetVersion & MSI LaunchCondition) and downgrade protection."},
-    {"Install",      SectionCardinality::SingletonRequired, true,
+    {"Install",         SectionCardinality::SingletonRequired, true,
      "Default installation subfolder under ProgramFiles64Folder/LocalAppDataFolder and Start Menu group."},
-    {"UI",           SectionCardinality::SingletonOptional, false,
-     "Branding, RTF license, icon, and accessible & accelerator labels for Wizard 97 MSI and rswsetup.exe."},
-    {"Signing",      SectionCardinality::SingletonOptional, false,
+    {"UI",              SectionCardinality::SingletonOptional, false,
+     "Branding, RTF license, icon, C++ Glass layout, and MSI.DLL Express/Custom dialog workflow preset."},
+    {"Signing",         SectionCardinality::SingletonOptional, false,
      "Optional dual-layer Authenticode code signing (Product.msi first, then outer Setup.exe) via signtool.exe."},
-    {"Feature",      SectionCardinality::NamedRepeatable,   false,
-     "Named MSI Feature definition ([Feature.<id>]); defaults to a single 'Main' feature if omitted."},
-    {"Payload",      SectionCardinality::NamedRepeatable,   true,
-     "Maps a build-machine file or directory ([Payload.<id>]) into #payload.cab and deterministic MSI Components."},
-    {"Shortcut",     SectionCardinality::NamedRepeatable,   false,
-     "Creates an advertised-free Start Menu or Desktop shortcut ([Shortcut.<id>]) with ICE64 RemoveFolder cleanup."},
-    {"Registry",     SectionCardinality::NamedRepeatable,   false,
-     "Writes an HKLM/HKCU/HKCR registry value ([Registry.<id>]) tied to a deterministic 64-bit MSI Component."}
+    {"Feature",         SectionCardinality::NamedRepeatable,   false,
+     "Named MSI Feature or Sub-Feature ([Feature.<id>]); defaults to a single 'Main' feature if omitted."},
+    {"Component",       SectionCardinality::NamedRepeatable,   false,
+     "Explicit MSI Component ([Component.<id>]) enforcing Microsoft Single-Directory & KeyPath rules (File, Registry, or CreateFolder)."},
+    {"Folder",          SectionCardinality::NamedRepeatable,   false,
+     "Creates a destination subdirectory ([Folder.<id>]) via MSI CreateFolder + ICE64 RemoveFolder cleanup."},
+    {"Payload",         SectionCardinality::NamedRepeatable,   true,
+     "Maps a build-machine file or directory ([Payload.<id>]) into #payload.cab and deterministic or explicit MSI Components."},
+    {"FileAssociation", SectionCardinality::NamedRepeatable,   false,
+     "Registers a file extension, ProgId, document icon, MIME type, and Explorer shell verbs ([FileAssociation.<id>])."},
+    {"Shortcut",        SectionCardinality::NamedRepeatable,   false,
+     "Creates an advertised-free Start Menu or Desktop shortcut ([Shortcut.<id>]) with ICE38 HKCU KeyPath & ICE64 RemoveFolder."},
+    {"Registry",        SectionCardinality::NamedRepeatable,   false,
+     "Writes an HKLM/HKCU/HKCR/HKMU registry value ([Registry.<id>]) tied to an auto or explicit 64-bit MSI Component."},
+    {"MsiDialog",       SectionCardinality::NamedRepeatable,   false,
+     "Defines a custom 370x270 Windows Installer SQL Dialog ([MsiDialog.<id>]) spliced into the MSI.DLL UI sequence."},
+    {"MsiControl",      SectionCardinality::NamedRepeatable,   false,
+     "Adds a native MSI control ([MsiControl.<id>]: Text, Edit, CheckBox, RadioButtonGroup, etc.) to a new or built-in MSI Dialog."}
 }};
 
 // ================================================================================
-// 2. CANONICAL `.RSW` FIELD DESCRIPTOR TABLE
+// 2. CORE `.RSIP` FIELD DESCRIPTOR TABLE
 // ================================================================================
 inline constexpr std::array<FieldDescriptor, 45> kFieldDescriptors{{
     // --- [Package] ---
-    {"Package", "SchemaVersion",         FieldValueKind::String,      false, "0.1",               "",
-     "Manifest grammar version (`0.1`)."},
+    {"Package", "SchemaVersion",         FieldValueKind::String,      false, "0.3",               "",
+     "Manifest grammar version (`0.3`)."},
     {"Package", "Name",                  FieldValueKind::String,      true,  "",                  "",
      "Consumer-facing ProductName written to MSI Property table and VERSIONINFO."},
     {"Package", "Version",               FieldValueKind::MsiVersion,  true,  "",                  "",
@@ -125,7 +139,7 @@ inline constexpr std::array<FieldDescriptor, 45> kFieldDescriptors{{
     {"Package", "OutputName",            FieldValueKind::String,      false, "",                  "",
      "Base filename stem (supports `$(ARCH)`); defaults to `<kebab-name>-$(ARCH)`."},
     {"Package", "OutputDir",             FieldValueKind::Path,        false, "out",               "",
-     "Output folder for `<OutputName>.msi` and `<OutputName>-setup.exe` (relative to `.rsw` folder or absolute)."},
+     "Output folder for `<OutputName>.msi` and `<OutputName>-setup.exe` (relative to `.rsip` folder or absolute)."},
     {"Package", "BuildBootstrapper",     FieldValueKind::Boolean,     false, "true",              "",
      "When `true`, emits branded `<OutputName>-setup.exe` embedding `Product.msi` alongside the standalone `.msi`."},
     {"Package", "CabinetCompression",    FieldValueKind::EnumChoice,  false, "lzx",               "lzx|mszip",
@@ -140,7 +154,7 @@ inline constexpr std::array<FieldDescriptor, 45> kFieldDescriptors{{
      "Minimum Windows 10/11 build number (`22000` = Windows 11 21H2+, matching .NET 10 Desktop Runtime)."},
     {"Requirements", "OsLaunchMessage",  FieldValueKind::String,      false,
      "This application requires Windows 11 (Build 22000) or later.", "",
-     "Friendly message shown by LaunchCondition / rswsetup.exe when the host OS is older than MinWindowsBuild."},
+     "Friendly message shown by LaunchCondition / SetupWizard.exe when the host OS is older than MinWindowsBuild."},
     {"Requirements", "BlockDowngrades",  FieldValueKind::Boolean,     false, "true",              "",
      "Adds a newer-version Upgrade row + LaunchCondition preventing accidental downgrades."},
 
@@ -154,7 +168,7 @@ inline constexpr std::array<FieldDescriptor, 45> kFieldDescriptors{{
 
     // --- [UI] ---
     {"UI", "LicenseRtf",                 FieldValueKind::Path,        false, "",                  "",
-     "Optional `.rtf` license file displayed in Wizard 97 `LicenseAgreementDlg` and `rswsetup.exe`."},
+     "Optional `.rtf` license file displayed in Wizard 97 `LicenseAgreementDlg` and `SetupWizard.exe`."},
     {"UI", "IconFile",                   FieldValueKind::Path,        false, "",                  "",
      "Optional `.ico` file embedded into MSI `Icon` table (`ARPPRODUCTICON`) and `Setup.exe` resources."},
     {"UI", "BannerTitle",                FieldValueKind::String,      false, "",                  "",
@@ -186,15 +200,15 @@ inline constexpr std::array<FieldDescriptor, 45> kFieldDescriptors{{
     {"Feature", "Title",                 FieldValueKind::String,      true,  "",                  "",
      "Consumer-facing title of this MSI Feature."},
     {"Feature", "Description",           FieldValueKind::String,      false, "",                  "",
-     "Plain-English description of this MSI Feature."},
+     "Plain-English description of this MSI Feature shown in SelectionTree."},
     {"Feature", "Level",                 FieldValueKind::Integer,     false, "1",                 "",
-     "MSI InstallLevel (`1` = installed by default, `0` = hidden/disabled)."},
+     "MSI InstallLevel (`1` = core/Compact & Express, `2..100` = Express/Custom optional, `0` = hidden)."},
 
     // --- [Payload.<id>] ---
     {"Payload", "Source",                FieldValueKind::Path,        true,  "",                  "",
      "Source file or directory on the build machine (supports `$(ARCH)` expansion)."},
     {"Payload", "TargetSubdir",          FieldValueKind::RelativePath,false, "",                  "",
-     "Optional destination subfolder inside `INSTALLDIR` (`\"\"` = root of `INSTALLDIR`)."},
+     "Optional destination subfolder inside `TargetRoot` (`\"\"` = root of `TargetRoot`)."},
     {"Payload", "Recursive",             FieldValueKind::Boolean,     false, "true",              "",
      "Recursively includes subdirectories when `Source` points to a directory."},
     {"Payload", "Feature",               FieldValueKind::String,      false, "Main",              "",
@@ -211,17 +225,22 @@ inline constexpr std::array<FieldDescriptor, 45> kFieldDescriptors{{
      "Accessible screen-reader/tooltip description for the shortcut."}
 }};
 
-// Additional optional fields on `[Package]`, `[UI]`, `[Shortcut.<id>]`, and `[Registry.<id>]`
-// kept in a companion constexpr array so both arrays stay compact and crystal-clear to read!
-inline constexpr std::array<FieldDescriptor, 21> kExtendedFieldDescriptors{{
+// ================================================================================
+// 3. EXTENDED `.RSIP` FIELD DESCRIPTOR TABLE (`v0.3` — COMPONENTS, KEYPATHS,
+//    FOLDERS, FILE ASSOCIATIONS, & CUSTOM MSI.DLL DIALOG AUTHORING!)
+// ================================================================================
+inline constexpr std::array<FieldDescriptor, 69> kExtendedFieldDescriptors{{
+    // --- Extended [Package], [UI], [Feature], [Payload], [Shortcut], [Registry] ---
     {"Package",  "PackageKind",          FieldValueKind::EnumChoice,  false, "msi",               "msi|msm",
      "`msi` builds a standalone Enterprise `.msi` (+ optional `-setup.exe`); `msm` builds a reusable Merge Module (`.msm`)."},
     {"Package",  "Tagline",              FieldValueKind::String,      false, "",                  "",
      "Short subtitle displayed beneath the product title in `SetupWizard.exe` and `InstallerStudio.exe`."},
     {"Package",  "WebsiteLabel",         FieldValueKind::String,      false, "",                  "",
      "Optional domain badge shown in the setup wizard footer (left blank if omitted — 100% white-label!)."},
-    {"UI",       "WizardLayout",         FieldValueKind::EnumChoice,  false, "standard",          "standard|autorun16x9",
-     "`standard` shows the full RaggieSoft Glass Express/Compact/Custom Setup Wizard; `autorun16x9` shows the 640x480 16:9 widescreen Autorun micro-installer."},
+    {"UI",       "WizardLayout",         FieldValueKind::EnumChoice,  false, "standard",          "standard|aerowizard|autorun16x9",
+     "`standard` shows the RaggieSoft Glass Setup Wizard; `aerowizard` uses modern Windows AeroWizard chrome with top-left DWM Back glyph; `autorun16x9` shows the 640x480 16:9 Autorun stage."},
+    {"UI",       "MsiDialogPreset",      FieldValueKind::EnumChoice,  false, "express_custom",    "express_custom|minimal",
+     "`express_custom` builds the full Express / Compact / Custom + SelectionTree + BrowseDlg + Shortcuts + Office Repair Mode workflow inside MSI.DLL's Dialog table; `minimal` builds a compact 3-screen MSI UI."},
     {"UI",       "AccentPrimaryHex",     FieldValueKind::String,      false, "#2563EB",           "",
      "Primary header accent hex color (e.g. `#2563EB` Cobalt, `#38BDF8` Sky Cyan, `#14B8A6` Teal)."},
     {"UI",       "AccentSecondaryHex",   FieldValueKind::String,      false, "#FBBF24",           "",
@@ -234,21 +253,27 @@ inline constexpr std::array<FieldDescriptor, 21> kExtendedFieldDescriptors{{
      "Optional edition liner notes or ReadMe summary displayed in the ReadMe view of `autorun16x9` installers."},
     {"UI",       "ExpressDescription",   FieldValueKind::String,      false,
      "One-click setup into the default installation folder with recommended shortcuts. Skips extra prompts.", "",
-     "Helper caption for the Express Setup mode card in `SetupWizard.exe`."},
+     "Helper caption for the Express Setup mode card in `SetupWizard.exe` and MSI `SetupTypeDlg`."},
     {"UI",       "CompactDescription",   FieldValueKind::String,      false,
-     "Installs essential application files with minimal disk footprint using recommended folder defaults.", "",
-     "Helper caption for the Compact Setup mode card in `SetupWizard.exe`."},
+     "Installs essential core application files (`Level = 1`) with minimal disk footprint.", "",
+     "Helper caption for the Compact Core Setup mode card in `SetupWizard.exe` and MSI `SetupTypeDlg`."},
     {"UI",       "CustomDescription",    FieldValueKind::String,      false,
-     "Choose a custom destination folder and review installation options step by step before installing.", "",
-     "Helper caption for the Custom Setup mode card in `SetupWizard.exe`."},
+     "Choose a custom destination folder, features, Start Menu group, and shortcuts step by step.", "",
+     "Helper caption for the Custom Setup mode card in `SetupWizard.exe` and MSI `SetupTypeDlg`."},
     {"UI",       "AuthorOrArtist",       FieldValueKind::String,      false, "",                  "",
      "Optional author or band credit badge displayed in `autorun16x9` book/album micro-installers."},
+    {"Feature",  "Parent",               FieldValueKind::String,      false, "",                  "",
+     "Optional parent Feature ID (`Feature_Parent`) creating a hierarchical sub-feature in `SelectionTree`."},
+    {"Payload",  "TargetRoot",           FieldValueKind::EnumChoice,  false, "INSTALLDIR",        kAllowedTargetRoots,
+     "Destination MSI system folder root (`INSTALLDIR`, `CommonAppDataFolder`, `AppDataFolder`, `FontsFolder`, etc.)."},
+    {"Payload",  "Component",            FieldValueKind::String,      false, "",                  "",
+     "Optional `[Component.<id>]` name. When omitted, each file gets its own deterministic SHA-1 UUIDv5 Component & File KeyPath per Microsoft best practice."},
     {"Shortcut", "Arguments",            FieldValueKind::String,      false, "",                  "",
      "Optional command-line arguments passed when the shortcut launches `TargetFile`."},
     {"Shortcut", "Feature",              FieldValueKind::String,      false, "Main",              "",
      "Feature ID owning this shortcut."},
-    {"Registry", "Root",                 FieldValueKind::EnumChoice,  false, "HKLM",              "HKLM|HKCU|HKCR",
-     "Registry hive (`HKLM` for machine installs, `HKCU` for per-user installs, `HKCR` for classes)."},
+    {"Registry", "Root",                 FieldValueKind::EnumChoice,  false, "HKLM",              "HKLM|HKCU|HKCR|HKMU",
+     "Registry hive (`HKLM` machine, `HKCU` user, `HKCR` classes, or `HKMU` auto-switching per `ALLUSERS`)."},
     {"Registry", "Key",                  FieldValueKind::String,      true,  "",                  "",
      "Registry key path without hive prefix, e.g. `Software\\RaggieSoft\\MyApp`."},
     {"Registry", "Name",                 FieldValueKind::String,      true,  "",                  "",
@@ -258,8 +283,116 @@ inline constexpr std::array<FieldDescriptor, 21> kExtendedFieldDescriptors{{
     {"Registry", "Type",                 FieldValueKind::EnumChoice,  false, "string",            "string|expand_string|dword",
      "Registry value type (`string` = REG_SZ, `expand_string` = REG_EXPAND_SZ, `dword` = REG_DWORD)."},
     {"Registry", "Feature",              FieldValueKind::String,      false, "Main",              "",
-     "Feature ID owning this registry value."}
+     "Feature ID owning this registry value."},
+    {"Registry", "Component",            FieldValueKind::String,      false, "",                  "",
+     "Optional `[Component.<id>]` owning this registry row (used when grouping registry values or setting a Registry KeyPath)."},
+
+    // --- [Component.<id>] (Microsoft Official Component & KeyPath Rules!) ---
+    {"Component", "Feature",             FieldValueKind::String,      false, "Main",              "",
+     "Feature ID owning this Component in `FeatureComponents`."},
+    {"Component", "TargetRoot",          FieldValueKind::EnumChoice,  false, "INSTALLDIR",        kAllowedTargetRoots,
+     "Single Windows Installer root directory for this Component (Microsoft Single-Directory Component Rule)."},
+    {"Component", "TargetSubdir",        FieldValueKind::RelativePath,false, "",                  "",
+     "Optional subdirectory under `TargetRoot` where all files of this Component reside."},
+    {"Component", "Guid",                FieldValueKind::GuidOrAuto,  false, "*",                 "",
+     "`*` computes a deterministic SHA-1 UUIDv5 ComponentId, or specify an explicit `{GUID}`."},
+    {"Component", "KeyPathKind",         FieldValueKind::EnumChoice,  false, "auto",              "auto|file|registry|folder",
+     "KeyPath resource type required by Windows Installer (`file` = File table key, `registry` = Registry key per ICE38, `folder` = NULL KeyPath + CreateFolder per ICE18)."},
+    {"Component", "KeyPathTarget",       FieldValueKind::String,      false, "",                  "",
+     "Target filename (when `KeyPathKind = file`) or `[Registry.<id>]` section ID (when `KeyPathKind = registry`)."},
+    {"Component", "Condition",           FieldValueKind::String,      false, "",                  "",
+     "Optional MSI install condition evaluated during `CostFinalize` (e.g. `DESKTOP_SHORTCUT = \"1\"`)."},
+    {"Component", "Permanent",           FieldValueKind::Boolean,     false, "false",             "",
+     "Sets `msidbComponentAttributesPermanent` (`16`) so Windows Installer leaves this component on disk during uninstall."},
+    {"Component", "NeverOverwrite",      FieldValueKind::Boolean,     false, "false",             "",
+     "Sets `msidbComponentAttributesNeverOverwrite` (`128`) so existing user-modified config files/keys are never overwritten."},
+    {"Component", "SharedDllRefCount",   FieldValueKind::Boolean,     false, "false",             "",
+     "Sets `msidbComponentAttributesSharedDllRefCount` (`8`) for legacy shared reference counting."},
+
+    // --- [Folder.<id>] (Explicit Destination Subdirectories & Empty CreateFolder Nodes) ---
+    {"Folder",    "TargetRoot",          FieldValueKind::EnumChoice,  false, "INSTALLDIR",        kAllowedTargetRoots,
+     "Parent Windows Installer root folder (`INSTALLDIR`, `CommonAppDataFolder`, `AppDataFolder`, etc.)."},
+    {"Folder",    "TargetSubdir",        FieldValueKind::RelativePath,true,  "",                  "",
+     "Subfolder path to create under `TargetRoot` (e.g. `Logs` or `Plugins\\Custom`)."},
+    {"Folder",    "Feature",             FieldValueKind::String,      false, "Main",              "",
+     "Feature ID owning the `CreateFolder` component."},
+    {"Folder",    "Component",           FieldValueKind::String,      false, "",                  "",
+     "Optional `[Component.<id>]` name; auto-generates a `CreateFolder` component if omitted."},
+    {"Folder",    "RemoveOnUninstall",   FieldValueKind::Boolean,     false, "true",              "",
+     "Emits a `RemoveFile` (`InstallMode = 2`) row so empty folders are removed cleanly on uninstall (ICE64)."},
+
+    // --- [FileAssociation.<id>] (Document Extensions, Icons, MIME & Shell Verbs!) ---
+    {"FileAssociation", "Extension",     FieldValueKind::String,      true,  "",                  "",
+     "File extension to register (with or without leading dot, e.g. `.rsip` or `rsip`)."},
+    {"FileAssociation", "ProgId",        FieldValueKind::String,      true,  "",                  "",
+     "Canonical programmatic identifier, e.g. `RaggieSoft.InstallerStudio.Project`."},
+    {"FileAssociation", "Description",   FieldValueKind::String,      true,  "",                  "",
+     "Human-friendly document type description displayed in Windows Explorer (e.g. `RaggieSoft Installer Project`)."},
+    {"FileAssociation", "TargetFile",    FieldValueKind::RelativePath,true,  "",                  "",
+     "Relative path under `INSTALLDIR` to the handler `.exe` packaged by `[Payload.*]`."},
+    {"FileAssociation", "Verbs",         FieldValueKind::String,      false, "open:&Open:\"%1\"", "",
+     "Pipe-separated shell verb definitions `verbId:MenuCaption:Arguments` (e.g. `open:&Open:\"%1\"|build:&Compile MSI:--build \"%1\"`)."},
+    {"FileAssociation", "ContentType",   FieldValueKind::String,      false, "",                  "",
+     "Optional MIME content type (e.g. `application/x-raggiesoft-rsip`)."},
+    {"FileAssociation", "PerceivedType", FieldValueKind::String,      false, "",                  "",
+     "Optional Windows Explorer PerceivedType (`text`, `document`, `audio`, `image`, `video`)."},
+    {"FileAssociation", "IconIndex",     FieldValueKind::Integer,     false, "0",                 "",
+     "Zero-based icon resource index inside `TargetFile` (or `[UI] IconFile` when `Advertise = true`)."},
+    {"FileAssociation", "Advertise",     FieldValueKind::Boolean,     false, "false",             "",
+     "`false` (default) writes clean `HKMU\\Software\\Classes` + `OpenWithProgids` keys with zero MSI self-repair popups; `true` populates native MSI `ProgId`, `Extension`, `Verb`, and `MIME` tables."},
+    {"FileAssociation", "Feature",       FieldValueKind::String,      false, "Main",              "",
+     "Feature ID owning this file association."},
+
+    // --- [MsiDialog.<id>] (Custom 370x270 Windows Installer SQL Dialogs!) ---
+    {"MsiDialog", "Title",               FieldValueKind::String,      false, "[ProductName] Setup", "",
+     "Window caption bar title of this MSI Dialog."},
+    {"MsiDialog", "Width",               FieldValueKind::Integer,     false, "370",               "",
+     "Width in Windows Installer dialog units (standard Wizard 97 width is `370`)."},
+    {"MsiDialog", "Height",              FieldValueKind::Integer,     false, "270",               "",
+     "Height in Windows Installer dialog units (standard Wizard 97 height is `270`)."},
+    {"MsiDialog", "Banner",              FieldValueKind::Boolean,     false, "true",              "",
+     "Automatically adds standard Wizard 97 top `BannerBitmap`, `BannerLine`, `BottomLine`, and `Back`/`Next`/`Cancel` buttons."},
+    {"MsiDialog", "HeaderTitle",         FieldValueKind::String,      false, "Custom Configuration", "",
+     "Bold title text rendered inside the top 44-unit Wizard 97 banner."},
+    {"MsiDialog", "HeaderSubtitle",      FieldValueKind::String,      false, "",                  "",
+     "Subtitle description rendered beneath `HeaderTitle` inside the top Wizard 97 banner."},
+    {"MsiDialog", "PrevDialog",          FieldValueKind::String,      false, "SetupTypeDlg",      "",
+     "Previous dialog ID in the wizard chain (`< &Back` target and automatic forward splice point!)."},
+    {"MsiDialog", "NextDialog",          FieldValueKind::String,      false, "VerifyReadyDlg",    "",
+     "Next dialog ID opened when the user clicks `&Next >`."},
+
+    // --- [MsiControl.<id>] (Native Controls Placed on Custom or Built-In MSI Dialogs!) ---
+    {"MsiControl", "Dialog",             FieldValueKind::String,      true,  "",                  "",
+     "Target dialog ID (`[MsiDialog.<Dialog>]` or built-in dialog such as `SetupTypeDlg` or `VerifyReadyDlg`)."},
+    {"MsiControl", "Type",               FieldValueKind::EnumChoice,  true,  "Text",
+     "Text|Edit|MaskedEdit|PathEdit|CheckBox|RadioButtonGroup|PushButton|ComboBox|ListBox|SelectionTree|GroupBox|Line|Bitmap|ScrollableText",
+     "Native Windows Installer Control table type."},
+    {"MsiControl", "X",                  FieldValueKind::Integer,     true,  "20",                "",
+     "Horizontal position in MSI dialog units (`0..370`)."},
+    {"MsiControl", "Y",                  FieldValueKind::Integer,     true,  "60",                "",
+     "Vertical position in MSI dialog units (`0..270`)."},
+    {"MsiControl", "Width",              FieldValueKind::Integer,     true,  "330",               "",
+     "Control width in MSI dialog units."},
+    {"MsiControl", "Height",             FieldValueKind::Integer,     true,  "18",                "",
+     "Control height in MSI dialog units."},
+    {"MsiControl", "Property",           FieldValueKind::String,      false, "",                  "",
+     "MSI Property bound to this control (automatically added to `SecureCustomProperties` if uppercase!)."},
+    {"MsiControl", "DefaultValue",       FieldValueKind::String,      false, "",                  "",
+     "Optional initial value written to the MSI `Property` table."},
+    {"MsiControl", "Text",               FieldValueKind::String,      false, "",                  "",
+     "Control label or rich text (`{\\DlgFontBold8}...`)."},
+    {"MsiControl", "Items",              FieldValueKind::String,      false, "",                  "",
+     "Pipe-separated `Value:Caption` entries for `RadioButtonGroup`, `ComboBox`, or `ListBox` controls."}
 }};
+
+/// Returns `true` if `rootDirKey` points to a per-user Windows profile directory (requiring ICE38 HKCU KeyPath & ICE64 RemoveFolder!).
+inline constexpr bool IsPerUserProfileRootDir(std::string_view rootDirKey) noexcept {
+    return rootDirKey == "AppDataFolder" ||
+           rootDirKey == "LocalAppDataFolder" ||
+           rootDirKey == "ProgramMenuFolder" ||
+           rootDirKey == "ApplicationProgramsFolder" ||
+           rootDirKey == "DesktopFolder";
+}
 
 inline constexpr std::string_view ValueKindToDisplayName(FieldValueKind kind) noexcept {
     switch (kind) {

@@ -168,6 +168,7 @@ struct BrandingConfig {
     int          minWindowsBuild    = 22000;
     std::wstring osLaunchMessage    = L"This application requires Windows 11 (Build 22000) or later.";
     bool         isAutorun16x9      = false;
+    bool         isAeroWizard       = false;
     COLORREF     accentPrimary      = RGB(37, 99, 235);
     COLORREF     accentSecondary    = RGB(251, 191, 36);
     std::wstring welcomeHeadline    = L"Welcome to Setup";
@@ -260,6 +261,7 @@ BrandingConfig LoadBrandingConfigFromResource() {
     }
     cfg.osLaunchMessage  = getW("OsLaunchMessage", cfg.osLaunchMessage);
     cfg.isAutorun16x9    = rsw::EqualsIgnoreCase(kv["WizardLayout"], "autorun16x9");
+    cfg.isAeroWizard     = rsw::EqualsIgnoreCase(kv["WizardLayout"], "aerowizard");
     cfg.accentPrimary    = rsw::ui::ParseHexColor(kv["AccentPrimaryHex"], cfg.accentPrimary);
     cfg.accentSecondary  = rsw::ui::ParseHexColor(kv["AccentSecondaryHex"], cfg.accentSecondary);
     cfg.welcomeHeadline  = getW("WelcomeHeadline", L"Welcome to " + cfg.productName + L" Setup");
@@ -907,8 +909,14 @@ public:
         const int footerY = H - footerH;
         const int btnY    = footerY + (footerH - S(32)) / 2;
 
-        // Universal Footer Buttons (`< &Back`, `&Next >` / `&Install` / `&Finish`, `Cancel`)
-        ::MoveWindow(hBtnBack,    W - S(320), btnY, S(94),  S(32), TRUE);
+        // Universal Footer Buttons (`< &Back` moves to top-left circular Aero glyph when `cfg.isAeroWizard`!)
+        if (cfg.isAeroWizard) {
+            ::SetWindowTextW(hBtnBack, L"\x2190 &Back");
+            ::MoveWindow(hBtnBack, S(12), S(5), S(34), S(28), TRUE);
+        } else {
+            ::SetWindowTextW(hBtnBack, L"< &Back");
+            ::MoveWindow(hBtnBack, W - S(320), btnY, S(94), S(32), TRUE);
+        }
         ::MoveWindow(hBtnPrimary, W - S(218), btnY, S(112), S(32), TRUE);
         ::MoveWindow(hBtnCancel,  W - S(98),  btnY, S(80),  S(32), TRUE);
 
@@ -1581,6 +1589,11 @@ public:
             rsw::ui::DrawAutorunCompactInteriorHeader(
                 memDc, g, W, dpi, theme, cfg.manufacturer, kicker, cfg.productName,
                 hArtworkBmp, artworkW, artworkH);
+        } else if (cfg.isAeroWizard) {
+            const std::wstring winCap = cfg.productName + L" Setup";
+            rsw::ui::DrawAeroWizardTopHeader(
+                memDc, g, W, dpi, theme, winCap, hdrInfo.kickerSuffix,
+                hAppIconBig, hdrInfo.glyph, hdrInfo.badgeColor, cfg.manufacturer);
         } else {
             rsw::ui::DrawGlassTopHeader(
                 memDc, g, W, dpi, theme,

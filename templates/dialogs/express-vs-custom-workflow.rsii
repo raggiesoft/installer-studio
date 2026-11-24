@@ -1,0 +1,28 @@
+; ==============================================================================
+; FILE: templates/dialogs/express-vs-custom-workflow.rsii
+; PRESET: RaggieSoft Signature Express / Compact / Custom Setup Workflow
+; USAGE:
+;   @include "templates/dialogs/express-vs-custom-workflow.rsii"
+;
+; PLAIN-ENGLISH OVERVIEW:
+;   Configures BOTH `SetupWizard.exe` (Native Win32 C++20 Glass Wizard) AND
+;   `Product.msi` (Traditional MSI.DLL Dialog SQL Tables) to present our
+;   signature 3-mode workflow:
+;     1. Express Setup (Recommended) — One-click default path & shortcuts
+;     2. Compact Core Setup          — Essential core feature (`Level = 1`) only
+;     3. Custom Setup                — Feature Tree + Folder Browse + Shortcuts
+;   Plus Office-style Maintenance (`Quick Check & Repair` vs. `Full Reinstall`)
+;   and Safe Uninstall (personal documents & preferences preserved by default)!
+; ==============================================================================
+
+[UI]
+WizardLayout         = standard
+MsiDialogPreset      = express_custom
+AccentPrimaryHex     = #2563EB
+AccentSecondaryHex   = #FBBF24
+InstallButtonText    = &Install
+OfferLaunchOnFinish  = true
+FinishLaunchCheckbox = &Launch application when Setup finishes
+ExpressDescription   = One-click setup into the default installation folder with recommended shortcuts. Skips extra prompts.
+CompactDescription   = Installs essential core application files with minimal disk footprint using recommended defaults.
+CustomDescription    = Choose features, destination folder, Start Menu group, and file associations step by step.

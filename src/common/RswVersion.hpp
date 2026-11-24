@@ -52,9 +52,9 @@ inline constexpr std::string_view  kProductTagline     = "Install Without Limits
 inline constexpr std::string_view  kCanonicalExt       = ".rsip";
 inline constexpr std::string_view  kSuiteExt           = ".rsis";
 inline constexpr std::string_view  kIncludeExt         = ".rsii";
-inline constexpr std::string_view  kGeneratorSignature = "RaggieSoft Installer Studio (instbuild.exe 0.1.0)";
-inline constexpr std::wstring_view kGeneratorSigWide   = L"RaggieSoft Installer Studio (instbuild.exe 0.1.0)";
-inline constexpr std::string_view  kManifestSchemaVer  = "0.2";
+inline constexpr std::string_view  kGeneratorSignature = "RaggieSoft Installer Studio (instbuild.exe 0.2.0)";
+inline constexpr std::wstring_view kGeneratorSigWide   = L"RaggieSoft Installer Studio (instbuild.exe 0.2.0)";
+inline constexpr std::string_view  kManifestSchemaVer  = "0.3";
 
 // Embedded Win32 RCDATA resource IDs inside `SetupWizard.exe` -> `<Product>-setup.exe`
 inline constexpr int kResIdEmbeddedMsi     = 201;
