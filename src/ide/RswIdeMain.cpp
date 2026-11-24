@@ -29,13 +29,14 @@
 //          GUI edit byte-for-byte!
 // ================================================================================
 
-#include "../common/RswWin32UiTheme.hpp"
+#include "../common/RswGlassRenderer.hpp"
 #include "../common/RswCryptoAndPe.hpp"
 #include "../common/RswManifestAst.hpp"
 #include "../common/RswPlatform.hpp"
 #include "../common/RswSuiteWorkspace.hpp"
 #include "../common/RswVersion.hpp"
 #include "../compiler/RswAiSpecEmitter.hpp"
+#include "../compiler/RswBootstrapperPackager.hpp"
 #include "../compiler/RswExtraPackages.hpp"
 #include "../compiler/RswValidator.hpp"
 #include "../compiler/RswVpatEmitter.hpp"
@@ -129,6 +130,7 @@ enum IdeId : int {
     IDC_UI_ART_PATH     = 2256,
     IDC_UI_ART_BROWSE   = 2257,
     IDC_UI_APPLY        = 2258,
+    IDC_UI_PREVIEW_STEP = 2259,
 
     // View 4: Authenticode Signing
     IDC_SIG_ENABLED     = 2260,
@@ -266,8 +268,12 @@ public:
     HWND hRegKey = nullptr, hRegName = nullptr, hRegVal = nullptr, hRegAddBtn = nullptr;
 
     // View 3: Wizard UI & Live Preview
-    HWND hUiLayout = nullptr, hUiPrim = nullptr, hUiSec = nullptr, hUiInstBtn = nullptr;
+    HWND hUiLayout = nullptr, hUiPreviewStep = nullptr, hUiPrim = nullptr, hUiSec = nullptr, hUiInstBtn = nullptr;
     HWND hUiIcon = nullptr, hUiIconBtn = nullptr, hUiArt = nullptr, hUiArtBtn = nullptr, hUiApply = nullptr;
+    HICON   hPreviewIcon = nullptr;
+    HBITMAP hPreviewArt  = nullptr;
+    int     previewArtW  = 0;
+    int     previewArtH  = 0;
 
     // View 4: Authenticode Signing
     HWND hSigEnable = nullptr, hSigThumb = nullptr, hSigTs = nullptr, hSigDlib = nullptr, hSigMeta = nullptr, hSigApply = nullptr;
@@ -278,7 +284,17 @@ public:
     // View 6: Full Monospace `.rsip` Source
     HWND hSourceEdit = nullptr;
 
-    ~InstallerStudioIde() { DestroyFonts(); }
+    ~InstallerStudioIde() {
+        DestroyFonts();
+        ReleasePreviewAssets();
+    }
+
+    void ReleasePreviewAssets() noexcept {
+        if (hPreviewIcon) { ::DestroyIcon(hPreviewIcon); hPreviewIcon = nullptr; }
+        if (hPreviewArt)  { ::DeleteObject(hPreviewArt); hPreviewArt  = nullptr; }
+        previewArtW = 0;
+        previewArtH = 0;
+    }
 
     void DestroyFonts() noexcept {
         for (HFONT* f : {&hFontBanner, &hFontHead, &hFontUi, &hFontBold, &hFontMono}) {
@@ -424,6 +440,16 @@ public:
             0, 0, 160, 120, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_UI_LAYOUT)), hInst, nullptr));
         ::SendMessageW(hUiLayout, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"standard"));
         ::SendMessageW(hUiLayout, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"autorun16x9"));
+        mkLbl(VIEW_WIZARD_UI, L"Preview Step:");
+        hUiPreviewStep = RegisterViewCtrl(VIEW_WIZARD_UI, ::CreateWindowExW(
+            0, L"COMBOBOX", nullptr, WS_CHILD | WS_TABSTOP | CBS_DROPDOWNLIST,
+            0, 0, 160, 180, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_UI_PREVIEW_STEP)), hInst, nullptr));
+        ::SendMessageW(hUiPreviewStep, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Glass — Welcome & Hero Card"));
+        ::SendMessageW(hUiPreviewStep, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Glass — Setup Type (48x48 Cards)"));
+        ::SendMessageW(hUiPreviewStep, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Glass — Office Repair Mode"));
+        ::SendMessageW(hUiPreviewStep, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Glass — Installing Progress"));
+        ::SendMessageW(hUiPreviewStep, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"16:9 Autorun — Cover & 2x2 Menu"));
+        ::SendMessageW(hUiPreviewStep, CB_SETCURSEL, 1, 0);
         mkLbl(VIEW_WIZARD_UI, L"Primary Accent Hex:");   hUiPrim    = mkEd(VIEW_WIZARD_UI, IDC_UI_PRIMARY_HEX);
         mkLbl(VIEW_WIZARD_UI, L"Secondary Accent Hex:"); hUiSec     = mkEd(VIEW_WIZARD_UI, IDC_UI_SECONDARY_HEX);
         mkLbl(VIEW_WIZARD_UI, L"Install Button Text:");  hUiInstBtn = mkEd(VIEW_WIZARD_UI, IDC_UI_INSTALL_BTN);
@@ -613,31 +639,34 @@ public:
             }
         }
 
-        // View 3: Wizard UI + Right-Side Live Painted Wizard Preview Canvas!
+        // View 3: Wizard UI + Right-Side Live GDI+ Glass Wizard Preview Canvas!
         {
             auto v = layoutFormPairs(VIEW_WIZARD_UI);
             const int formW = S(390);
             int y = contentTop + S(4);
             const int lw = S(136);
-            if (v.size() >= 15) {
+            if (v.size() >= 17) {
                 ::MoveWindow(v[0], paneX, y + S(4), lw, S(22), TRUE);
                 ::MoveWindow(hUiLayout, paneX + lw, y, formW - lw, S(120), TRUE);
-                y += S(34);
+                y += S(32);
+                ::MoveWindow(v[2], paneX, y + S(4), lw, S(22), TRUE);
+                ::MoveWindow(hUiPreviewStep, paneX + lw, y, formW - lw, S(180), TRUE);
+                y += S(32);
                 auto row = [&](HWND lbl, HWND ed, int rsv = 0) {
                     ::MoveWindow(lbl, paneX, y + S(4), lw, S(22), TRUE);
                     ::MoveWindow(ed,  paneX + lw, y, formW - lw - rsv, S(26), TRUE);
-                    y += S(34);
+                    y += S(32);
                 };
-                row(v[2], hUiPrim);
-                row(v[4], hUiSec);
-                row(v[6], hUiInstBtn);
-                row(v[8], hUiIcon, S(86));
-                ::MoveWindow(hUiIconBtn, paneX + formW - S(80), y - S(34), S(80), S(26), TRUE);
-                row(v[11], hUiArt, S(86));
-                ::MoveWindow(hUiArtBtn,  paneX + formW - S(80), y - S(34), S(80), S(26), TRUE);
+                row(v[4],  hUiPrim);
+                row(v[6],  hUiSec);
+                row(v[8],  hUiInstBtn);
+                row(v[10], hUiIcon, S(86));
+                ::MoveWindow(hUiIconBtn, paneX + formW - S(80), y - S(32), S(80), S(26), TRUE);
+                row(v[13], hUiArt, S(86));
+                ::MoveWindow(hUiArtBtn,  paneX + formW - S(80), y - S(32), S(80), S(26), TRUE);
                 ::MoveWindow(hUiApply, paneX, y + S(4), formW, S(34), TRUE);
             }
-            previewCanvasRc = RECT{paneX + formW + S(20), contentTop + S(4), paneX + paneW, contentTop + std::min(mainH, S(310))};
+            previewCanvasRc = RECT{paneX + formW + S(18), contentTop, paneX + paneW, contentTop + std::min(mainH, S(430))};
         }
 
         // View 4: Authenticode Signing
@@ -778,17 +807,52 @@ public:
 
         const bool isAuto = rsw::EqualsIgnoreCase(effectiveDoc.GetString("UI", "", "WizardLayout", "standard"), "autorun16x9");
         ::SendMessageW(hUiLayout, CB_SETCURSEL, isAuto ? 1 : 0, 0);
+        if (isAuto) {
+            ::SendMessageW(hUiPreviewStep, CB_SETCURSEL, 4, 0);
+        } else if (::SendMessageW(hUiPreviewStep, CB_GETCURSEL, 0, 0) == 4) {
+            ::SendMessageW(hUiPreviewStep, CB_SETCURSEL, 1, 0);
+        }
         ::SetWindowTextW(hUiPrim,    rsw::Utf8ToWide(effectiveDoc.GetString("UI", "", "AccentPrimaryHex", "#2563EB")).c_str());
         ::SetWindowTextW(hUiSec,     rsw::Utf8ToWide(effectiveDoc.GetString("UI", "", "AccentSecondaryHex", "#FBBF24")).c_str());
         ::SetWindowTextW(hUiInstBtn, rsw::Utf8ToWide(effectiveDoc.GetString("UI", "", "InstallButtonText", "&Install")).c_str());
         ::SetWindowTextW(hUiIcon,    rsw::Utf8ToWide(effectiveDoc.GetString("UI", "", "IconFile")).c_str());
         ::SetWindowTextW(hUiArt,     rsw::Utf8ToWide(effectiveDoc.GetString("UI", "", "ArtworkPng")).c_str());
+        RefreshPreviewAssetsFromDoc(effectiveDoc);
 
         ::SendMessageW(hSigEnable, BM_SETCHECK, effectiveDoc.GetBool("Signing", "", "Enabled", false) ? BST_CHECKED : BST_UNCHECKED, 0);
         ::SetWindowTextW(hSigThumb, rsw::Utf8ToWide(effectiveDoc.GetString("Signing", "", "Thumbprint")).c_str());
         ::SetWindowTextW(hSigTs,    rsw::Utf8ToWide(effectiveDoc.GetString("Signing", "", "TimestampUrl", "http://timestamp.acs.microsoft.com")).c_str());
         ::SetWindowTextW(hSigDlib,  rsw::Utf8ToWide(effectiveDoc.GetString("Signing", "", "DlibPath")).c_str());
         ::SetWindowTextW(hSigMeta,  rsw::Utf8ToWide(effectiveDoc.GetString("Signing", "", "MetadataJson")).c_str());
+    }
+
+    void RefreshPreviewAssetsFromDoc(const rsw::RswManifestDocument& doc) {
+        ReleasePreviewAssets();
+        const std::filesystem::path baseDir = currentFilePath.empty()
+            ? std::filesystem::current_path()
+            : currentFilePath.parent_path();
+        const std::string arch = SelectedArch();
+        auto resolveP = [&](std::string_view raw) -> std::filesystem::path {
+            if (raw.empty()) return {};
+            const std::string exp = rsw::ExpandArchToken(raw, arch);
+            std::filesystem::path p(rsw::Utf8ToWide(exp));
+            return (p.is_absolute() ? p : (baseDir / p)).lexically_normal();
+        };
+
+        std::error_code ec;
+        const auto icoPath = resolveP(doc.GetString("UI", "", "IconFile"));
+        if (!icoPath.empty() && std::filesystem::exists(icoPath, ec)) {
+            hPreviewIcon = static_cast<HICON>(::LoadImageW(
+                nullptr, icoPath.wstring().c_str(), IMAGE_ICON, 64, 64, LR_LOADFROMFILE | LR_DEFAULTCOLOR));
+        }
+        const auto artPath = resolveP(doc.GetString("UI", "", "ArtworkPng"));
+        if (!artPath.empty() && std::filesystem::exists(artPath, ec)) {
+            std::vector<std::uint8_t> bytes;
+            std::string ignoreErr;
+            if (rsw::ReadBinaryFileBytes(artPath, bytes, ignoreErr) && !bytes.empty()) {
+                hPreviewArt = rsw::ui::DecodeImageBytesToHBitmap(bytes.data(), bytes.size(), previewArtW, previewArtH);
+            }
+        }
     }
 
     void LoadProjectText(const std::string& utf8, const std::filesystem::path& path, bool keepSuite = false) {
@@ -1073,62 +1137,195 @@ public:
         AppendConsole(L"[OK] Exported WCAG 2.2 AA & Section 508 VPAT 2.5 Report: " + htmlPath.wstring() + L"\r\n");
     }
 
-    void PaintIdeSurface(HDC hdc) {
+    void PaintLiveWizardPreview(HDC hdcOut, const RECT& destRc, UINT dpi) {
+        const int pvW = destRc.right - destRc.left;
+        const int pvH = destRc.bottom - destRc.top;
+        if (pvW < 180 || pvH < 180) return;
+
+        // Scale the preview smoothly inside `destRc` using a proportional virtual DPI
+        const UINT pvDpi = static_cast<UINT>(std::clamp(pvW * 96 / 580, 68, static_cast<int>(dpi)));
+        auto PS = [&](int px) { return rsw::ui::ScalePx(px, pvDpi, 100); };
+
+        const COLORREF prim = rsw::ui::ParseHexColor(ReadCtlUtf8(hUiPrim), RGB(37, 99, 235));
+        const COLORREF sec  = rsw::ui::ParseHexColor(ReadCtlUtf8(hUiSec),  RGB(251, 191, 36));
+        rsw::ui::RswTheme pvTheme{};
+        pvTheme.Refresh(prim, sec);
+        pvTheme.textScalePercent = 100;
+
+        HDC pvDc       = ::CreateCompatibleDC(hdcOut);
+        HBITMAP pvBmp  = ::CreateCompatibleBitmap(hdcOut, pvW, pvH);
+        HGDIOBJ oldBmp = ::SelectObject(pvDc, pvBmp);
+
+        RECT localRc{0, 0, pvW, pvH};
+        ::FillRect(pvDc, &localRc, pvTheme.hbrWindow);
+        ::SetBkMode(pvDc, TRANSPARENT);
+
+        Gdiplus::Graphics pvG(pvDc);
+        pvG.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        pvG.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+        pvG.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
+
+        const std::wstring prodName = rsw::Utf8ToWide(ReadCtlUtf8(hPkgName).empty() ? "My Native Application" : ReadCtlUtf8(hPkgName));
+        const std::wstring pubName  = rsw::Utf8ToWide(ReadCtlUtf8(hPkgPub).empty()  ? "RaggieSoft" : ReadCtlUtf8(hPkgPub));
+        const std::wstring tagline  = rsw::Utf8ToWide(ReadCtlUtf8(hPkgTag).empty()  ? "Fast, Accessible Windows Software" : ReadCtlUtf8(hPkgTag));
+        const std::wstring webLbl   = rsw::Utf8ToWide(ReadCtlUtf8(hPkgWeb));
+        const std::wstring ctaLbl   = rsw::Utf8ToWide(ReadCtlUtf8(hUiInstBtn).empty() ? "&Install" : ReadCtlUtf8(hUiInstBtn));
+
+        const LRESULT stepSel = ::SendMessageW(hUiPreviewStep, CB_GETCURSEL, 0, 0);
+        const int stepIdx = (stepSel == CB_ERR) ? 1 : static_cast<int>(stepSel);
+        const int footH   = PS(50);
+        const int footY   = pvH - footH;
+
+        rsw::ui::DrawGlassFooterBar(pvDc, pvG, pvW, pvH, footH, pvW - PS(198), pvDpi, pvTheme, pubName, webLbl);
+
+        if (stepIdx == 4) {
+            // `16:9` CD-Autorun Preview (`Cover Stage` + `2x2` Interactive Choice Grid!)
+            const int stageH = std::max(PS(140), footY - PS(94));
+            RECT stageRc{0, 0, pvW, stageH};
+            rsw::ui::FillHorizontalGradient(pvDc, stageRc, pvTheme.bannerNavyLeft, pvTheme.bannerNavyRight);
+            if (hPreviewArt) {
+                rsw::ui::DrawAlphaBitmapFit(pvDc, hPreviewArt, previewArtW, previewArtH, stageRc);
+            } else {
+                rsw::ui::DrawBrandSquircleBadge(pvG, static_cast<float>(PS(20)), static_cast<float>(PS(22)), static_cast<float>(PS(42)), pvTheme, pubName);
+                HFONT fHead = rsw::ui::CreateScaledFont(L"Segoe UI", 14, FW_BOLD, pvDpi, 100);
+                HGDIOBJ oF  = ::SelectObject(pvDc, fHead);
+                ::SetTextColor(pvDc, pvTheme.bannerTitleText);
+                RECT tRc{PS(20), PS(76), pvW - PS(20), PS(122)};
+                ::DrawTextW(pvDc, prodName.c_str(), -1, &tRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                ::SelectObject(pvDc, oF);
+                ::DeleteObject(fHead);
+            }
+            rsw::ui::DrawMultiStopAccentBar(pvG, 0.0f, static_cast<float>(stageH), static_cast<float>(pvW), static_cast<float>(PS(3)), pvTheme);
+
+            const int cw = (pvW - PS(34)) / 2;
+            const int ch = PS(36);
+            const int ry1 = stageH + PS(8);
+            const int ry2 = ry1 + ch + PS(5);
+            RECT c0{PS(12),            ry1, PS(12) + cw,            ry1 + ch};
+            RECT c1{PS(22) + cw,       ry1, PS(22) + cw * 2,        ry1 + ch};
+            RECT c2{PS(12),            ry2, PS(12) + cw,            ry2 + ch};
+            RECT c3{PS(22) + cw,       ry2, PS(22) + cw * 2,        ry2 + ch};
+            rsw::ui::DrawAutorunChoiceCell(pvDc, pvG, c0, pvDpi, pvTheme, L"&Install Edition",  L"Add to local library", true,  true,  false);
+            rsw::ui::DrawAutorunChoiceCell(pvDc, pvG, c1, pvDpi, pvTheme, L"View &ReadMe",      L"Edition notes & credits", false, false, false);
+            rsw::ui::DrawAutorunChoiceCell(pvDc, pvG, c2, pvDpi, pvTheme, L"C&hange Folder...", L"Pick custom library path", false, false, false);
+            rsw::ui::DrawAutorunChoiceCell(pvDc, pvG, c3, pvDpi, pvTheme, L"E&xit Installer",   L"Close without changes", false, false, false);
+        } else {
+            rsw::ui::GlassGlyph stepGlyph = rsw::ui::GlassGlyph::Sliders;
+            COLORREF stepCol              = rsw::ui::brand::kVioletTune;
+            const wchar_t* kicker         = L"CHOOSE SETUP MODE";
+            if (stepIdx == 0) { stepGlyph = rsw::ui::GlassGlyph::Sparkle;   stepCol = rsw::ui::brand::kRaggieBlue; kicker = L"OFFICIAL SETUP WIZARD"; }
+            if (stepIdx == 2) { stepGlyph = rsw::ui::GlassGlyph::Reinstall; stepCol = rsw::ui::brand::kRaggieBlue; kicker = L"REPAIR & VERIFY OPTIONS"; }
+            if (stepIdx == 3) { stepGlyph = rsw::ui::GlassGlyph::Gear;      stepCol = rsw::ui::brand::kRaggieBlue; kicker = L"APPLYING SYSTEM CHANGES"; }
+
+            rsw::ui::DrawGlassTopHeader(pvDc, pvG, pvW, pvDpi, pvTheme, pubName, kicker, prodName, hPreviewIcon, stepGlyph, stepCol);
+
+            const int bTop = PS(100);
+            const int cx   = PS(16);
+            const int cw   = pvW - PS(32);
+
+            if (stepIdx == 0) {
+                RECT heroRc{cx, bTop, cx + cw, bTop + PS(68)};
+                rsw::ui::DrawHeroBrandCard(pvDc, pvG, heroRc, pvDpi, pvTheme, pubName, tagline, webLbl, L"OFFICIAL INSTALLER", hPreviewIcon);
+                HFONT fH = rsw::ui::CreateScaledFont(L"Segoe UI", 13, FW_BOLD, pvDpi, 100);
+                HFONT fB = rsw::ui::CreateScaledFont(L"Segoe UI",  9, FW_NORMAL, pvDpi, 100);
+                HGDIOBJ oF = ::SelectObject(pvDc, fH);
+                ::SetTextColor(pvDc, pvTheme.textPrimary);
+                const std::wstring wHead = L"Welcome to " + prodName + L" Setup";
+                RECT hRc{cx + PS(4), bTop + PS(80), cx + cw, bTop + PS(110)};
+                ::DrawTextW(pvDc, wHead.c_str(), -1, &hRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                ::SelectObject(pvDc, fB);
+                ::SetTextColor(pvDc, pvTheme.textSecondary);
+                RECT pRc{cx + PS(4), bTop + PS(112), cx + cw, footY - PS(12)};
+                ::DrawTextW(pvDc, L"WCAG 2.2 AA Accessible Win32 C++20 Setup Wizard — full keyboard Tab/Arrow/Mnemonic navigation, High Contrast & Dark Mode.", -1, &pRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
+                ::SelectObject(pvDc, oF);
+                ::DeleteObject(fH);
+                ::DeleteObject(fB);
+            } else if (stepIdx == 1) {
+                const int ch = std::min(PS(68), (footY - bTop - PS(24)) / 3);
+                RECT r0{cx, bTop,                     cx + cw, bTop + ch};
+                RECT r1{cx, bTop + ch + PS(8),        cx + cw, bTop + ch * 2 + PS(8)};
+                RECT r2{cx, bTop + (ch + PS(8)) * 2,  cx + cw, bTop + ch * 3 + PS(16)};
+                rsw::ui::DrawAccessibleOptionCard(pvDc, pvG, r0, pvDpi, pvTheme, rsw::ui::GlassGlyph::Bolt,    rsw::ui::brand::kSkyCyan,    rsw::ui::brand::kWarmGold, L"&Express Setup (Recommended)", L"One-click setup into the default folder with recommended shortcuts.", true, true, false);
+                rsw::ui::DrawAccessibleOptionCard(pvDc, pvG, r1, pvDpi, pvTheme, rsw::ui::GlassGlyph::Cube,    rsw::ui::brand::kRaggieBlue, rsw::ui::brand::kSkyCyan,  L"Co&mpact Core Setup",          L"Installs essential application files with minimal disk footprint.", false, false, false);
+                rsw::ui::DrawAccessibleOptionCard(pvDc, pvG, r2, pvDpi, pvTheme, rsw::ui::GlassGlyph::Sliders, rsw::ui::brand::kVioletTune, rsw::ui::brand::kWarmGold, L"C&ustom Setup",                 L"Choose a custom destination folder and shortcuts step by step.", false, false, false);
+            } else if (stepIdx == 2) {
+                RECT r0{cx, bTop + PS(8),  cx + cw, bTop + PS(84)};
+                RECT r1{cx, bTop + PS(96), cx + cw, bTop + PS(172)};
+                rsw::ui::DrawAccessibleOptionCard(pvDc, pvG, r0, pvDpi, pvTheme, rsw::ui::GlassGlyph::ShieldCheck, rsw::ui::brand::kEmeraldOk,  rsw::ui::brand::kWarmGold, L"&Quick Check & Repair (Recommended)", L"Verifies installed files and restores only missing or damaged files.", true, true, false);
+                rsw::ui::DrawAccessibleOptionCard(pvDc, pvG, r1, pvDpi, pvTheme, rsw::ui::GlassGlyph::Reinstall,   rsw::ui::brand::kRaggieBlue, rsw::ui::brand::kSkyCyan,  L"&Full Reinstall (Refresh All Files)", L"Replaces every program file and shortcut from the setup package.", false, false, false);
+            } else {
+                RECT heroRc{cx, bTop, cx + cw, bTop + PS(66)};
+                rsw::ui::DrawHeroBrandCard(pvDc, pvG, heroRc, pvDpi, pvTheme, pubName, tagline, webLbl, L"CONFIGURING SYSTEM", hPreviewIcon);
+                Gdiplus::SolidBrush boxBr(rsw::ui::ToGpColor(pvTheme.cardBg));
+                Gdiplus::Pen boxPen(rsw::ui::ToGpColor(pvTheme.borderSubtle), 1.0f);
+                rsw::ui::FillAndStrokeRoundRect(pvG, static_cast<float>(cx), static_cast<float>(bTop + PS(78)), static_cast<float>(cw), static_cast<float>(PS(104)), static_cast<float>(PS(10)), &boxBr, &boxPen);
+                Gdiplus::SolidBrush trackBr(rsw::ui::ToGpColor(pvTheme.borderSubtle));
+                Gdiplus::SolidBrush fillBr(rsw::ui::ToGpColor(rsw::ui::brand::kEmeraldOk));
+                rsw::ui::FillAndStrokeRoundRect(pvG, static_cast<float>(cx + PS(16)), static_cast<float>(bTop + PS(140)), static_cast<float>(cw - PS(32)), static_cast<float>(PS(18)), static_cast<float>(PS(9)), &trackBr);
+                rsw::ui::FillAndStrokeRoundRect(pvG, static_cast<float>(cx + PS(16)), static_cast<float>(bTop + PS(140)), static_cast<float>((cw - PS(32)) * 68 / 100), static_cast<float>(PS(18)), static_cast<float>(PS(9)), &fillBr);
+            }
+        }
+
+        // Preview Footer Primary CTA Button + Outer Frame Border
+        Gdiplus::SolidBrush ctaBr(rsw::ui::ToGpColor(prim));
+        rsw::ui::FillAndStrokeRoundRect(
+            pvG, static_cast<float>(pvW - PS(184)), static_cast<float>(footY + PS(10)),
+            static_cast<float>(PS(96)), static_cast<float>(footH - PS(20)), static_cast<float>(PS(6)), &ctaBr);
+        HFONT fBtn = rsw::ui::CreateScaledFont(L"Segoe UI", 9, FW_BOLD, pvDpi, 100);
+        HGDIOBJ oF = ::SelectObject(pvDc, fBtn);
+        ::SetTextColor(pvDc, RGB(255, 255, 255));
+        RECT ctaRc{pvW - PS(184), footY + PS(10), pvW - PS(88), footY + footH - PS(10)};
+        ::DrawTextW(pvDc, ctaLbl.c_str(), -1, &ctaRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        ::SelectObject(pvDc, oF);
+        ::DeleteObject(fBtn);
+
+        Gdiplus::Pen outerFrame(rsw::ui::ToGpColor(pvTheme.accentPrimary, 210), 1.5f);
+        pvG.DrawRectangle(&outerFrame, 0.5f, 0.5f, static_cast<float>(pvW) - 1.0f, static_cast<float>(pvH) - 1.0f);
+
+        ::BitBlt(hdcOut, destRc.left, destRc.top, pvW, pvH, pvDc, 0, 0, SRCCOPY);
+        ::SelectObject(pvDc, oldBmp);
+        ::DeleteObject(pvBmp);
+        ::DeleteDC(pvDc);
+    }
+
+    void PaintIdeSurface(HDC hdcOut) {
         RECT rc{};
         ::GetClientRect(hWnd, &rc);
+        const int W = std::max<int>(1, rc.right - rc.left);
+        const int H = std::max<int>(1, rc.bottom - rc.top);
         const UINT dpi = ::GetDpiForWindow(hWnd);
         auto S = [&](int px) { return rsw::ui::ScalePx(px, dpi, theme.textScalePercent); };
 
+        HDC hdc        = ::CreateCompatibleDC(hdcOut);
+        HBITMAP memBmp = ::CreateCompatibleBitmap(hdcOut, W, H);
+        HGDIOBJ oldBmp = ::SelectObject(hdc, memBmp);
+
         ::FillRect(hdc, &rc, theme.hbrWindow);
-        RECT bannerRc{0, 0, rc.right, S(50)};
+        RECT bannerRc{0, 0, W, S(50)};
         rsw::ui::FillHorizontalGradient(hdc, bannerRc, theme.bannerNavyLeft, theme.bannerNavyRight);
-        RECT accentRc{0, bannerRc.bottom, rc.right, bannerRc.bottom + S(4)};
-        rsw::ui::FillHorizontalGradient(hdc, accentRc, theme.accentPrimary, theme.accentSecondary);
+
+        Gdiplus::Graphics g(hdc);
+        g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+        rsw::ui::DrawBrandSquircleBadge(g, static_cast<float>(S(14)), static_cast<float>(S(9)), static_cast<float>(S(32)), theme, L"RaggieSoft");
+        rsw::ui::DrawMultiStopAccentBar(g, 0.0f, static_cast<float>(S(50)), static_cast<float>(W), static_cast<float>(S(4)), theme);
 
         ::SetBkMode(hdc, TRANSPARENT);
         HGDIOBJ oldF = ::SelectObject(hdc, hFontBanner);
         ::SetTextColor(hdc, theme.bannerTitleText);
-        RECT tRc{S(16), S(10), rc.right - S(16), S(42)};
-        ::DrawTextW(hdc, L"RaggieSoft Installer Studio  •  Install Without Limits (.rsip / .rsis -> MSI • MSM • MST • MSP • Setup.exe)",
+        RECT tRc{S(54), S(8), W - S(16), S(44)};
+        ::DrawTextW(hdc, L"RaggieSoft Installer Studio  •  Install Without Limits (.rsip / .rsis -> MSI • MSM • MST • MSP • WCAG 2.2 AA Setup.exe)",
                     -1, &tRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
-        if (activeView == VIEW_WIZARD_UI && previewCanvasRc.right > previewCanvasRc.left + S(120)) {
-            RECT pv = previewCanvasRc;
-            ::FillRect(hdc, &pv, theme.hbrCard);
-            const COLORREF prim = rsw::ui::ParseHexColor(ReadCtlUtf8(hUiPrim), RGB(37, 99, 235));
-            const COLORREF sec  = rsw::ui::ParseHexColor(ReadCtlUtf8(hUiSec),  RGB(251, 191, 36));
-            const bool isAuto   = (::SendMessageW(hUiLayout, CB_GETCURSEL, 0, 0) == 1);
-
-            const int headH = isAuto ? ((pv.bottom - pv.top) * 55 / 100) : S(56);
-            RECT pvHead{pv.left, pv.top, pv.right, pv.top + headH};
-            rsw::ui::FillHorizontalGradient(hdc, pvHead, RGB(11, 19, 43), RGB(20, 38, 78));
-            RECT pvAcc{pv.left, pvHead.bottom, pv.right, pvHead.bottom + S(4)};
-            rsw::ui::FillHorizontalGradient(hdc, pvAcc, prim, sec);
-
-            ::SelectObject(hdc, hFontHead);
-            ::SetTextColor(hdc, RGB(248, 250, 252));
-            std::wstring prodTitle = rsw::Utf8ToWide(astDoc.GetString("Package", "", "Name", "My Application")) + L" Setup";
-            RECT ptRc{pv.left + S(14), pv.top + S(12), pv.right - S(14), pvHead.bottom};
-            ::DrawTextW(hdc, prodTitle.c_str(), -1, &ptRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-
-            ::SelectObject(hdc, hFontUi);
-            ::SetTextColor(hdc, theme.textPrimary);
-            RECT bodyRc{pv.left + S(14), pvAcc.bottom + S(12), pv.right - S(14), pv.bottom - S(42)};
-            const wchar_t* pvCopy = isAuto
-                ? L"Live Preview: 640x480 16:9 Autorun Micro-Installer\r\nOne-click install + Change Folder"
-                : L"(o) Express Setup (Recommended)\r\n( ) Compact Setup\r\n( ) Custom Setup";
-            ::DrawTextW(hdc, pvCopy, -1, &bodyRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
-
-            RECT ctaRc{pv.right - S(104), pv.bottom - S(34), pv.right - S(14), pv.bottom - S(8)};
-            HBRUSH hCta = ::CreateSolidBrush(prim);
-            ::FillRect(hdc, &ctaRc, hCta);
-            ::DeleteObject(hCta);
-            ::SetTextColor(hdc, RGB(255, 255, 255));
-            std::wstring btnCap = rsw::Utf8ToWide(ReadCtlUtf8(hUiInstBtn));
-            ::DrawTextW(hdc, btnCap.c_str(), -1, &ctaRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        if (activeView == VIEW_WIZARD_UI && previewCanvasRc.right > previewCanvasRc.left + S(160)) {
+            PaintLiveWizardPreview(hdc, previewCanvasRc, dpi);
         }
 
         ::SelectObject(hdc, oldF);
+        ::BitBlt(hdcOut, 0, 0, W, H, hdc, 0, 0, SRCCOPY);
+        ::SelectObject(hdc, oldBmp);
+        ::DeleteObject(memBmp);
+        ::DeleteDC(hdc);
     }
 
     static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -1191,6 +1388,16 @@ public:
                         self->UpdateActiveViewVisibility();
                         ::InvalidateRect(hWnd, nullptr, TRUE);
                     }
+                    return 0;
+                }
+                if (id == IDC_UI_PREVIEW_STEP && code == CBN_SELCHANGE) {
+                    ::InvalidateRect(hWnd, nullptr, FALSE);
+                    return 0;
+                }
+                if (id == IDC_UI_LAYOUT && code == CBN_SELCHANGE) {
+                    const bool autoMode = (::SendMessageW(self->hUiLayout, CB_GETCURSEL, 0, 0) == 1);
+                    ::SendMessageW(self->hUiPreviewStep, CB_SETCURSEL, autoMode ? 4 : 1, 0);
+                    ::InvalidateRect(hWnd, nullptr, FALSE);
                     return 0;
                 }
                 if (id == IDC_SUITE_COMBO && code == CBN_SELCHANGE && self->hasActiveSuite) {
@@ -1390,6 +1597,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     }
 
     ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    rsw::ui::ScopedGdiPlusSession gdiPlusSession;
     INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES};
     ::InitCommonControlsEx(&icc);
 

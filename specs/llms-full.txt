@@ -67,10 +67,12 @@ Branding, RTF license, icon, and accessible & accelerator labels for Wizard 97 M
 | `InstallButtonText` | `accel_string (must include '&')` | No | `&Install` | Accessible primary install button caption; MUST include a `&` keyboard mnemonic. |
 | `FinishLaunchCheckbox` | `accel_string (must include '&')` | No | `&Launch application when setup finishes` | Accessible finish-screen launch checkbox caption; MUST include a `&` keyboard mnemonic. |
 | `OfferLaunchOnFinish` | `bool (true|false)` | No | `true` | Shows the optional launch checkbox on the completion screen when `MainExecutable` is set. |
-| `WizardLayout` | `enum` | No | `standard` | Allowed: `standard|autorun16x9`. `standard` shows the full Express/Compact/Custom Setup Wizard; `autorun16x9` shows the 640x480 16:9 widescreen Autorun micro-installer. |
+| `WizardLayout` | `enum` | No | `standard` | Allowed: `standard|autorun16x9`. `standard` shows the full RaggieSoft Glass Express/Compact/Custom Setup Wizard; `autorun16x9` shows the 640x480 16:9 widescreen Autorun micro-installer. |
 | `AccentPrimaryHex` | `string` | No | `#2563EB` | Primary header accent hex color (e.g. `#2563EB` Cobalt, `#38BDF8` Sky Cyan, `#14B8A6` Teal). |
 | `AccentSecondaryHex` | `string` | No | `#FBBF24` | Secondary gradient accent hex color (e.g. `#FBBF24` Warm Gold, `#10B981` Emerald, `#EC4899` Rose). |
 | `ArtworkPng` | `path (supports $(ARCH))` | No | — | Optional `.png` 16:9 banner or square product/album/book cover rendered inside `SetupWizard.exe`. |
+| `WelcomeIntro` | `string` | No | — | Optional introductory paragraph displayed beneath the Hero Brand Card on the Welcome page of `SetupWizard.exe`. |
+| `ReadMeText` | `string` | No | — | Optional edition liner notes or ReadMe summary displayed in the ReadMe view of `autorun16x9` installers. |
 | `ExpressDescription` | `string` | No | `One-click setup into the default installation folder with recommended shortcuts. Skips extra prompts.` | Helper caption for the Express Setup mode card in `SetupWizard.exe`. |
 | `CompactDescription` | `string` | No | `Installs essential application files with minimal disk footprint using recommended folder defaults.` | Helper caption for the Compact Setup mode card in `SetupWizard.exe`. |
 | `CustomDescription` | `string` | No | `Choose a custom destination folder and review installation options step by step before installing.` | Helper caption for the Custom Setup mode card in `SetupWizard.exe`. |

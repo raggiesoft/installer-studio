@@ -1,12 +1,13 @@
 // ================================================================================
 // FILE: src/common/RswWin32UiTheme.hpp
-// PROJECT: RaggieSoft Setup Wizard ("Install Without Limits")
+// PROJECT: RaggieSoft Installer Studio ("Install Without Limits")
+// WEBSITE: https://raggiesoftstudio.com  |  DEV HUB: https://raggiesoft.dev
 // LICENSE: MIT License (Copyright (c) 2026 Michael P. Ragsdale / RaggieSoft)
 //
 // PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
-//   What does this shared Win32 UI header provide to BOTH `rsswsetup.exe` (our
-//   customer-facing self-extracting installer) and `rsswide.exe` (our developer
-//   Visual IDE)?
+//   What does this shared Win32 UI header provide to BOTH `SetupWizard.exe` (our
+//   customer-facing self-extracting installer) and `InstallerStudio.exe` (our
+//   developer Visual IDE)?
 //     1. **RaggieSoft Brand Palette + Accessibility Contrast Themes**:
 //        - Checks Windows Contrast Themes (`SPI_GETHIGHCONTRAST`) FIRST so users
 //          relying on Aquatic, Desert, Dusk, or Night Sky assistive contrast

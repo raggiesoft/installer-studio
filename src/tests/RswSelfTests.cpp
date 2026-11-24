@@ -220,7 +220,22 @@ int wmain() {
     const auto setupPe = rsw::HarvestPeVersionAndLanguage(v1SetupExe);
     Check(setupPe.version == "1.0.0.0", "Stamped 100% author-owned VERSIONINFO (1.0.0.0) onto Setup.exe", setupPe.version);
 
-    // Test `<Product>-setup.exe --extract-msi <dir>` round-trip!
+    // Test `<Product>-setup.exe --self-check` & `--extract-msi <dir>` round-trip!
+    {
+        std::wstring chkCmd = L"\"" + v1SetupExe.wstring() + L"\" --self-check";
+        STARTUPINFOW si{sizeof(si)};
+        PROCESS_INFORMATION pi{};
+        if (::CreateProcessW(nullptr, chkCmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+            ::WaitForSingleObject(pi.hProcess, INFINITE);
+            DWORD code = 1;
+            ::GetExitCodeProcess(pi.hProcess, &code);
+            ::CloseHandle(pi.hThread);
+            ::CloseHandle(pi.hProcess);
+            Check(code == 0, "Setup.exe --self-check verifies GDI+ Glass bootstrapper stub health");
+        } else {
+            Check(false, "Launched Setup.exe --self-check");
+        }
+    }
     const auto extractedDir = testWorkDir / L"extracted";
     {
         std::wstring cmd = L"\"" + v1SetupExe.wstring() + L"\" --extract-msi \"" + extractedDir.wstring() + L"\"";

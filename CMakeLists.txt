@@ -37,13 +37,13 @@ add_executable(SetupWizard WIN32
     src/bootstrapper/RswSetupMain.cpp
     src/bootstrapper/RswSetupBootstrapper.rc
 )
-target_link_libraries(SetupWizard PRIVATE msi user32 gdi32 advapi32 comctl32 dwmapi uxtheme msimg32 windowscodecs ole32 shlwapi shell32)
+target_link_libraries(SetupWizard PRIVATE msi user32 gdi32 gdiplus advapi32 comctl32 dwmapi uxtheme msimg32 windowscodecs ole32 shlwapi shell32)
 
 add_executable(InstallerStudio WIN32
     src/ide/RswIdeMain.cpp
     src/ide/RswIde.rc
 )
-target_link_libraries(InstallerStudio PRIVATE msi Cabinet Version Rpcrt4 bcrypt user32 gdi32 advapi32 comctl32 comdlg32 dwmapi uxtheme msimg32 windowscodecs ole32 shlwapi shell32)
+target_link_libraries(InstallerStudio PRIVATE msi Cabinet Version Rpcrt4 bcrypt user32 gdi32 gdiplus advapi32 comctl32 comdlg32 dwmapi uxtheme msimg32 windowscodecs ole32 shlwapi shell32)
 
 add_executable(msiprism WIN32
     src/prism/MsiPrismMain.cpp

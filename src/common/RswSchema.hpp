@@ -213,7 +213,7 @@ inline constexpr std::array<FieldDescriptor, 45> kFieldDescriptors{{
 
 // Additional optional fields on `[Package]`, `[UI]`, `[Shortcut.<id>]`, and `[Registry.<id>]`
 // kept in a companion constexpr array so both arrays stay compact and crystal-clear to read!
-inline constexpr std::array<FieldDescriptor, 19> kExtendedFieldDescriptors{{
+inline constexpr std::array<FieldDescriptor, 21> kExtendedFieldDescriptors{{
     {"Package",  "PackageKind",          FieldValueKind::EnumChoice,  false, "msi",               "msi|msm",
      "`msi` builds a standalone Enterprise `.msi` (+ optional `-setup.exe`); `msm` builds a reusable Merge Module (`.msm`)."},
     {"Package",  "Tagline",              FieldValueKind::String,      false, "",                  "",
@@ -221,13 +221,17 @@ inline constexpr std::array<FieldDescriptor, 19> kExtendedFieldDescriptors{{
     {"Package",  "WebsiteLabel",         FieldValueKind::String,      false, "",                  "",
      "Optional domain badge shown in the setup wizard footer (left blank if omitted — 100% white-label!)."},
     {"UI",       "WizardLayout",         FieldValueKind::EnumChoice,  false, "standard",          "standard|autorun16x9",
-     "`standard` shows the full Express/Compact/Custom Setup Wizard; `autorun16x9` shows the 640x480 16:9 widescreen Autorun micro-installer."},
+     "`standard` shows the full RaggieSoft Glass Express/Compact/Custom Setup Wizard; `autorun16x9` shows the 640x480 16:9 widescreen Autorun micro-installer."},
     {"UI",       "AccentPrimaryHex",     FieldValueKind::String,      false, "#2563EB",           "",
      "Primary header accent hex color (e.g. `#2563EB` Cobalt, `#38BDF8` Sky Cyan, `#14B8A6` Teal)."},
     {"UI",       "AccentSecondaryHex",   FieldValueKind::String,      false, "#FBBF24",           "",
      "Secondary gradient accent hex color (e.g. `#FBBF24` Warm Gold, `#10B981` Emerald, `#EC4899` Rose)."},
     {"UI",       "ArtworkPng",           FieldValueKind::Path,        false, "",                  "",
      "Optional `.png` 16:9 banner or square product/album/book cover rendered inside `SetupWizard.exe`."},
+    {"UI",       "WelcomeIntro",         FieldValueKind::String,      false, "",                  "",
+     "Optional introductory paragraph displayed beneath the Hero Brand Card on the Welcome page of `SetupWizard.exe`."},
+    {"UI",       "ReadMeText",           FieldValueKind::String,      false, "",                  "",
+     "Optional edition liner notes or ReadMe summary displayed in the ReadMe view of `autorun16x9` installers."},
     {"UI",       "ExpressDescription",   FieldValueKind::String,      false,
      "One-click setup into the default installation folder with recommended shortcuts. Skips extra prompts.", "",
      "Helper caption for the Express Setup mode card in `SetupWizard.exe`."},

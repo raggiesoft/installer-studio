@@ -415,37 +415,51 @@ inline bool PackageSelfExtractingBootstrapper(
         return (p.is_absolute() ? p : (baseDir / p)).lexically_normal();
     };
 
+    auto sanitizeSingleLine = [](std::string s) -> std::string {
+        std::string out;
+        out.reserve(s.size());
+        for (char c : s) {
+            if (c == '\r') continue;
+            if (c == '\n') out += "\\n";
+            else out += c;
+        }
+        return out;
+    };
+
     std::ostringstream brandIni;
     brandIni << "[Branding]\n"
-             << "ProductName="        << msiSummary.productName << "\n"
-             << "Tagline="            << ExpandArchToken(doc.GetString("Package", "", "Tagline", msiSummary.manufacturer + " Setup"), arch) << "\n"
-             << "WebsiteLabel="       << doc.GetString("Package", "", "WebsiteLabel", "") << "\n"
-             << "Version="            << msiSummary.productVersion << "\n"
-             << "Manufacturer="       << msiSummary.manufacturer << "\n"
-             << "Architecture="       << msiSummary.architecture << "\n"
-             << "ProductCode="        << msiSummary.productCode << "\n"
-             << "UpgradeCode="        << msiSummary.upgradeCode << "\n"
-             << "DefaultSubdir="      << msiSummary.defaultSubdir << "\n"
-             << "MainExecutable="     << msiSummary.mainExeRel << "\n"
+             << "ProductName="        << sanitizeSingleLine(msiSummary.productName) << "\n"
+             << "Tagline="            << sanitizeSingleLine(ExpandArchToken(doc.GetString("Package", "", "Tagline", msiSummary.manufacturer + " Setup"), arch)) << "\n"
+             << "WebsiteLabel="       << sanitizeSingleLine(doc.GetString("Package", "", "WebsiteLabel", "")) << "\n"
+             << "Version="            << sanitizeSingleLine(msiSummary.productVersion) << "\n"
+             << "Manufacturer="       << sanitizeSingleLine(msiSummary.manufacturer) << "\n"
+             << "Architecture="       << sanitizeSingleLine(msiSummary.architecture) << "\n"
+             << "ProductCode="        << sanitizeSingleLine(msiSummary.productCode) << "\n"
+             << "UpgradeCode="        << sanitizeSingleLine(msiSummary.upgradeCode) << "\n"
+             << "DefaultSubdir="      << sanitizeSingleLine(msiSummary.defaultSubdir) << "\n"
+             << "StartMenuFolder="    << sanitizeSingleLine(doc.GetString("Install", "", "StartMenuFolder", msiSummary.manufacturer)) << "\n"
+             << "MainExecutable="     << sanitizeSingleLine(msiSummary.mainExeRel) << "\n"
              << "PerMachine="         << (msiSummary.perMachine ? "true" : "false") << "\n"
              << "MinWindowsBuild="    << msiSummary.minWindowsBuild << "\n"
-             << "OsLaunchMessage="    << msiSummary.osLaunchMessage << "\n"
-             << "WizardLayout="       << doc.GetString("UI", "", "WizardLayout", "standard") << "\n"
-             << "AccentPrimaryHex="   << doc.GetString("UI", "", "AccentPrimaryHex", "#2563EB") << "\n"
-             << "AccentSecondaryHex=" << doc.GetString("UI", "", "AccentSecondaryHex", "#FBBF24") << "\n"
-             << "WelcomeHeadline="    << doc.GetString("UI", "", "WelcomeHeadline", "Welcome to " + msiSummary.productName + " Setup") << "\n"
-             << "BannerTitle="        << doc.GetString("UI", "", "BannerTitle", "Choose how you would like to install " + msiSummary.productName + ".") << "\n"
-             << "InstallButtonText="  << msiSummary.installBtnText << "\n"
-             << "FinishLaunchCheckbox=" << msiSummary.launchChkText << "\n"
+             << "OsLaunchMessage="    << sanitizeSingleLine(msiSummary.osLaunchMessage) << "\n"
+             << "WizardLayout="       << sanitizeSingleLine(doc.GetString("UI", "", "WizardLayout", "standard")) << "\n"
+             << "AccentPrimaryHex="   << sanitizeSingleLine(doc.GetString("UI", "", "AccentPrimaryHex", "#2563EB")) << "\n"
+             << "AccentSecondaryHex=" << sanitizeSingleLine(doc.GetString("UI", "", "AccentSecondaryHex", "#FBBF24")) << "\n"
+             << "WelcomeHeadline="    << sanitizeSingleLine(doc.GetString("UI", "", "WelcomeHeadline", "Welcome to " + msiSummary.productName + " Setup")) << "\n"
+             << "WelcomeIntro="       << sanitizeSingleLine(doc.GetString("UI", "", "WelcomeIntro", doc.GetString("Package", "", "Description", ""))) << "\n"
+             << "ReadMeText="         << sanitizeSingleLine(doc.GetString("UI", "", "ReadMeText", "")) << "\n"
+             << "BannerTitle="        << sanitizeSingleLine(doc.GetString("UI", "", "BannerTitle", "Choose how you would like to install " + msiSummary.productName + ".")) << "\n"
+             << "InstallButtonText="  << sanitizeSingleLine(msiSummary.installBtnText) << "\n"
+             << "FinishLaunchCheckbox=" << sanitizeSingleLine(msiSummary.launchChkText) << "\n"
              << "OfferLaunchOnFinish=" << (msiSummary.offerLaunchOnFinish ? "true" : "false") << "\n"
              << "HasLicenseRtf="      << (!msiSummary.licenseRtfPath.empty() ? "true" : "false") << "\n"
-             << "ExpressDescription=" << doc.GetString("UI", "", "ExpressDescription",
-                  "One-click setup into the default installation folder with recommended shortcuts. Skips extra prompts.") << "\n"
-             << "CompactDescription=" << doc.GetString("UI", "", "CompactDescription",
-                  "Installs essential application files with minimal disk footprint using recommended folder defaults.") << "\n"
-             << "CustomDescription="  << doc.GetString("UI", "", "CustomDescription",
-                  "Choose a custom destination folder and review installation options step by step before installing.") << "\n"
-             << "AuthorOrArtist="     << doc.GetString("UI", "", "AuthorOrArtist", "") << "\n";
+             << "ExpressDescription=" << sanitizeSingleLine(doc.GetString("UI", "", "ExpressDescription",
+                  "One-click setup into the default installation folder with recommended shortcuts. Skips extra prompts.")) << "\n"
+             << "CompactDescription=" << sanitizeSingleLine(doc.GetString("UI", "", "CompactDescription",
+                  "Installs essential application files with minimal disk footprint using recommended folder defaults.")) << "\n"
+             << "CustomDescription="  << sanitizeSingleLine(doc.GetString("UI", "", "CustomDescription",
+                  "Choose a custom destination folder, Start Menu group, and shortcuts step by step before installing.")) << "\n"
+             << "AuthorOrArtist="     << sanitizeSingleLine(doc.GetString("UI", "", "AuthorOrArtist", "")) << "\n";
     const std::string brandStr = brandIni.str();
 
     const std::string licenseRtf = LoadOrSynthesizeLicenseRtf(
