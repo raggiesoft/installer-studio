@@ -22,7 +22,7 @@
 //       - `SetupWizard.exe` inspects the first 8 bytes: if `"RSWLZMS1"` is present,
 //         it transparently decompresses in memory via `Decompress(...)`; if raw
 //         bytes are present, it passes them straight through!
-//       - Also powers solid `.rswpak` archives & Web Media Blocks in Native mode!
+//       - Also powers solid `.rswpak` On-Demand Feature Packs in Native & Streaming modes!
 // ================================================================================
 
 #pragma once

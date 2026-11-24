@@ -219,13 +219,21 @@ int wmain() {
             ss << in.rdbuf();
             return rsw::AsciiLower(ss.str());
         };
-        const std::string combinedAi =
+        std::string combinedAi =
             readLower(aiDir / L"llms.txt") + "\n" +
             readLower(aiDir / L"llms-full.txt") + "\n" +
             readLower(aiDir / L"SKILL.md");
+        const auto repoRoot = binDir.parent_path().parent_path();
+        if (std::filesystem::exists(repoRoot / L"ROADMAP.md")) {
+            combinedAi += "\n" + readLower(repoRoot / L"ROADMAP.md");
+        }
+        if (std::filesystem::exists(repoRoot / L"README.md")) {
+            combinedAi += "\n" + readLower(repoRoot / L"README.md");
+        }
         const char* bannedCompetitors[] = {
-            "installaware", "installshield", "inno setup", ".iss",
-            "advanced installer", "wix", "nsis", "orca.exe", "msicode"
+            "installaware", "installshield", "revenera", "inno setup", ".iss",
+            "advanced installer", "wix", "nsis", "orca.exe", "msicode",
+            "adminstudio", "pace suite", "web media block", "web media blocks"
         };
         auto hasWholeToken = [](const std::string& hay, std::string_view tok) {
             std::size_t p = 0;

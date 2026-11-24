@@ -54,7 +54,7 @@ Commercial pricing is intentionally omitted while **RaggieSoft Installer Studio*
 
 Read the full phase-by-phase engineering plan in **[ROADMAP.md](ROADMAP.md)** or browse the interactive web edition at **[raggiesoftstudio.com/roadmap](https://raggiesoftstudio.com/roadmap)**:
 
-- **Phase B (`v0.5.0`)**: Authenticode Signing UX (Windows Cert Store & Azure Artifact Signing), `.rswskin` skinning (`Wizard95` & true circular `AeroWizard`), WYSIWYG Custom Dialogs + `RsDialog` (`Rs*()`) scripting, `.rswpak` Web Media Blocks, curated `.NET 11` runtime presets, and Universal `x64 + ARM64` Single-EXE + `Engine = native`.
+- **Phase B (`v0.5.0`)**: Authenticode Signing UX (Windows Cert Store & Azure Artifact Signing), 8 Wizard Layout Variations (`Wizard95`, `Wizard97`, `AeroWizard`, `FluentMica`, `OneClickSplash`, `PassiveToast`, `FullScreenBlue` with billboard/docked progress gauge, & `Autorun16x9`), WCAG-contrast-enforced Publisher Branding & custom imagery, from-scratch Dual C++ & Raw `MSI.DLL` Dialog Builders + `RsDialog` (`Rs*()`) scripting, `.rswpak` On-Demand Feature Packs, curated `.NET 11` runtime presets, and Universal `x64 + ARM64` Single-EXE + `Engine = native`.
 - **Phase C (`v0.6.0`)**: Snapshot-Diff Setup Capture ("Repackager") + one-click disposable Windows 11 Pro Sandbox (`.wsb`) capture.
 - **Phase D (`v0.7.0`)**: Open-Format Setup Conversion Wizard (`.msi`/`.msm`, `.slnx`/`.csproj`, VB6 `.vbp` Reg-Free COM, XML/INI) + Visual Studio `.vsix` extension.
 - **Phase E (`v0.8.0`)**: Windows Services, safe `PATH` / Firewall / Scheduled Tasks, JSON/XML/INI Config Patchers, and Windows Restart Manager (`Rstrtmgr.dll`).
