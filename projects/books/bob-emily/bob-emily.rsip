@@ -1,0 +1,63 @@
+; ==============================================================================
+; FILE: projects/books/bob-emily/bob-emily.rsip
+; BOOK EDITION: The Heart-Hum (Ocean View Archives)
+; LAYOUT: 640x480 16:9 OpenGraph CD-Autorun Micro-Installer (Per-User)
+; ==============================================================================
+
+@include "..\..\shared\raggiesoft-defaults.rsii"
+
+[Package]
+Name                  = The Heart-Hum
+Tagline               = Ocean View Archives Offline Illustrated Edition
+WebsiteLabel          = books.raggiesoft.com
+Version               = 1.0.0
+Manufacturer          = RaggieSoft Media
+UpgradeCode           = {6792224C-6E9A-59FD-A03E-A518B3231337}
+Architecture          = $(ARCH)
+Scope                 = user
+OutputName            = raggiesoft-book-bob-emily-$(ARCH)
+OutputDir             = out
+BuildBootstrapper     = true
+HideFromInstalledApps = true
+AboutUrl              = https://books.raggiesoft.com
+
+[Install]
+DefaultSubdir         = RaggieSoft\Books\bob-emily
+
+[UI]
+WizardLayout          = autorun16x9
+AuthorOrArtist        = Ocean View Archives
+AccentPrimaryHex      = #14B8A6
+AccentSecondaryHex    = #F59E0B
+LicenseRtf            = License.rtf
+IconFile              = ..\..\..\..\windows\RaggieSoftApps\BookReader\Assets\BookReader.ico
+ArtworkPng            = ..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\raggiesoft-books\images\covers\og\bob-emily.jpg
+InstallButtonText     = &Install Book
+OfferLaunchOnFinish   = false
+
+[Payload.Chapters]
+Source                = ..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\raggiesoft-books\books\bob-emily
+
+[Payload.Themes]
+Source                = ..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\raggiesoft-books\css\themes
+TargetSubdir          = themes
+
+[Payload.Cover2x3]
+Source                = ..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\raggiesoft-books\images\covers\2x3\bob-emily.jpg
+TargetSubdir          = assets\raggiesoft-books\images\covers\2x3
+
+[Payload.CoverOg]
+Source                = ..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\raggiesoft-books\images\covers\og\bob-emily.jpg
+TargetSubdir          = assets\raggiesoft-books\images\covers\og
+
+[Registry.PackList]
+Root                  = HKCU
+Key                   = Software\RaggieSoft\Book Reader\Books\List
+Name                  = bob-emily
+Value                 = [INSTALLDIR]
+
+[Registry.PackDetail]
+Root                  = HKCU
+Key                   = Software\RaggieSoft\Book Reader\Books\bob-emily
+Name                  = Install Path
+Value                 = [INSTALLDIR]

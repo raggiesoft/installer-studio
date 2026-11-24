@@ -1,0 +1,65 @@
+; ==============================================================================
+; FILE: projects/apps/launcher/launcher.rsip
+; APPLICATION: RaggieSoft Launcher (v1.0.0)
+; COMPILER: RaggieSoft Installer Studio (instbuild.exe -> .msi + Setup.exe)
+; ==============================================================================
+
+@include "..\..\shared\raggiesoft-defaults.rsii"
+
+[Package]
+Name                  = RaggieSoft Launcher
+Tagline               = Books, Music & Creative Applications Hub
+WebsiteLabel          = launcher.raggiesoft.com
+Version               = 1.0.0
+Manufacturer          = RaggieSoft
+UpgradeCode           = {5B586A40-119C-5E42-9F93-80138D4B2C39}
+Architecture          = $(ARCH)
+Scope                 = machine
+OutputName            = raggiesoft-launcher-$(ARCH)
+OutputDir             = out
+BuildBootstrapper     = true
+AboutUrl              = https://launcher.raggiesoft.com
+
+[Install]
+DefaultSubdir         = RaggieSoft\Launcher
+StartMenuFolder       = RaggieSoft Launcher
+MainExecutable        = RaggieSoftLauncher.exe
+
+[UI]
+WizardLayout          = standard
+AccentPrimaryHex      = #38BDF8
+AccentSecondaryHex    = #FBBF24
+LicenseRtf            = License.rtf
+IconFile              = ..\..\..\..\windows\RaggieSoftApps\RaggieSoftLauncher\Assets\RaggieSoftLauncher.ico
+InstallButtonText     = &Install
+FinishLaunchCheckbox  = &Open RaggieSoft Launcher when setup finishes
+
+[Payload.App]
+Source                = ..\..\..\..\windows\RaggieSoftApps\RaggieSoftLauncher\bin\Release\net10.0-windows\win-$(ARCH)\publish
+Feature               = Main
+
+[Payload.PkgCli]
+Source                = ..\..\..\..\windows\RaggieSoftApps\RaggieSoftPkgCli\bin\Release\net10.0\win-$(ARCH)\publish
+TargetSubdir          = CLI
+Feature               = Main
+
+[Payload.OfflineSeed]
+Source                = ..\..\..\offline-seeds\launcher
+TargetSubdir          = OfflineSeed
+Feature               = Main
+
+[Shortcut.StartLink]
+Name                  = RaggieSoft Launcher
+TargetFile            = RaggieSoftLauncher.exe
+Location              = StartMenu
+
+[Shortcut.DesktopLink]
+Name                  = RaggieSoft Launcher
+TargetFile            = RaggieSoftLauncher.exe
+Location              = Desktop
+
+[Registry.InstallPath]
+Root                  = HKLM
+Key                   = Software\RaggieSoft\Launcher
+Name                  = Install Path
+Value                 = [INSTALLDIR]

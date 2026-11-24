@@ -1,0 +1,69 @@
+; ==============================================================================
+; FILE: projects/albums/mana-canvas/1992-runebreaker-ost/1992-runebreaker-ost.rsip
+; ALBUM EDITION: Runebreaker - Mana Canvas (Mana Canvas)
+; LAYOUT: 640x480 16:9 OpenGraph CD-Autorun Micro-Installer (Per-User Vault)
+; ==============================================================================
+
+@include "..\..\..\shared\raggiesoft-defaults.rsii"
+
+[Package]
+Name                  = Runebreaker - Mana Canvas
+Tagline               = Mana Canvas - Engine Room Records High-Quality Edition
+WebsiteLabel          = music.raggiesoft.com
+Version               = 1.0.0
+Manufacturer          = Engine Room Records
+UpgradeCode           = {E9641629-B9F5-566E-8027-AE70FD6AB75E}
+Architecture          = $(ARCH)
+Scope                 = user
+OutputName            = raggiesoft-album-1992-runebreaker-ost-$(ARCH)
+OutputDir             = out
+BuildBootstrapper     = true
+HideFromInstalledApps = true
+AboutUrl              = https://music.raggiesoft.com
+
+[Install]
+DefaultSubdir         = RaggieSoft\Music\mana-canvas\1992-runebreaker-ost
+
+[UI]
+WizardLayout          = autorun16x9
+AuthorOrArtist        = Mana Canvas
+AccentPrimaryHex      = #06B6D4
+AccentSecondaryHex    = #EC4899
+LicenseRtf            = License.rtf
+IconFile              = ..\..\..\..\..\windows\RaggieSoftApps\ListeningRoom\Assets\ListeningRoom.ico
+ArtworkPng            = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\mana-canvas\1992-runebreaker-ost\social-preview.jpg
+InstallButtonText     = &Install Album
+OfferLaunchOnFinish   = false
+
+[Payload.VaultMp3]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-vaults\engine-room-records\artists\mana-canvas\1992-runebreaker-ost\vault\mp3
+TargetSubdir          = hq-mp3
+
+[Payload.TracksJson]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\mana-canvas\1992-runebreaker-ost\tracks.json
+
+[Payload.AlbumArt]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\mana-canvas\1992-runebreaker-ost\album-art.jpg
+
+[Payload.SocialArt]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\mana-canvas\1992-runebreaker-ost\social-preview.jpg
+
+[Payload.LyricsVtt]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\mana-canvas\1992-runebreaker-ost\lyrics
+TargetSubdir          = lyrics
+
+[Payload.SunoPrompts]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\mana-canvas\1992-runebreaker-ost\suno-prompts
+TargetSubdir          = suno-prompts
+
+[Registry.AlbumList]
+Root                  = HKCU
+Key                   = Software\RaggieSoft\The Listening Room\Albums\List
+Name                  = mana-canvas--1992-runebreaker-ost
+Value                 = [INSTALLDIR]
+
+[Registry.AlbumDetail]
+Root                  = HKCU
+Key                   = Software\RaggieSoft\The Listening Room\Albums\mana-canvas--1992-runebreaker-ost
+Name                  = Install Path
+Value                 = [INSTALLDIR]

@@ -1,0 +1,69 @@
+; ================================================================================
+; FILE: examples/hello-raggiesoft/hello-raggiesoft.rsip
+; PROJECT: RaggieSoft Installer Studio ("Install Without Limits")
+;
+; PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+;   Standalone single-file `.rsip` (RaggieSoft Installer Project) manifest!
+;   Can be compiled directly (`instbuild.exe hello-raggiesoft.rsip`) OR as part
+;   of `hello-raggiesoft-suite.rsis`.
+; ================================================================================
+
+@include "publisher-defaults.rsii"
+
+[Package]
+SchemaVersion         = 0.2
+Name                  = Hello RaggieSoft
+Tagline               = Sample Native Application Packaged with RaggieSoft Installer Studio
+Version               = 1.0.0
+UpgradeCode           = {A18F4E20-7C93-4D62-9B44-524147474945} ; Permanent UpgradeCode across releases
+Description           = Hello RaggieSoft Sample Installer
+Architecture          = $(ARCH)
+Scope                 = user
+OutputName            = hello-raggiesoft-$(ARCH)
+OutputDir             = out
+BuildBootstrapper     = true
+CabinetCompression    = lzx
+
+[Install]
+DefaultSubdir         = RaggieSoft\Hello RaggieSoft
+StartMenuFolder       = RaggieSoft
+MainExecutable        = HelloRaggieSoft.exe
+
+[UI]
+WizardLayout          = standard
+AccentPrimaryHex      = #2563EB
+AccentSecondaryHex    = #FBBF24
+LicenseRtf            = License.rtf
+IconFile              = HelloRaggieSoft.ico
+WelcomeHeadline       = Welcome to Hello RaggieSoft Setup
+InstallButtonText     = &Install
+FinishLaunchCheckbox  = &Launch Hello RaggieSoft when setup finishes
+OfferLaunchOnFinish   = true
+
+[Feature.Main]
+Title                 = Hello RaggieSoft Application
+Description           = Core native executable and license documentation.
+Level                 = 1
+
+[Payload.AppExe]
+Source                = ..\..\bin\$(ARCH)\HelloRaggieSoft.exe
+Feature               = Main
+
+[Payload.LicenseDoc]
+Source                = License.rtf
+Feature               = Main
+
+[Shortcut.StartMenu]
+Name                  = Hello RaggieSoft
+TargetFile            = HelloRaggieSoft.exe
+Location              = StartMenu
+Description           = Open Hello RaggieSoft
+Feature               = Main
+
+[Registry.InstallPath]
+Root                  = HKCU
+Key                   = Software\RaggieSoft\HelloRaggieSoft
+Name                  = InstallDir
+Value                 = [INSTALLDIR]
+Type                  = string
+Feature               = Main

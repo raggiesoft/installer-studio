@@ -1,0 +1,37 @@
+; ================================================================================
+; FILE: examples/hello-raggiesoft/hello-raggiesoft-autorun.rsip
+; PROJECT: RaggieSoft Installer Studio ("Install Without Limits")
+;
+; PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+;   Demonstrates `WizardLayout = autorun16x9` — the `640x480` widescreen `16:9`
+;   OpenGraph CD-Autorun Micro-Installer layout designed for content packs!
+; ================================================================================
+
+[Package]
+Name                  = Ad Astra Offline Edition
+Tagline               = Escape Velocity: Ad Astra — Ocean View Archives Micro-Installer
+WebsiteLabel          = books.raggiesoft.com
+Version               = 1.0.0
+Manufacturer          = RaggieSoft Media
+UpgradeCode           = {B29E5F31-8D04-4E73-8C55-524147474946}
+Architecture          = $(ARCH)
+Scope                 = user
+OutputName            = ad-astra-pack-$(ARCH)
+OutputDir             = out
+BuildBootstrapper     = true
+HideFromInstalledApps = true
+
+[Install]
+DefaultSubdir         = RaggieSoft\Books\ad-astra
+MainExecutable        = HelloRaggieSoft.exe
+
+[UI]
+WizardLayout          = autorun16x9
+AuthorOrArtist        = Ocean View Archives
+AccentPrimaryHex      = #14B8A6
+AccentSecondaryHex    = #F59E0B
+IconFile              = HelloRaggieSoft.ico
+InstallButtonText     = &Install Book
+
+[Payload.BookPack]
+Source                = ..\..\bin\$(ARCH)\HelloRaggieSoft.exe

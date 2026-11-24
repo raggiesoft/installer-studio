@@ -1,0 +1,69 @@
+; ==============================================================================
+; FILE: projects/albums/fractured-prisms/1983-carnaby-street/1983-carnaby-street.rsip
+; ALBUM EDITION: Carnaby Street - Fractured Prisms (Fractured Prisms)
+; LAYOUT: 640x480 16:9 OpenGraph CD-Autorun Micro-Installer (Per-User Vault)
+; ==============================================================================
+
+@include "..\..\..\shared\raggiesoft-defaults.rsii"
+
+[Package]
+Name                  = Carnaby Street - Fractured Prisms
+Tagline               = Fractured Prisms - Engine Room Records High-Quality Edition
+WebsiteLabel          = music.raggiesoft.com
+Version               = 1.0.0
+Manufacturer          = Engine Room Records
+UpgradeCode           = {DCAEF80A-F19A-5E98-A0AB-C25640A3075A}
+Architecture          = $(ARCH)
+Scope                 = user
+OutputName            = raggiesoft-album-1983-carnaby-street-$(ARCH)
+OutputDir             = out
+BuildBootstrapper     = true
+HideFromInstalledApps = true
+AboutUrl              = https://music.raggiesoft.com
+
+[Install]
+DefaultSubdir         = RaggieSoft\Music\fractured-prisms\1983-carnaby-street
+
+[UI]
+WizardLayout          = autorun16x9
+AuthorOrArtist        = Fractured Prisms
+AccentPrimaryHex      = #06B6D4
+AccentSecondaryHex    = #EC4899
+LicenseRtf            = License.rtf
+IconFile              = ..\..\..\..\..\windows\RaggieSoftApps\ListeningRoom\Assets\ListeningRoom.ico
+ArtworkPng            = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\fractured-prisms\1983-carnaby-street\social-preview.jpg
+InstallButtonText     = &Install Album
+OfferLaunchOnFinish   = false
+
+[Payload.VaultMp3]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-vaults\engine-room-records\artists\fractured-prisms\1983-carnaby-street\vault\mp3
+TargetSubdir          = hq-mp3
+
+[Payload.TracksJson]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\fractured-prisms\1983-carnaby-street\tracks.json
+
+[Payload.AlbumArt]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\fractured-prisms\1983-carnaby-street\album-art.jpg
+
+[Payload.SocialArt]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\fractured-prisms\1983-carnaby-street\social-preview.jpg
+
+[Payload.LyricsVtt]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\fractured-prisms\1983-carnaby-street\lyrics
+TargetSubdir          = lyrics
+
+[Payload.SunoPrompts]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\fractured-prisms\1983-carnaby-street\suno-prompts
+TargetSubdir          = suno-prompts
+
+[Registry.AlbumList]
+Root                  = HKCU
+Key                   = Software\RaggieSoft\The Listening Room\Albums\List
+Name                  = fractured-prisms--1983-carnaby-street
+Value                 = [INSTALLDIR]
+
+[Registry.AlbumDetail]
+Root                  = HKCU
+Key                   = Software\RaggieSoft\The Listening Room\Albums\fractured-prisms--1983-carnaby-street
+Name                  = Install Path
+Value                 = [INSTALLDIR]

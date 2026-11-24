@@ -1,0 +1,67 @@
+; ==============================================================================
+; FILE: projects/books/alex-chloe/alex-chloe.rsip
+; BOOK EDITION: Beyond Words (Ocean View Archives)
+; LAYOUT: 640x480 16:9 OpenGraph CD-Autorun Micro-Installer (Per-User)
+; ==============================================================================
+
+@include "..\..\shared\raggiesoft-defaults.rsii"
+
+[Package]
+Name                  = Beyond Words
+Tagline               = Ocean View Archives Offline Illustrated Edition
+WebsiteLabel          = books.raggiesoft.com
+Version               = 1.0.0
+Manufacturer          = RaggieSoft Media
+UpgradeCode           = {C53F121E-2354-56F8-A074-BED80C7BED9A}
+Architecture          = $(ARCH)
+Scope                 = user
+OutputName            = raggiesoft-book-alex-chloe-$(ARCH)
+OutputDir             = out
+BuildBootstrapper     = true
+HideFromInstalledApps = true
+AboutUrl              = https://books.raggiesoft.com
+
+[Install]
+DefaultSubdir         = RaggieSoft\Books\alex-chloe
+
+[UI]
+WizardLayout          = autorun16x9
+AuthorOrArtist        = Ocean View Archives
+AccentPrimaryHex      = #14B8A6
+AccentSecondaryHex    = #F59E0B
+LicenseRtf            = License.rtf
+IconFile              = ..\..\..\..\windows\RaggieSoftApps\BookReader\Assets\BookReader.ico
+ArtworkPng            = ..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\raggiesoft-books\images\covers\og\alex-chloe.jpg
+InstallButtonText     = &Install Book
+OfferLaunchOnFinish   = false
+
+[Payload.Chapters]
+Source                = ..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\raggiesoft-books\books\alex-chloe
+
+[Payload.Themes]
+Source                = ..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\raggiesoft-books\css\themes
+TargetSubdir          = themes
+
+[Payload.Cover2x3]
+Source                = ..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\raggiesoft-books\images\covers\2x3\alex-chloe.jpg
+TargetSubdir          = assets\raggiesoft-books\images\covers\2x3
+
+[Payload.CoverOg]
+Source                = ..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\raggiesoft-books\images\covers\og\alex-chloe.jpg
+TargetSubdir          = assets\raggiesoft-books\images\covers\og
+
+[Payload.Scenes]
+Source                = ..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\raggiesoft-books\images\scenes\alex-chloe
+TargetSubdir          = assets\raggiesoft-books\images\scenes\alex-chloe
+
+[Registry.PackList]
+Root                  = HKCU
+Key                   = Software\RaggieSoft\Book Reader\Books\List
+Name                  = alex-chloe
+Value                 = [INSTALLDIR]
+
+[Registry.PackDetail]
+Root                  = HKCU
+Key                   = Software\RaggieSoft\Book Reader\Books\alex-chloe
+Name                  = Install Path
+Value                 = [INSTALLDIR]

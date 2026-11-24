@@ -1,0 +1,69 @@
+; ==============================================================================
+; FILE: projects/albums/crimson-node/2002-crimson-node/2002-crimson-node.rsip
+; ALBUM EDITION: Crimson Node - Crimson Node (Crimson Node)
+; LAYOUT: 640x480 16:9 OpenGraph CD-Autorun Micro-Installer (Per-User Vault)
+; ==============================================================================
+
+@include "..\..\..\shared\raggiesoft-defaults.rsii"
+
+[Package]
+Name                  = Crimson Node - Crimson Node
+Tagline               = Crimson Node - Engine Room Records High-Quality Edition
+WebsiteLabel          = music.raggiesoft.com
+Version               = 1.0.0
+Manufacturer          = Engine Room Records
+UpgradeCode           = {B3E296E5-ACE8-5A8F-B3A5-85CA0704C963}
+Architecture          = $(ARCH)
+Scope                 = user
+OutputName            = raggiesoft-album-2002-crimson-node-$(ARCH)
+OutputDir             = out
+BuildBootstrapper     = true
+HideFromInstalledApps = true
+AboutUrl              = https://music.raggiesoft.com
+
+[Install]
+DefaultSubdir         = RaggieSoft\Music\crimson-node\2002-crimson-node
+
+[UI]
+WizardLayout          = autorun16x9
+AuthorOrArtist        = Crimson Node
+AccentPrimaryHex      = #06B6D4
+AccentSecondaryHex    = #EC4899
+LicenseRtf            = License.rtf
+IconFile              = ..\..\..\..\..\windows\RaggieSoftApps\ListeningRoom\Assets\ListeningRoom.ico
+ArtworkPng            = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\crimson-node\2002-crimson-node\social-preview.jpg
+InstallButtonText     = &Install Album
+OfferLaunchOnFinish   = false
+
+[Payload.VaultMp3]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-vaults\engine-room-records\artists\crimson-node\2002-crimson-node\vault\mp3
+TargetSubdir          = hq-mp3
+
+[Payload.TracksJson]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\crimson-node\2002-crimson-node\tracks.json
+
+[Payload.AlbumArt]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\crimson-node\2002-crimson-node\album-art.jpg
+
+[Payload.SocialArt]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\crimson-node\2002-crimson-node\social-preview.jpg
+
+[Payload.LyricsVtt]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\crimson-node\2002-crimson-node\lyrics
+TargetSubdir          = lyrics
+
+[Payload.SunoPrompts]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\crimson-node\2002-crimson-node\suno-prompts
+TargetSubdir          = suno-prompts
+
+[Registry.AlbumList]
+Root                  = HKCU
+Key                   = Software\RaggieSoft\The Listening Room\Albums\List
+Name                  = crimson-node--2002-crimson-node
+Value                 = [INSTALLDIR]
+
+[Registry.AlbumDetail]
+Root                  = HKCU
+Key                   = Software\RaggieSoft\The Listening Room\Albums\crimson-node--2002-crimson-node
+Name                  = Install Path
+Value                 = [INSTALLDIR]

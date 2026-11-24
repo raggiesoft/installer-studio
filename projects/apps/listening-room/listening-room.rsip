@@ -1,0 +1,60 @@
+; ==============================================================================
+; FILE: projects/apps/listening-room/listening-room.rsip
+; APPLICATION: RaggieSoft The Listening Room (v1.0.0)
+; COMPILER: RaggieSoft Installer Studio (instbuild.exe -> .msi + Setup.exe)
+; ==============================================================================
+
+@include "..\..\shared\raggiesoft-defaults.rsii"
+
+[Package]
+Name                  = RaggieSoft The Listening Room
+Tagline               = Engine Room Records Music & Synchronized Lyrics
+WebsiteLabel          = music.raggiesoft.com
+Version               = 1.0.0
+Manufacturer          = RaggieSoft
+UpgradeCode           = {E347B8ED-1588-5A46-A23E-441676EB4EC5}
+Architecture          = $(ARCH)
+Scope                 = machine
+OutputName            = raggiesoft-listening-room-$(ARCH)
+OutputDir             = out
+BuildBootstrapper     = true
+AboutUrl              = https://music.raggiesoft.com
+
+[Install]
+DefaultSubdir         = RaggieSoft\The Listening Room
+StartMenuFolder       = RaggieSoft The Listening Room
+MainExecutable        = ListeningRoom.exe
+
+[UI]
+WizardLayout          = standard
+AccentPrimaryHex      = #06B6D4
+AccentSecondaryHex    = #EC4899
+LicenseRtf            = License.rtf
+IconFile              = ..\..\..\..\windows\RaggieSoftApps\ListeningRoom\Assets\ListeningRoom.ico
+InstallButtonText     = &Install
+FinishLaunchCheckbox  = &Open RaggieSoft The Listening Room when setup finishes
+
+[Payload.App]
+Source                = ..\..\..\..\windows\RaggieSoftApps\ListeningRoom\bin\Release\net10.0-windows\win-$(ARCH)\publish
+Feature               = Main
+
+[Payload.OfflineSeed]
+Source                = ..\..\..\offline-seeds\listening-room
+TargetSubdir          = OfflineSeed
+Feature               = Main
+
+[Shortcut.StartLink]
+Name                  = The Listening Room
+TargetFile            = ListeningRoom.exe
+Location              = StartMenu
+
+[Shortcut.DesktopLink]
+Name                  = The Listening Room
+TargetFile            = ListeningRoom.exe
+Location              = Desktop
+
+[Registry.InstallPath]
+Root                  = HKLM
+Key                   = Software\RaggieSoft\The Listening Room
+Name                  = Install Path
+Value                 = [INSTALLDIR]

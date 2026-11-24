@@ -1,0 +1,404 @@
+; ==============================================================================
+; FILE: desktop-apps/installer-studio/RaggieSoft.rsis
+; SUITE: RaggieSoft Complete Windows Application, Book & Music Suite
+; USAGE:
+;   instbuild.exe RaggieSoft.rsis --validate
+;   instbuild.exe RaggieSoft.rsis --category=CoreApps
+;   instbuild.exe RaggieSoft.rsis --project=installer-studio --with-vpat
+;   InstallerStudio.exe RaggieSoft.rsis
+; ==============================================================================
+
+[Suite]
+Name                  = RaggieSoft Complete Windows Suite
+Description           = 7 Core Desktop Apps, All Ocean View / Story Crossroads Books, and Engine Room Records HQ Albums
+Version               = 1.0.0
+Architectures         = arm64|x64
+
+[Variable]
+STUDIO_PORTAL         = https://raggiesoftstudio.com
+DEV_PORTAL            = https://raggiesoft.dev
+
+[Project.App_installer-studio]
+Path                  = projects\apps\installer-studio\installer-studio.rsip
+Category              = CoreApps
+BuildOrder            = 11
+
+[Project.App_accessibility-studio]
+Path                  = projects\apps\accessibility-studio\accessibility-studio.rsip
+Category              = CoreApps
+BuildOrder            = 12
+
+[Project.App_launcher]
+Path                  = projects\apps\launcher\launcher.rsip
+Category              = CoreApps
+BuildOrder            = 13
+
+[Project.App_book-reader]
+Path                  = projects\apps\book-reader\book-reader.rsip
+Category              = CoreApps
+BuildOrder            = 14
+
+[Project.App_listening-room]
+Path                  = projects\apps\listening-room\listening-room.rsip
+Category              = CoreApps
+BuildOrder            = 15
+
+[Project.App_backstage]
+Path                  = projects\apps\backstage\backstage.rsip
+Category              = CoreApps
+BuildOrder            = 16
+
+[Project.App_storetrainer]
+Path                  = projects\apps\storetrainer\storetrainer.rsip
+Category              = CoreApps
+BuildOrder            = 17
+
+[Project.Book_ad-astra]
+Path                  = projects\books\ad-astra\ad-astra.rsip
+Category              = Books
+BuildOrder            = 101
+
+[Project.Book_aethel]
+Path                  = projects\books\aethel\aethel.rsip
+Category              = Books
+BuildOrder            = 102
+
+[Project.Book_alex-chloe]
+Path                  = projects\books\alex-chloe\alex-chloe.rsip
+Category              = Books
+BuildOrder            = 103
+
+[Project.Book_apex-fall-of-earth]
+Path                  = projects\books\apex-fall-of-earth\apex-fall-of-earth.rsip
+Category              = Books
+BuildOrder            = 104
+
+[Project.Book_ashley-tower]
+Path                  = projects\books\ashley-tower\ashley-tower.rsip
+Category              = Books
+BuildOrder            = 105
+
+[Project.Book_aubrie]
+Path                  = projects\books\aubrie\aubrie.rsip
+Category              = Books
+BuildOrder            = 106
+
+[Project.Book_bob-emily]
+Path                  = projects\books\bob-emily\bob-emily.rsip
+Category              = Books
+BuildOrder            = 107
+
+[Project.Book_cedar-run]
+Path                  = projects\books\cedar-run\cedar-run.rsip
+Category              = Books
+BuildOrder            = 108
+
+[Project.Book_crimson-node]
+Path                  = projects\books\crimson-node\crimson-node.rsip
+Category              = Books
+BuildOrder            = 109
+
+[Project.Book_drew]
+Path                  = projects\books\drew\drew.rsip
+Category              = Books
+BuildOrder            = 110
+
+[Project.Book_erin]
+Path                  = projects\books\erin\erin.rsip
+Category              = Books
+BuildOrder            = 111
+
+[Project.Book_fractured-prisms]
+Path                  = projects\books\fractured-prisms\fractured-prisms.rsip
+Category              = Books
+BuildOrder            = 112
+
+[Project.Book_heather]
+Path                  = projects\books\heather\heather.rsip
+Category              = Books
+BuildOrder            = 113
+
+[Project.Book_jack-sarah]
+Path                  = projects\books\jack-sarah\jack-sarah.rsip
+Category              = Books
+BuildOrder            = 114
+
+[Project.Book_julian]
+Path                  = projects\books\julian\julian.rsip
+Category              = Books
+BuildOrder            = 115
+
+[Project.Book_katie]
+Path                  = projects\books\katie\katie.rsip
+Category              = Books
+BuildOrder            = 116
+
+[Project.Book_luna-leo]
+Path                  = projects\books\luna-leo\luna-leo.rsip
+Category              = Books
+BuildOrder            = 117
+
+[Project.Book_mary-childhood]
+Path                  = projects\books\mary-childhood\mary-childhood.rsip
+Category              = Books
+BuildOrder            = 118
+
+[Project.Book_meredith]
+Path                  = projects\books\meredith\meredith.rsip
+Category              = Books
+BuildOrder            = 119
+
+[Project.Book_nate]
+Path                  = projects\books\nate\nate.rsip
+Category              = Books
+BuildOrder            = 120
+
+[Project.Book_nichole]
+Path                  = projects\books\nichole\nichole.rsip
+Category              = Books
+BuildOrder            = 121
+
+[Project.Book_paige]
+Path                  = projects\books\paige\paige.rsip
+Category              = Books
+BuildOrder            = 122
+
+[Project.Book_pebble-borrow]
+Path                  = projects\books\pebble-borrow\pebble-borrow.rsip
+Category              = Books
+BuildOrder            = 123
+
+[Project.Book_quantum-directive-1-jessica]
+Path                  = projects\books\quantum-directive-1-jessica\quantum-directive-1-jessica.rsip
+Category              = Books
+BuildOrder            = 124
+
+[Project.Book_quantum-directive-2-kelly]
+Path                  = projects\books\quantum-directive-2-kelly\quantum-directive-2-kelly.rsip
+Category              = Books
+BuildOrder            = 125
+
+[Project.Book_quantum-directive-3-casey]
+Path                  = projects\books\quantum-directive-3-casey\quantum-directive-3-casey.rsip
+Category              = Books
+BuildOrder            = 126
+
+[Project.Book_rachel]
+Path                  = projects\books\rachel\rachel.rsip
+Category              = Books
+BuildOrder            = 127
+
+[Project.Book_ruby-mountain]
+Path                  = projects\books\ruby-mountain\ruby-mountain.rsip
+Category              = Books
+BuildOrder            = 128
+
+[Project.Book_runebreaker]
+Path                  = projects\books\runebreaker\runebreaker.rsip
+Category              = Books
+BuildOrder            = 129
+
+[Project.Book_samantha]
+Path                  = projects\books\samantha\samantha.rsip
+Category              = Books
+BuildOrder            = 130
+
+[Project.Book_stardust-engine]
+Path                  = projects\books\stardust-engine\stardust-engine.rsip
+Category              = Books
+BuildOrder            = 131
+
+[Project.Book_water-planet]
+Path                  = projects\books\water-planet\water-planet.rsip
+Category              = Books
+BuildOrder            = 132
+
+[Project.Book_waystation]
+Path                  = projects\books\waystation\waystation.rsip
+Category              = Books
+BuildOrder            = 133
+
+[Project.Album_1978-voyages-on-the-seto-inland-sea]
+Path                  = projects\albums\the-hoshizora-ensemble\1978-voyages-on-the-seto-inland-sea\1978-voyages-on-the-seto-inland-sea.rsip
+Category              = Albums
+BuildOrder            = 201
+
+[Project.Album_1983-carnaby-street]
+Path                  = projects\albums\fractured-prisms\1983-carnaby-street\1983-carnaby-street.rsip
+Category              = Albums
+BuildOrder            = 202
+
+[Project.Album_1984-1883]
+Path                  = projects\albums\fractured-prisms\1984-1883\1984-1883.rsip
+Category              = Albums
+BuildOrder            = 203
+
+[Project.Album_1985-live-at-independence-stadium]
+Path                  = projects\albums\fractured-prisms\1985-live-at-independence-stadium\1985-live-at-independence-stadium.rsip
+Category              = Albums
+BuildOrder            = 204
+
+[Project.Album_1987-electric-color]
+Path                  = projects\albums\the-stardust-engine\1987-electric-color\1987-electric-color.rsip
+Category              = Albums
+BuildOrder            = 205
+
+[Project.Album_1989-neon-hearts]
+Path                  = projects\albums\the-stardust-engine\1989-neon-hearts\1989-neon-hearts.rsip
+Category              = Albums
+BuildOrder            = 206
+
+[Project.Album_1990-live-in-chicago]
+Path                  = projects\albums\the-stardust-engine\1990-live-in-chicago\1990-live-in-chicago.rsip
+Category              = Albums
+BuildOrder            = 207
+
+[Project.Album_1992-runebreaker-ost]
+Path                  = projects\albums\mana-canvas\1992-runebreaker-ost\1992-runebreaker-ost.rsip
+Category              = Albums
+BuildOrder            = 208
+
+[Project.Album_1993-runebreaker-live]
+Path                  = projects\albums\mana-canvas\1993-runebreaker-live\1993-runebreaker-live.rsip
+Category              = Albums
+BuildOrder            = 209
+
+[Project.Album_1995-the-warehouse-tapes]
+Path                  = projects\albums\the-stardust-engine\1995-the-warehouse-tapes\1995-the-warehouse-tapes.rsip
+Category              = Albums
+BuildOrder            = 210
+
+[Project.Album_1996-ad-astra-single]
+Path                  = projects\albums\the-stardust-engine\1996-ad-astra-single\1996-ad-astra-single.rsip
+Category              = Albums
+BuildOrder            = 211
+
+[Project.Album_1996-a-symphony-of-snow]
+Path                  = projects\albums\the-arctic-symphony-project\1996-a-symphony-of-snow\1996-a-symphony-of-snow.rsip
+Category              = Albums
+BuildOrder            = 212
+
+[Project.Album_1997-hard-reset]
+Path                  = projects\albums\the-stardust-engine\1997-hard-reset\1997-hard-reset.rsip
+Category              = Albums
+BuildOrder            = 213
+
+[Project.Album_1997-forger-nation-war-chest]
+Path                  = projects\albums\the-stardust-engine\1997-forger-nation-war-chest\1997-forger-nation-war-chest.rsip
+Category              = Albums
+BuildOrder            = 214
+
+[Project.Album_1999-hard-reset-live]
+Path                  = projects\albums\the-stardust-engine\1999-hard-reset-live\1999-hard-reset-live.rsip
+Category              = Albums
+BuildOrder            = 215
+
+[Project.Album_2000-guiding-stars]
+Path                  = projects\albums\the-paper-wall\2000-guiding-stars\2000-guiding-stars.rsip
+Category              = Albums
+BuildOrder            = 216
+
+[Project.Album_2001-midnight-drivers]
+Path                  = projects\albums\the-stardust-engine\2001-midnight-drivers\2001-midnight-drivers.rsip
+Category              = Albums
+BuildOrder            = 217
+
+[Project.Album_2001-static-and-silence-book-1]
+Path                  = projects\albums\the-paper-wall\2001-static-and-silence-book-1\2001-static-and-silence-book-1.rsip
+Category              = Albums
+BuildOrder            = 218
+
+[Project.Album_2001-static-and-silence-book-2]
+Path                  = projects\albums\the-paper-wall\2001-static-and-silence-book-2\2001-static-and-silence-book-2.rsip
+Category              = Albums
+BuildOrder            = 219
+
+[Project.Album_2002-crimson-node]
+Path                  = projects\albums\crimson-node\2002-crimson-node\2002-crimson-node.rsip
+Category              = Albums
+BuildOrder            = 220
+
+[Project.Album_2002-live-at-the-chancellery]
+Path                  = projects\albums\the-stardust-engine\2002-live-at-the-chancellery\2002-live-at-the-chancellery.rsip
+Category              = Albums
+BuildOrder            = 221
+
+[Project.Album_2003-live-in-virginia-beach]
+Path                  = projects\albums\the-stardust-engine\2003-live-in-virginia-beach\2003-live-in-virginia-beach.rsip
+Category              = Albums
+BuildOrder            = 222
+
+[Project.Album_2003-eleventh-child-book-1]
+Path                  = projects\albums\the-paper-wall\2003-eleventh-child-book-1\2003-eleventh-child-book-1.rsip
+Category              = Albums
+BuildOrder            = 223
+
+[Project.Album_2003-mile-marker-98]
+Path                  = projects\albums\the-stardust-engine\2003-mile-marker-98\2003-mile-marker-98.rsip
+Category              = Albums
+BuildOrder            = 224
+
+[Project.Album_2003-sanctuary-zero-g]
+Path                  = projects\albums\the-stardust-engine\2003-sanctuary-zero-g\2003-sanctuary-zero-g.rsip
+Category              = Albums
+BuildOrder            = 225
+
+[Project.Album_2003-eleventh-child-book-2]
+Path                  = projects\albums\the-paper-wall\2003-eleventh-child-book-2\2003-eleventh-child-book-2.rsip
+Category              = Albums
+BuildOrder            = 226
+
+[Project.Album_2004-progress-street]
+Path                  = projects\albums\the-stardust-engine\2004-progress-street\2004-progress-street.rsip
+Category              = Albums
+BuildOrder            = 227
+
+[Project.Album_2005-live-in-norfolk]
+Path                  = projects\albums\the-stardust-engine\2005-live-in-norfolk\2005-live-in-norfolk.rsip
+Category              = Albums
+BuildOrder            = 228
+
+[Project.Album_2007-tales-from-the-solstice]
+Path                  = projects\albums\the-arctic-symphony-project\2007-tales-from-the-solstice\2007-tales-from-the-solstice.rsip
+Category              = Albums
+BuildOrder            = 229
+
+[Project.Album_2007-lost-sounds]
+Path                  = projects\albums\the-stardust-engine\2007-lost-sounds\2007-lost-sounds.rsip
+Category              = Albums
+BuildOrder            = 230
+
+[Project.Album_2008-our-own-frequency]
+Path                  = projects\albums\the-stardust-engine\2008-our-own-frequency\2008-our-own-frequency.rsip
+Category              = Albums
+BuildOrder            = 231
+
+[Project.Album_2011-starfield-calibration]
+Path                  = projects\albums\the-stardust-engine\2011-starfield-calibration\2011-starfield-calibration.rsip
+Category              = Albums
+BuildOrder            = 232
+
+[Project.Album_2015-reignition]
+Path                  = projects\albums\the-stardust-engine\2015-reignition\2015-reignition.rsip
+Category              = Albums
+BuildOrder            = 233
+
+[Project.Album_2016-live-at-the-crucible]
+Path                  = projects\albums\the-stardust-engine\2016-live-at-the-crucible\2016-live-at-the-crucible.rsip
+Category              = Albums
+BuildOrder            = 234
+
+[Project.Album_2016-the-forgers-call]
+Path                  = projects\albums\the-stardust-engine\2016-the-forgers-call\2016-the-forgers-call.rsip
+Category              = Albums
+BuildOrder            = 235
+
+[Project.Album_2017-silver-gauntlet-of-aethel-book-i]
+Path                  = projects\albums\firelight\2017-silver-gauntlet-of-aethel-book-i\2017-silver-gauntlet-of-aethel-book-i.rsip
+Category              = Albums
+BuildOrder            = 236
+
+[Project.Album_2017-silver-gauntlet-of-aethel-book-ii]
+Path                  = projects\albums\firelight\2017-silver-gauntlet-of-aethel-book-ii\2017-silver-gauntlet-of-aethel-book-ii.rsip
+Category              = Albums
+BuildOrder            = 237

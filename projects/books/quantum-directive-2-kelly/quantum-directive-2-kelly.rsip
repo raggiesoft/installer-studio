@@ -1,0 +1,63 @@
+; ==============================================================================
+; FILE: projects/books/quantum-directive-2-kelly/quantum-directive-2-kelly.rsip
+; BOOK EDITION: The Quantum Directive - Kelly's Cut (Ocean View Archives)
+; LAYOUT: 640x480 16:9 OpenGraph CD-Autorun Micro-Installer (Per-User)
+; ==============================================================================
+
+@include "..\..\shared\raggiesoft-defaults.rsii"
+
+[Package]
+Name                  = The Quantum Directive - Kelly's Cut
+Tagline               = Ocean View Archives Offline Illustrated Edition
+WebsiteLabel          = books.raggiesoft.com
+Version               = 1.0.0
+Manufacturer          = RaggieSoft Media
+UpgradeCode           = {AF834E8E-6507-50AC-A7FF-D6EDB7D7DE35}
+Architecture          = $(ARCH)
+Scope                 = user
+OutputName            = raggiesoft-book-quantum-directive-2-kelly-$(ARCH)
+OutputDir             = out
+BuildBootstrapper     = true
+HideFromInstalledApps = true
+AboutUrl              = https://books.raggiesoft.com
+
+[Install]
+DefaultSubdir         = RaggieSoft\Books\quantum-directive-2-kelly
+
+[UI]
+WizardLayout          = autorun16x9
+AuthorOrArtist        = Ocean View Archives
+AccentPrimaryHex      = #14B8A6
+AccentSecondaryHex    = #F59E0B
+LicenseRtf            = License.rtf
+IconFile              = ..\..\..\..\windows\RaggieSoftApps\BookReader\Assets\BookReader.ico
+ArtworkPng            = ..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\raggiesoft-books\images\covers\og\quantum-directive-2-kelly.jpg
+InstallButtonText     = &Install Book
+OfferLaunchOnFinish   = false
+
+[Payload.Chapters]
+Source                = ..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\raggiesoft-books\books\quantum-directive-2-kelly
+
+[Payload.Themes]
+Source                = ..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\raggiesoft-books\css\themes
+TargetSubdir          = themes
+
+[Payload.Cover2x3]
+Source                = ..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\raggiesoft-books\images\covers\2x3\quantum-directive-2-kelly.jpg
+TargetSubdir          = assets\raggiesoft-books\images\covers\2x3
+
+[Payload.CoverOg]
+Source                = ..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\raggiesoft-books\images\covers\og\quantum-directive-2-kelly.jpg
+TargetSubdir          = assets\raggiesoft-books\images\covers\og
+
+[Registry.PackList]
+Root                  = HKCU
+Key                   = Software\RaggieSoft\Book Reader\Books\List
+Name                  = quantum-directive-2-kelly
+Value                 = [INSTALLDIR]
+
+[Registry.PackDetail]
+Root                  = HKCU
+Key                   = Software\RaggieSoft\Book Reader\Books\quantum-directive-2-kelly
+Name                  = Install Path
+Value                 = [INSTALLDIR]

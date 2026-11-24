@@ -1,0 +1,32 @@
+# Build & Visual Studio / CMake Outputs
+build/
+bin/
+obj/
+out/
+.vs/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.vcxproj.user
+
+# Compiled Artifacts & Scratch Files (Never push binaries/installers to GitHub!)
+*.exe
+*.msi
+*.msm
+*.mst
+*.msp
+*.cab
+*.7z
+*.7zip
+*.pdb
+*.ilk
+*.iobj
+*.ipdb
+*.obj
+*.res
+*.aps
+examples/**/out/
+examples/**/*.ico
+projects/**/out/
+offline-seeds/

@@ -1,0 +1,559 @@
+// ================================================================================
+// FILE: src/compiler/RswBootstrapperPackager.hpp
+// PROJECT: RaggieSoft Installer Studio ("Install Without Limits")
+// LICENSE: MIT License (Copyright (c) 2026 Michael P. Ragsdale / RaggieSoft)
+//
+// PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+//   What does this file do?
+//     Once `RswMsiCompiler.hpp` has built a standalone Enterprise `Product.msi`,
+//     this packager turns our pre-compiled Win32 external UI stub (`SetupWizard.exe`)
+//     into a single, self-contained `<Product>-setup.exe` installer!
+//
+//   How do we embed `Product.msi`, custom `.ico` icons, PNG artwork, branding, and
+//   `VERSIONINFO` into `Setup.exe` WITHOUT invoking `cl.exe` on customer machines?
+//     Every Windows Portable Executable (`.exe` / `.dll`) contains a structured
+//     `.rsrc` (Resource) section managed directly by the Windows kernel (`kernel32.dll`):
+//       1. Copy the clean `SetupWizard.exe` binary matching the target CPU (`x64` or `arm64`).
+//       2. If `[Signing] Enabled = true`, Authenticode-sign the inner `.msi` FIRST via
+//          `signtool.exe` so enterprises extracting `Product.msi` (`--extract-msi`)
+//          receive a cryptographically signed MSI database!
+//       3. Call `BeginUpdateResourceW` -> `UpdateResourceW` -> `EndUpdateResourceW` to
+//          inject:
+//            - `RT_RCDATA` #201: The complete `Product.msi` file stream
+//            - `RT_RCDATA` #202: UTF-8 branding & layout manifest (`[UI]` colors, modes, text)
+//            - `RT_RCDATA` #203: License agreement RTF/text
+//            - `RT_RCDATA` #204: Optional PNG artwork (`[UI] ArtworkPng`)
+//            - `RT_GROUP_ICON` #101 + `RT_ICON`: Multi-resolution product `.ico` frames
+//            - `RT_VERSION` #1: Freshly synthesized `VS_VERSION_INFO` carrying the
+//              product's own `CompanyName`, `ProductName`, `FileDescription`, and
+//              `FileVersion` (100% zero third-party watermarks!).
+//       4. If `[Signing] Enabled = true`, Authenticode-sign the outer `<Product>-setup.exe`!
+// ================================================================================
+
+#pragma once
+
+#include "../common/RswManifestAst.hpp"
+#include "../common/RswPlatform.hpp"
+#include "../common/RswVersion.hpp"
+#include "RswMsiCompiler.hpp"
+
+#include <algorithm>
+#include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
+
+namespace rsw {
+
+// Standard `.ico` file header structures on disk (`#pragma pack(push, 2)` matches Win32 `GRPICONDIR`!):
+//   In a `.ico` file on disk, each entry ends with a 32-bit `dwImageOffset` file offset.
+//   Inside a Win32 `.exe` `RT_GROUP_ICON` resource, that 32-bit offset is replaced by a
+//   16-bit `nID` resource ordinal pointing to `RT_ICON` #1, #2, ..., #N!
+#pragma pack(push, 2)
+struct DiskIconDirHeader {
+    std::uint16_t idReserved; // Must be 0
+    std::uint16_t idType;     // 1 = Icon
+    std::uint16_t idCount;    // Number of icon frames
+};
+
+struct DiskIconDirEntry {
+    std::uint8_t  bWidth;
+    std::uint8_t  bHeight;
+    std::uint8_t  bColorCount;
+    std::uint8_t  bReserved;
+    std::uint16_t wPlanes;
+    std::uint16_t wBitCount;
+    std::uint32_t dwBytesInRes;
+    std::uint32_t dwImageOffset;
+};
+
+struct PeGrpIconDirEntry {
+    std::uint8_t  bWidth;
+    std::uint8_t  bHeight;
+    std::uint8_t  bColorCount;
+    std::uint8_t  bReserved;
+    std::uint16_t wPlanes;
+    std::uint16_t wBitCount;
+    std::uint32_t dwBytesInRes;
+    std::uint16_t nID;        // Ordinal ID of corresponding `RT_ICON` resource!
+};
+#pragma pack(pop)
+
+/// Reads an entire binary file from disk into a `std::vector<std::uint8_t>`.
+inline bool ReadBinaryFileBytes(
+    const std::filesystem::path& path,
+    std::vector<std::uint8_t>& outBytes,
+    std::string& outError)
+{
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    if (!in) {
+        outError = "Failed opening binary file for reading: " + WideToUtf8(path.wstring());
+        return false;
+    }
+    const auto sz = in.tellg();
+    if (sz < 0) {
+        outError = "Failed determining size of file: " + WideToUtf8(path.wstring());
+        return false;
+    }
+    outBytes.resize(static_cast<std::size_t>(sz));
+    in.seekg(0, std::ios::beg);
+    if (!outBytes.empty() && !in.read(reinterpret_cast<char*>(outBytes.data()), sz)) {
+        outError = "Failed reading bytes from file: " + WideToUtf8(path.wstring());
+        return false;
+    }
+    return true;
+}
+
+/// Parses `"Major.Minor.Build"` into 4 numeric 16-bit components `(Major, Minor, Build, 0)`
+/// for `VS_FIXEDFILEINFO` inside `RT_VERSION`.
+inline void ParseThreePartVersionNumbers(
+    std::string_view ver,
+    std::uint16_t& outMaj,
+    std::uint16_t& outMin,
+    std::uint16_t& outBld) noexcept
+{
+    outMaj = 1;
+    outMin = 0;
+    outBld = 0;
+    int parts[3]{0, 0, 0};
+    int idx = 0;
+    for (char c : ver) {
+        if (c == '.') {
+            if (++idx >= 3) break;
+        } else if (c >= '0' && c <= '9') {
+            parts[idx] = parts[idx] * 10 + (c - '0');
+        }
+    }
+    outMaj = static_cast<std::uint16_t>(std::clamp(parts[0], 0, 65535));
+    outMin = static_cast<std::uint16_t>(std::clamp(parts[1], 0, 65535));
+    outBld = static_cast<std::uint16_t>(std::clamp(parts[2], 0, 65535));
+}
+
+/// Synthesizes a binary-aligned Win32 `VS_VERSION_INFO` (`RT_VERSION` #1) resource buffer!
+/// Why build `VS_VERSION_INFO` in memory?
+///   Windows Explorer's "Properties -> Details" tab reads `RT_VERSION` #1 directly from `.exe`
+///   headers. Building this exact tree (`VS_VERSIONINFO` -> `VS_FIXEDFILEINFO` + `StringFileInfo`
+///   -> `040904B0` -> `String` children + `VarFileInfo` -> `Translation`) stamps the customer's
+///   product metadata onto `<Product>-setup.exe` without needing `rc.exe` at package time!
+class VersionResourceBuilder {
+public:
+    static std::vector<std::uint8_t> Build(
+        std::string_view companyName,
+        std::string_view fileDescription,
+        std::string_view version3Part,
+        std::string_view internalName,
+        std::string_view legalCopyright,
+        std::string_view originalFilename,
+        std::string_view productName)
+    {
+        std::uint16_t vMaj = 1, vMin = 0, vBld = 0;
+        ParseThreePartVersionNumbers(version3Part, vMaj, vMin, vBld);
+        const std::string ver4Part = std::to_string(vMaj) + "." + std::to_string(vMin) + "." + std::to_string(vBld) + ".0";
+
+        std::vector<std::uint8_t> buf;
+        const std::size_t rootOff = BeginNode(buf, L"VS_VERSION_INFO", 0 /* binary value */, sizeof(VS_FIXEDFILEINFO));
+
+        // Populate standard 52-byte `VS_FIXEDFILEINFO` (`0xFEEF04BD` signature)
+        VS_FIXEDFILEINFO ffi{};
+        ffi.dwSignature        = 0xFEEF04BDu;
+        ffi.dwStrucVersion     = 0x00010000u;
+        ffi.dwFileVersionMS    = (static_cast<DWORD>(vMaj) << 16) | static_cast<DWORD>(vMin);
+        ffi.dwFileVersionLS    = (static_cast<DWORD>(vBld) << 16) | 0u;
+        ffi.dwProductVersionMS = ffi.dwFileVersionMS;
+        ffi.dwProductVersionLS = ffi.dwFileVersionLS;
+        ffi.dwFileFlagsMask    = 0x3Fu;
+        ffi.dwFileFlags        = 0u;
+        ffi.dwFileOS           = VOS_NT_WINDOWS32;
+        ffi.dwFileType         = VFT_APP;
+        ffi.dwFileSubtype      = 0u;
+        AppendBytes(buf, &ffi, sizeof(ffi));
+        Align4(buf);
+
+        // Child 1: `StringFileInfo` -> `040904B0` (US English, Unicode UTF-16LE)
+        const std::size_t sfiOff   = BeginNode(buf, L"StringFileInfo", 1, 0);
+        const std::size_t tableOff = BeginNode(buf, L"040904B0", 1, 0);
+
+        AppendStringEntry(buf, L"CompanyName",      Utf8ToWide(companyName));
+        AppendStringEntry(buf, L"FileDescription",  Utf8ToWide(fileDescription));
+        AppendStringEntry(buf, L"FileVersion",      Utf8ToWide(ver4Part));
+        AppendStringEntry(buf, L"InternalName",     Utf8ToWide(internalName));
+        AppendStringEntry(buf, L"LegalCopyright",   Utf8ToWide(legalCopyright));
+        AppendStringEntry(buf, L"OriginalFilename", Utf8ToWide(originalFilename));
+        AppendStringEntry(buf, L"ProductName",      Utf8ToWide(productName));
+        AppendStringEntry(buf, L"ProductVersion",   Utf8ToWide(version3Part));
+
+        EndNode(buf, tableOff);
+        EndNode(buf, sfiOff);
+
+        // Child 2: `VarFileInfo` -> `Translation` (`0x0409, 0x04B0` = 1033, 1200)
+        const std::size_t vfiOff = BeginNode(buf, L"VarFileInfo", 1, 0);
+        const std::size_t trOff  = BeginNode(buf, L"Translation", 0, 4);
+        const std::uint16_t trans[2]{0x0409, 0x04B0};
+        AppendBytes(buf, trans, sizeof(trans));
+        EndNode(buf, trOff);
+        EndNode(buf, vfiOff);
+
+        EndNode(buf, rootOff);
+        return buf;
+    }
+
+private:
+    static void Align4(std::vector<std::uint8_t>& b) {
+        while ((b.size() % 4u) != 0u) {
+            b.push_back(0u);
+        }
+    }
+
+    static void AppendBytes(std::vector<std::uint8_t>& b, const void* src, std::size_t len) {
+        const auto* p = static_cast<const std::uint8_t*>(src);
+        b.insert(b.end(), p, p + len);
+    }
+
+    static void AppendU16(std::vector<std::uint8_t>& b, std::uint16_t v) {
+        AppendBytes(b, &v, sizeof(v));
+    }
+
+    static void AppendWStringNull(std::vector<std::uint8_t>& b, std::wstring_view ws) {
+        for (wchar_t ch : ws) {
+            AppendU16(b, static_cast<std::uint16_t>(ch));
+        }
+        AppendU16(b, 0u);
+    }
+
+    static std::size_t BeginNode(
+        std::vector<std::uint8_t>& b,
+        std::wstring_view key,
+        std::uint16_t wType,
+        std::uint16_t wValueLength)
+    {
+        Align4(b);
+        const std::size_t start = b.size();
+        AppendU16(b, 0u);           // Placeholder for `wLength` (patched in `EndNode`)
+        AppendU16(b, wValueLength); // `wValueLength` (bytes for binary, WCHAR count for text!)
+        AppendU16(b, wType);        // `0` = binary data, `1` = text data
+        AppendWStringNull(b, key);
+        Align4(b);
+        return start;
+    }
+
+    static void EndNode(std::vector<std::uint8_t>& b, std::size_t startOffset) {
+        const auto totalBytes = static_cast<std::uint16_t>(b.size() - startOffset);
+        std::memcpy(b.data() + startOffset, &totalBytes, sizeof(totalBytes));
+    }
+
+    static void AppendStringEntry(
+        std::vector<std::uint8_t>& b,
+        std::wstring_view key,
+        std::wstring_view value)
+    {
+        // Note: For `String` nodes (`wType = 1`), Windows requires `wValueLength` in WCHARs INCLUDING null!
+        const auto cchWithNull = static_cast<std::uint16_t>(value.size() + 1u);
+        const std::size_t off = BeginNode(b, key, 1, cchWithNull);
+        AppendWStringNull(b, value);
+        EndNode(b, off);
+    }
+};
+
+/// Discovers `signtool.exe` inside the installed Windows 11 SDK (`C:\Program Files (x86)\Windows Kits\10\bin\...`).
+inline std::filesystem::path LocateWindowsSdkSignTool() {
+    std::error_code ec;
+    const std::filesystem::path kitsBin = L"C:\\Program Files (x86)\\Windows Kits\\10\\bin";
+    if (!std::filesystem::exists(kitsBin, ec)) {
+        return {};
+    }
+
+    std::vector<std::filesystem::path> verDirs;
+    for (const auto& de : std::filesystem::directory_iterator(kitsBin, ec)) {
+        if (de.is_directory(ec)) {
+            const std::wstring name = de.path().filename().wstring();
+            if (name.rfind(L"10.", 0) == 0) verDirs.push_back(de.path());
+        }
+    }
+    std::sort(verDirs.rbegin(), verDirs.rend()); // Newest SDK version first (`10.0.26100.0`)
+
+    const wchar_t* archOrder[] = {L"arm64", L"x64", L"x86"};
+    for (const auto& vd : verDirs) {
+        for (const wchar_t* a : archOrder) {
+            auto candidate = vd / a / L"signtool.exe";
+            if (std::filesystem::exists(candidate, ec)) {
+                return candidate;
+            }
+        }
+    }
+    return {};
+}
+
+/// Runs Authenticode signing via `signtool.exe` (supporting local Certificate Store OR Azure Artifact Signing).
+inline bool RunAuthenticodeSignTool(
+    const RswManifestDocument& doc,
+    const std::filesystem::path& targetBinary,
+    std::string& outError)
+{
+    if (!doc.GetBool("Signing", "", "Enabled", false)) {
+        return true;
+    }
+
+    const std::filesystem::path signTool = LocateWindowsSdkSignTool();
+    if (signTool.empty()) {
+        outError = "Signing is enabled in [Signing], but Windows SDK signtool.exe was not found.";
+        return false;
+    }
+
+    const std::filesystem::path baseDir = doc.sourcePath.empty()
+        ? std::filesystem::current_path()
+        : doc.sourcePath.parent_path();
+    auto resolveOptPath = [&](std::string_view raw) -> std::filesystem::path {
+        if (raw.empty()) return {};
+        std::filesystem::path p(Utf8ToWide(raw));
+        return p.is_absolute() ? p : (baseDir / p);
+    };
+
+    const std::string thumb     = doc.GetString("Signing", "", "Thumbprint");
+    const std::string tsUrl     = doc.GetString("Signing", "", "TimestampUrl", "http://timestamp.acs.microsoft.com");
+    const auto dlibPath         = resolveOptPath(doc.GetString("Signing", "", "DlibPath"));
+    const auto metaPath         = resolveOptPath(doc.GetString("Signing", "", "MetadataJson"));
+
+    std::wostringstream cmd;
+    cmd << L"\"" << signTool.wstring() << L"\" sign /fd SHA256 /td SHA256 /tr \""
+        << Utf8ToWide(tsUrl) << L"\" ";
+
+    if (!dlibPath.empty() && !metaPath.empty()) {
+        cmd << L"/dlib \"" << dlibPath.wstring() << L"\" /dmdf \"" << metaPath.wstring() << L"\" ";
+    } else if (!thumb.empty()) {
+        cmd << L"/sha1 \"" << Utf8ToWide(thumb) << L"\" ";
+    } else {
+        cmd << L"/a ";
+    }
+    cmd << L"\"" << targetBinary.wstring() << L"\"";
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    std::wstring mutableCmd = cmd.str();
+    if (!::CreateProcessW(nullptr, mutableCmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        outError = "Failed launching signtool.exe (" + std::to_string(::GetLastError()) + ").";
+        return false;
+    }
+
+    ::WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD exitCode = 1;
+    ::GetExitCodeProcess(pi.hProcess, &exitCode);
+    ::CloseHandle(pi.hThread);
+    ::CloseHandle(pi.hProcess);
+
+    if (exitCode != 0) {
+        outError = "signtool.exe exited with code " + std::to_string(exitCode) +
+                   " while signing '" + WideToUtf8(targetBinary.filename().wstring()) + "'.";
+        return false;
+    }
+    return true;
+}
+
+/// Packages `compiledMsi` + product branding + `.ico` + `VS_VERSION_INFO` into `<OutputName>-setup.exe`!
+inline bool PackageSelfExtractingBootstrapper(
+    const RswManifestDocument& doc,
+    const CompiledMsiSummary& msiSummary,
+    const std::filesystem::path& compilerExeDir,
+    std::filesystem::path& outSetupExePath,
+    std::string& outError)
+{
+    std::error_code ec;
+    const std::string arch = msiSummary.architecture;
+
+    // 1. Sign inner `Product.msi` BEFORE embedding it into `Setup.exe` (Dual-Layer Signing Step 1!)
+    if (!RunAuthenticodeSignTool(doc, msiSummary.msiPath, outError)) {
+        return false;
+    }
+
+    if (!doc.GetBool("Package", "", "BuildBootstrapper", true)) {
+        outSetupExePath.clear();
+        return true;
+    }
+
+    // 2. Locate the matching `SetupWizard.exe` native template binary (`x64` or `arm64`)
+    std::vector<std::filesystem::path> stubCandidates = {
+        compilerExeDir / L"SetupWizard.exe",
+        compilerExeDir.parent_path() / Utf8ToWide(arch) / L"SetupWizard.exe",
+        compilerExeDir / Utf8ToWide(arch) / L"SetupWizard.exe"
+    };
+    std::filesystem::path stubTemplate;
+    for (const auto& c : stubCandidates) {
+        if (std::filesystem::exists(c, ec)) {
+            stubTemplate = c;
+            break;
+        }
+    }
+    if (stubTemplate.empty()) {
+        outError = "Could not locate compiled bootstrapper stub 'SetupWizard.exe' for architecture '" + arch + "'.";
+        return false;
+    }
+
+    const std::string msiStem = WideToUtf8(msiSummary.msiPath.stem().wstring());
+    outSetupExePath = msiSummary.msiPath.parent_path() / (msiStem + "-setup.exe");
+    std::filesystem::remove(outSetupExePath, ec);
+    if (!std::filesystem::copy_file(stubTemplate, outSetupExePath, std::filesystem::copy_options::overwrite_existing, ec)) {
+        outError = "Failed copying SetupWizard.exe template to '" + WideToUtf8(outSetupExePath.wstring()) + "'.";
+        return false;
+    }
+
+    // 3. Read `Product.msi` bytes + synthesize the UTF-8 branding & layout manifest (`#202`)
+    std::vector<std::uint8_t> msiBytes;
+    if (!ReadBinaryFileBytes(msiSummary.msiPath, msiBytes, outError)) {
+        return false;
+    }
+
+    const std::filesystem::path baseDir = doc.sourcePath.empty()
+        ? std::filesystem::current_path()
+        : doc.sourcePath.parent_path();
+    auto resolvePath = [&](std::string_view raw) -> std::filesystem::path {
+        if (raw.empty()) return {};
+        std::string exp = ExpandArchToken(raw, arch);
+        std::filesystem::path p(Utf8ToWide(exp));
+        return (p.is_absolute() ? p : (baseDir / p)).lexically_normal();
+    };
+
+    std::ostringstream brandIni;
+    brandIni << "[Branding]\n"
+             << "ProductName="        << msiSummary.productName << "\n"
+             << "Tagline="            << ExpandArchToken(doc.GetString("Package", "", "Tagline", msiSummary.manufacturer + " Setup"), arch) << "\n"
+             << "WebsiteLabel="       << doc.GetString("Package", "", "WebsiteLabel", "") << "\n"
+             << "Version="            << msiSummary.productVersion << "\n"
+             << "Manufacturer="       << msiSummary.manufacturer << "\n"
+             << "Architecture="       << msiSummary.architecture << "\n"
+             << "ProductCode="        << msiSummary.productCode << "\n"
+             << "UpgradeCode="        << msiSummary.upgradeCode << "\n"
+             << "DefaultSubdir="      << msiSummary.defaultSubdir << "\n"
+             << "MainExecutable="     << msiSummary.mainExeRel << "\n"
+             << "PerMachine="         << (msiSummary.perMachine ? "true" : "false") << "\n"
+             << "MinWindowsBuild="    << msiSummary.minWindowsBuild << "\n"
+             << "OsLaunchMessage="    << msiSummary.osLaunchMessage << "\n"
+             << "WizardLayout="       << doc.GetString("UI", "", "WizardLayout", "standard") << "\n"
+             << "AccentPrimaryHex="   << doc.GetString("UI", "", "AccentPrimaryHex", "#2563EB") << "\n"
+             << "AccentSecondaryHex=" << doc.GetString("UI", "", "AccentSecondaryHex", "#FBBF24") << "\n"
+             << "WelcomeHeadline="    << doc.GetString("UI", "", "WelcomeHeadline", "Welcome to " + msiSummary.productName + " Setup") << "\n"
+             << "BannerTitle="        << doc.GetString("UI", "", "BannerTitle", "Choose how you would like to install " + msiSummary.productName + ".") << "\n"
+             << "InstallButtonText="  << msiSummary.installBtnText << "\n"
+             << "FinishLaunchCheckbox=" << msiSummary.launchChkText << "\n"
+             << "OfferLaunchOnFinish=" << (msiSummary.offerLaunchOnFinish ? "true" : "false") << "\n"
+             << "HasLicenseRtf="      << (!msiSummary.licenseRtfPath.empty() ? "true" : "false") << "\n"
+             << "ExpressDescription=" << doc.GetString("UI", "", "ExpressDescription",
+                  "One-click setup into the default installation folder with recommended shortcuts. Skips extra prompts.") << "\n"
+             << "CompactDescription=" << doc.GetString("UI", "", "CompactDescription",
+                  "Installs essential application files with minimal disk footprint using recommended folder defaults.") << "\n"
+             << "CustomDescription="  << doc.GetString("UI", "", "CustomDescription",
+                  "Choose a custom destination folder and review installation options step by step before installing.") << "\n"
+             << "AuthorOrArtist="     << doc.GetString("UI", "", "AuthorOrArtist", "") << "\n";
+    const std::string brandStr = brandIni.str();
+
+    const std::string licenseRtf = LoadOrSynthesizeLicenseRtf(
+        msiSummary.licenseRtfPath, msiSummary.productName, msiSummary.manufacturer);
+
+    const std::filesystem::path artworkPath = resolvePath(doc.GetString("UI", "", "ArtworkPng"));
+    std::vector<std::uint8_t> artworkBytes;
+    if (!artworkPath.empty() && std::filesystem::exists(artworkPath, ec)) {
+        ReadBinaryFileBytes(artworkPath, artworkBytes, outError);
+    }
+
+    // 4. Open PE resource table on `<OutputName>-setup.exe` and stamp all resources atomically!
+    HANDLE hRes = ::BeginUpdateResourceW(outSetupExePath.wstring().c_str(), FALSE);
+    if (!hRes) {
+        outError = "BeginUpdateResourceW failed on '" + WideToUtf8(outSetupExePath.wstring()) +
+                   "' (" + std::to_string(::GetLastError()) + ").";
+        return false;
+    }
+
+    constexpr WORD kLangNeutral = MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL);
+    constexpr WORD kLangEnUs    = MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US);
+
+    bool ok = true;
+    ok = ok && ::UpdateResourceW(
+        hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdEmbeddedMsi), kLangNeutral,
+        msiBytes.data(), static_cast<DWORD>(msiBytes.size()));
+    ok = ok && ::UpdateResourceW(
+        hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdBrandingIni), kLangNeutral,
+        const_cast<char*>(brandStr.data()), static_cast<DWORD>(brandStr.size()));
+    ok = ok && ::UpdateResourceW(
+        hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdLicenseRtf), kLangNeutral,
+        const_cast<char*>(licenseRtf.data()), static_cast<DWORD>(licenseRtf.size()));
+
+    if (!artworkBytes.empty()) {
+        ok = ok && ::UpdateResourceW(
+            hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdArtworkPng), kLangNeutral,
+            artworkBytes.data(), static_cast<DWORD>(artworkBytes.size()));
+    }
+
+    // 5. Stamp custom `.ico` (`RT_GROUP_ICON` #101 + `RT_ICON` #1..N) if `[UI] IconFile` was supplied!
+    if (ok && !msiSummary.iconFilePath.empty() && std::filesystem::exists(msiSummary.iconFilePath, ec)) {
+        std::vector<std::uint8_t> icoBytes;
+        if (ReadBinaryFileBytes(msiSummary.iconFilePath, icoBytes, outError) &&
+            icoBytes.size() >= sizeof(DiskIconDirHeader)) {
+            DiskIconDirHeader hdr{};
+            std::memcpy(&hdr, icoBytes.data(), sizeof(hdr));
+            const std::size_t entriesBytes = static_cast<std::size_t>(hdr.idCount) * sizeof(DiskIconDirEntry);
+            if (hdr.idReserved == 0 && hdr.idType == 1 && hdr.idCount > 0 &&
+                icoBytes.size() >= sizeof(hdr) + entriesBytes) {
+                std::vector<std::uint8_t> grpBuf(sizeof(DiskIconDirHeader) + hdr.idCount * sizeof(PeGrpIconDirEntry));
+                std::memcpy(grpBuf.data(), &hdr, sizeof(hdr));
+
+                bool framesValid = true;
+                for (std::uint16_t i = 0; i < hdr.idCount; ++i) {
+                    DiskIconDirEntry de{};
+                    std::memcpy(&de, icoBytes.data() + sizeof(hdr) + i * sizeof(de), sizeof(de));
+                    if (static_cast<std::size_t>(de.dwImageOffset) + de.dwBytesInRes > icoBytes.size()) {
+                        framesValid = false;
+                        break;
+                    }
+                    const std::uint16_t iconId = static_cast<std::uint16_t>(i + 1u);
+                    ok = ok && ::UpdateResourceW(
+                        hRes, RT_ICON, MAKEINTRESOURCEW(iconId), kLangEnUs,
+                        icoBytes.data() + de.dwImageOffset, de.dwBytesInRes);
+
+                    PeGrpIconDirEntry ge{};
+                    ge.bWidth       = de.bWidth;
+                    ge.bHeight      = de.bHeight;
+                    ge.bColorCount  = de.bColorCount;
+                    ge.bReserved    = de.bReserved;
+                    ge.wPlanes      = de.wPlanes;
+                    ge.wBitCount    = de.wBitCount;
+                    ge.dwBytesInRes = de.dwBytesInRes;
+                    ge.nID          = iconId;
+                    std::memcpy(grpBuf.data() + sizeof(hdr) + i * sizeof(ge), &ge, sizeof(ge));
+                }
+                if (framesValid) {
+                    ok = ok && ::UpdateResourceW(
+                        hRes, RT_GROUP_ICON, MAKEINTRESOURCEW(101), kLangEnUs,
+                        grpBuf.data(), static_cast<DWORD>(grpBuf.size()));
+                }
+            }
+        }
+    }
+
+    // 6. Stamp 100% first-party `VS_VERSION_INFO` (`RT_VERSION` #1) onto `<OutputName>-setup.exe`!
+    const std::string setupFileName = WideToUtf8(outSetupExePath.filename().wstring());
+    const std::string fileDesc = doc.GetString("Package", "", "Description", msiSummary.productName + " Setup");
+    const std::string copyright = "Copyright (c) 2026 " + msiSummary.manufacturer;
+    auto verBytes = VersionResourceBuilder::Build(
+        msiSummary.manufacturer,
+        fileDesc,
+        msiSummary.productVersion,
+        msiStem,
+        copyright,
+        setupFileName,
+        msiSummary.productName);
+    ok = ok && ::UpdateResourceW(
+        hRes, RT_VERSION, MAKEINTRESOURCEW(1), kLangEnUs,
+        verBytes.data(), static_cast<DWORD>(verBytes.size()));
+
+    if (!::EndUpdateResourceW(hRes, !ok) || !ok) {
+        outError = "EndUpdateResourceW failed while stamping '" + WideToUtf8(outSetupExePath.wstring()) + "'.";
+        return false;
+    }
+
+    // 7. Sign outer `<OutputName>-setup.exe` (Dual-Layer Signing Step 2!)
+    return RunAuthenticodeSignTool(doc, outSetupExePath, outError);
+}
+
+} // namespace rsw

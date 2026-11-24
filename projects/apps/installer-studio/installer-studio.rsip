@@ -1,0 +1,84 @@
+; ==============================================================================
+; FILE: projects/apps/installer-studio/installer-studio.rsip
+; APPLICATION: RaggieSoft Installer Studio (v0.1.0)
+; COMPILER: RaggieSoft Installer Studio (instbuild.exe -> .msi + Setup.exe)
+; ==============================================================================
+
+@include "..\..\shared\raggiesoft-defaults.rsii"
+
+[Package]
+Name                  = RaggieSoft Installer Studio
+Tagline               = Install Without Limits - Visual IDE, Compiler & MSI Prism
+WebsiteLabel          = raggiesoftstudio.com
+Version               = 0.1.0
+Manufacturer          = RaggieSoft
+UpgradeCode           = {D9C0EF36-990C-519C-A9C7-D7E19FDD5627}
+Architecture          = $(ARCH)
+Scope                 = machine
+OutputName            = raggiesoft-installer-studio-$(ARCH)
+OutputDir             = out
+BuildBootstrapper     = true
+AboutUrl              = https://raggiesoftstudio.com
+
+[Install]
+DefaultSubdir         = RaggieSoft\Installer Studio
+StartMenuFolder       = RaggieSoft Installer Studio
+MainExecutable        = InstallerStudio.exe
+
+[UI]
+WizardLayout          = standard
+AccentPrimaryHex      = #2563EB
+AccentSecondaryHex    = #FBBF24
+LicenseRtf            = License.rtf
+IconFile              = ..\..\..\..\windows\RaggieSoftApps\RaggieSoftLauncher\Assets\RaggieSoftLauncher.ico
+InstallButtonText     = &Install
+FinishLaunchCheckbox  = &Open RaggieSoft Installer Studio when setup finishes
+
+[Payload.CoreBinaries]
+Source                = ..\..\..\bin\$(ARCH)
+Feature               = Main
+
+[Payload.AiSpecs]
+Source                = ..\..\..\specs
+TargetSubdir          = specs
+Feature               = Main
+
+[Shortcut.StudioIde]
+Name                  = RaggieSoft Installer Studio
+TargetFile            = InstallerStudio.exe
+Location              = StartMenu
+
+[Shortcut.MsiPrism]
+Name                  = RaggieSoft MSI Prism
+TargetFile            = msiprism.exe
+Location              = StartMenu
+
+[Registry.InstallPath]
+Root                  = HKLM
+Key                   = Software\RaggieSoft\Installer Studio
+Name                  = Install Path
+Value                 = [INSTALLDIR]
+
+[Registry.RsipExt]
+Root                  = HKCR
+Key                   = .rsip
+Name                  = @
+Value                 = RaggieSoft.InstallerStudio.Project
+
+[Registry.RsipProgId]
+Root                  = HKCR
+Key                   = RaggieSoft.InstallerStudio.Project
+Name                  = @
+Value                 = RaggieSoft Installer Project
+
+[Registry.RsisExt]
+Root                  = HKCR
+Key                   = .rsis
+Name                  = @
+Value                 = RaggieSoft.InstallerStudio.Suite
+
+[Registry.RsisProgId]
+Root                  = HKCR
+Key                   = RaggieSoft.InstallerStudio.Suite
+Name                  = @
+Value                 = RaggieSoft Installer Suite

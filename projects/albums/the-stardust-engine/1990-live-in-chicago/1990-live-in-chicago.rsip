@@ -1,0 +1,69 @@
+; ==============================================================================
+; FILE: projects/albums/the-stardust-engine/1990-live-in-chicago/1990-live-in-chicago.rsip
+; ALBUM EDITION: Live in Chicago - The Stardust Engine (The Stardust Engine)
+; LAYOUT: 640x480 16:9 OpenGraph CD-Autorun Micro-Installer (Per-User Vault)
+; ==============================================================================
+
+@include "..\..\..\shared\raggiesoft-defaults.rsii"
+
+[Package]
+Name                  = Live in Chicago - The Stardust Engine
+Tagline               = The Stardust Engine - Engine Room Records High-Quality Edition
+WebsiteLabel          = music.raggiesoft.com
+Version               = 1.0.0
+Manufacturer          = Engine Room Records
+UpgradeCode           = {26F9B085-147B-5ED7-BFE5-375317F0DBD2}
+Architecture          = $(ARCH)
+Scope                 = user
+OutputName            = raggiesoft-album-1990-live-in-chicago-$(ARCH)
+OutputDir             = out
+BuildBootstrapper     = true
+HideFromInstalledApps = true
+AboutUrl              = https://music.raggiesoft.com
+
+[Install]
+DefaultSubdir         = RaggieSoft\Music\the-stardust-engine\1990-live-in-chicago
+
+[UI]
+WizardLayout          = autorun16x9
+AuthorOrArtist        = The Stardust Engine
+AccentPrimaryHex      = #06B6D4
+AccentSecondaryHex    = #EC4899
+LicenseRtf            = License.rtf
+IconFile              = ..\..\..\..\..\windows\RaggieSoftApps\ListeningRoom\Assets\ListeningRoom.ico
+ArtworkPng            = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\the-stardust-engine\1990-live-in-chicago\social-preview.jpg
+InstallButtonText     = &Install Album
+OfferLaunchOnFinish   = false
+
+[Payload.VaultMp3]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-vaults\engine-room-records\artists\the-stardust-engine\1990-live-in-chicago\vault\mp3
+TargetSubdir          = hq-mp3
+
+[Payload.TracksJson]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\the-stardust-engine\1990-live-in-chicago\tracks.json
+
+[Payload.AlbumArt]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\the-stardust-engine\1990-live-in-chicago\album-art.jpg
+
+[Payload.SocialArt]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\the-stardust-engine\1990-live-in-chicago\social-preview.jpg
+
+[Payload.LyricsVtt]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\the-stardust-engine\1990-live-in-chicago\lyrics
+TargetSubdir          = lyrics
+
+[Payload.SunoPrompts]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\the-stardust-engine\1990-live-in-chicago\suno-prompts
+TargetSubdir          = suno-prompts
+
+[Registry.AlbumList]
+Root                  = HKCU
+Key                   = Software\RaggieSoft\The Listening Room\Albums\List
+Name                  = the-stardust-engine--1990-live-in-chicago
+Value                 = [INSTALLDIR]
+
+[Registry.AlbumDetail]
+Root                  = HKCU
+Key                   = Software\RaggieSoft\The Listening Room\Albums\the-stardust-engine--1990-live-in-chicago
+Name                  = Install Path
+Value                 = [INSTALLDIR]

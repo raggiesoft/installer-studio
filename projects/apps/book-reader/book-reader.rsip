@@ -1,0 +1,60 @@
+; ==============================================================================
+; FILE: projects/apps/book-reader/book-reader.rsip
+; APPLICATION: RaggieSoft Book Reader (v1.0.0)
+; COMPILER: RaggieSoft Installer Studio (instbuild.exe -> .msi + Setup.exe)
+; ==============================================================================
+
+@include "..\..\shared\raggiesoft-defaults.rsii"
+
+[Package]
+Name                  = RaggieSoft Book Reader
+Tagline               = Ocean View Archives & Story Crossroads Library
+WebsiteLabel          = books.raggiesoft.com
+Version               = 1.0.0
+Manufacturer          = RaggieSoft
+UpgradeCode           = {71EC9272-2D8E-5089-82E3-4D296C1D7CAC}
+Architecture          = $(ARCH)
+Scope                 = machine
+OutputName            = raggiesoft-book-reader-$(ARCH)
+OutputDir             = out
+BuildBootstrapper     = true
+AboutUrl              = https://books.raggiesoft.com
+
+[Install]
+DefaultSubdir         = RaggieSoft\Book Reader
+StartMenuFolder       = RaggieSoft Book Reader
+MainExecutable        = BookReader.exe
+
+[UI]
+WizardLayout          = standard
+AccentPrimaryHex      = #14B8A6
+AccentSecondaryHex    = #F59E0B
+LicenseRtf            = License.rtf
+IconFile              = ..\..\..\..\windows\RaggieSoftApps\BookReader\Assets\BookReader.ico
+InstallButtonText     = &Install
+FinishLaunchCheckbox  = &Open RaggieSoft Book Reader when setup finishes
+
+[Payload.App]
+Source                = ..\..\..\..\windows\RaggieSoftApps\BookReader\bin\Release\net10.0-windows\win-$(ARCH)\publish
+Feature               = Main
+
+[Payload.OfflineSeed]
+Source                = ..\..\..\offline-seeds\book-reader
+TargetSubdir          = OfflineSeed
+Feature               = Main
+
+[Shortcut.StartLink]
+Name                  = RaggieSoft Book Reader
+TargetFile            = BookReader.exe
+Location              = StartMenu
+
+[Shortcut.DesktopLink]
+Name                  = RaggieSoft Book Reader
+TargetFile            = BookReader.exe
+Location              = Desktop
+
+[Registry.InstallPath]
+Root                  = HKLM
+Key                   = Software\RaggieSoft\Book Reader
+Name                  = Install Path
+Value                 = [INSTALLDIR]

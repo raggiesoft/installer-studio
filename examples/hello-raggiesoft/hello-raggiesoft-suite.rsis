@@ -1,0 +1,26 @@
+; ================================================================================
+; FILE: examples/hello-raggiesoft/hello-raggiesoft-suite.rsis
+; PROJECT: RaggieSoft Installer Studio ("Install Without Limits")
+;
+; PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+;   Optional `.rsis` (RaggieSoft Installer Suite) multi-project workspace—just
+;   like Visual Studio's `.slnx`! Groups standalone `.rsip` projects with ordered
+;   build stages so `instbuild.exe hello-raggiesoft-suite.rsis` or
+;   `InstallerStudio.exe hello-raggiesoft-suite.rsis` manages the whole fleet!
+; ================================================================================
+
+[Suite]
+Name                  = Hello RaggieSoft Sample Suite
+Description           = Demonstrates multi-project .rsis builds across arm64 and x64
+Version               = 1.0.0
+Architectures         = arm64|x64
+
+[Project.HelloStandard]
+Path                  = hello-raggiesoft.rsip
+Category              = CoreApps
+BuildOrder            = 10
+
+[Project.HelloAutorun]
+Path                  = hello-raggiesoft-autorun.rsip
+Category              = ContentPacks
+BuildOrder            = 20

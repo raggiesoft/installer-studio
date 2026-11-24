@@ -1,0 +1,69 @@
+; ==============================================================================
+; FILE: projects/albums/the-stardust-engine/2003-sanctuary-zero-g/2003-sanctuary-zero-g.rsip
+; ALBUM EDITION: Sanctuary (Zero-G) - The Stardust Engine (The Stardust Engine)
+; LAYOUT: 640x480 16:9 OpenGraph CD-Autorun Micro-Installer (Per-User Vault)
+; ==============================================================================
+
+@include "..\..\..\shared\raggiesoft-defaults.rsii"
+
+[Package]
+Name                  = Sanctuary (Zero-G) - The Stardust Engine
+Tagline               = The Stardust Engine - Engine Room Records High-Quality Edition
+WebsiteLabel          = music.raggiesoft.com
+Version               = 1.0.0
+Manufacturer          = Engine Room Records
+UpgradeCode           = {016C9515-DF3F-5528-8FC7-27D8E511C87A}
+Architecture          = $(ARCH)
+Scope                 = user
+OutputName            = raggiesoft-album-2003-sanctuary-zero-g-$(ARCH)
+OutputDir             = out
+BuildBootstrapper     = true
+HideFromInstalledApps = true
+AboutUrl              = https://music.raggiesoft.com
+
+[Install]
+DefaultSubdir         = RaggieSoft\Music\the-stardust-engine\2003-sanctuary-zero-g
+
+[UI]
+WizardLayout          = autorun16x9
+AuthorOrArtist        = The Stardust Engine
+AccentPrimaryHex      = #06B6D4
+AccentSecondaryHex    = #EC4899
+LicenseRtf            = License.rtf
+IconFile              = ..\..\..\..\..\windows\RaggieSoftApps\ListeningRoom\Assets\ListeningRoom.ico
+ArtworkPng            = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\the-stardust-engine\2003-sanctuary-zero-g\social-preview.jpg
+InstallButtonText     = &Install Album
+OfferLaunchOnFinish   = false
+
+[Payload.VaultMp3]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-vaults\engine-room-records\artists\the-stardust-engine\2003-sanctuary-zero-g\vault\mp3
+TargetSubdir          = hq-mp3
+
+[Payload.TracksJson]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\the-stardust-engine\2003-sanctuary-zero-g\tracks.json
+
+[Payload.AlbumArt]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\the-stardust-engine\2003-sanctuary-zero-g\album-art.jpg
+
+[Payload.SocialArt]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\the-stardust-engine\2003-sanctuary-zero-g\social-preview.jpg
+
+[Payload.LyricsVtt]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\the-stardust-engine\2003-sanctuary-zero-g\lyrics
+TargetSubdir          = lyrics
+
+[Payload.SunoPrompts]
+Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\the-stardust-engine\2003-sanctuary-zero-g\suno-prompts
+TargetSubdir          = suno-prompts
+
+[Registry.AlbumList]
+Root                  = HKCU
+Key                   = Software\RaggieSoft\The Listening Room\Albums\List
+Name                  = the-stardust-engine--2003-sanctuary-zero-g
+Value                 = [INSTALLDIR]
+
+[Registry.AlbumDetail]
+Root                  = HKCU
+Key                   = Software\RaggieSoft\The Listening Room\Albums\the-stardust-engine--2003-sanctuary-zero-g
+Name                  = Install Path
+Value                 = [INSTALLDIR]

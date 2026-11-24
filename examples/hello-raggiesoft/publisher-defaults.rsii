@@ -1,0 +1,18 @@
+; ================================================================================
+; FILE: examples/hello-raggiesoft/publisher-defaults.rsii
+; PROJECT: RaggieSoft Installer Studio ("Install Without Limits")
+;
+; PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+;   Shared `.rsii` (RaggieSoft Installer Include) header imported via
+;   `@include "publisher-defaults.rsii"`. Lets multiple `.rsip` projects inherit
+;   common publisher metadata, Windows 11 requirements, and signing defaults!
+; ================================================================================
+
+[Package]
+Manufacturer          = RaggieSoft
+WebsiteLabel          = raggiesoftstudio.com
+AboutUrl              = https://raggiesoftstudio.com
+
+[Requirements]
+MinWindowsBuild       = 22000
+BlockDowngrades       = true

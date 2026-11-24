@@ -1,0 +1,8 @@
+; ==============================================================================
+; FILE: projects/shared/raggiesoft-defaults.rsii
+; Shared RaggieSoft Installer Include (.rsii) — inherited via @include!
+; ==============================================================================
+
+[Requirements]
+MinWindowsBuild       = 22000
+BlockDowngrades       = true

@@ -1,0 +1,93 @@
+; ==============================================================================
+; FILE: projects/apps/accessibility-studio/accessibility-studio.rsip
+; APPLICATION: RaggieSoft Accessibility Studio (v1.0.0)
+; COMPILER: RaggieSoft Installer Studio (instbuild.exe -> .msi + Setup.exe)
+; ==============================================================================
+
+@include "..\..\shared\raggiesoft-defaults.rsii"
+
+[Package]
+Name                  = RaggieSoft Accessibility Studio
+Tagline               = Accessibility IDE & Offline Rule Reference
+WebsiteLabel          = a11y.raggiesoft.com
+Version               = 1.0.0
+Manufacturer          = RaggieSoft
+UpgradeCode           = {56DD624B-D43B-4B29-80A8-E06BE8EA7BFB}
+Architecture          = $(ARCH)
+Scope                 = machine
+OutputName            = raggiesoft-accessibility-studio-$(ARCH)
+OutputDir             = out
+BuildBootstrapper     = true
+AboutUrl              = https://a11y.raggiesoft.com
+
+[Install]
+DefaultSubdir         = RaggieSoft\Accessibility Studio
+StartMenuFolder       = RaggieSoft Accessibility Studio
+MainExecutable        = StudioIDE\AccessibilityStudio.exe
+
+[UI]
+WizardLayout          = standard
+AccentPrimaryHex      = #2563EB
+AccentSecondaryHex    = #10B981
+LicenseRtf            = License.rtf
+IconFile              = ..\..\..\..\accessibility-studio\src\AccessibilityStudio.WinForms\Assets\AccessibilityStudio.ico
+InstallButtonText     = &Install
+FinishLaunchCheckbox  = &Open RaggieSoft Accessibility Studio when setup finishes
+
+[Payload.StudioIde]
+Source                = ..\..\..\..\accessibility-studio\build\INSTALLDIR\Release\$(ARCH)\StudioIDE
+TargetSubdir          = StudioIDE
+Feature               = Main
+
+[Payload.CliScanner]
+Source                = ..\..\..\..\accessibility-studio\build\INSTALLDIR\Release\$(ARCH)\CLI
+TargetSubdir          = CLI
+Feature               = Main
+
+[Payload.HelpViewer]
+Source                = ..\..\..\..\accessibility-studio\build\INSTALLDIR\Release\$(ARCH)\HelpViewer
+TargetSubdir          = HelpViewer
+Feature               = Main
+
+[Payload.HelpManual]
+Source                = ..\..\..\..\accessibility-studio\build\INSTALLDIR\Release\x64\HelpModules\raggiesoft.accessibility-studio
+TargetSubdir          = HelpModules\raggiesoft.accessibility-studio
+Feature               = Main
+
+[Payload.Samples]
+Source                = ..\..\..\..\accessibility-studio\build\INSTALLDIR\Release\x64\Samples
+TargetSubdir          = Samples
+Feature               = Main
+
+[Payload.Legal]
+Source                = ..\..\..\..\accessibility-studio\build\INSTALLDIR\Release\x64\Legal
+TargetSubdir          = Legal
+Feature               = Main
+
+[Shortcut.StudioStart]
+Name                  = RaggieSoft Accessibility Studio
+TargetFile            = StudioIDE\AccessibilityStudio.exe
+Location              = StartMenu
+
+[Shortcut.HelpStart]
+Name                  = RaggieSoft Help Viewer
+TargetFile            = HelpViewer\RaggieSoftHelp.exe
+Location              = StartMenu
+
+[Registry.InstallPath]
+Root                  = HKLM
+Key                   = Software\RaggieSoft\Accessibility Studio
+Name                  = Install Path
+Value                 = [INSTALLDIR]
+
+[Registry.A11yExt]
+Root                  = HKCR
+Key                   = .a11yproj
+Name                  = @
+Value                 = RaggieSoft.AccessibilityStudio.Workspace
+
+[Registry.A11yProgId]
+Root                  = HKCR
+Key                   = RaggieSoft.AccessibilityStudio.Workspace
+Name                  = @
+Value                 = RaggieSoft Accessibility Studio Workspace

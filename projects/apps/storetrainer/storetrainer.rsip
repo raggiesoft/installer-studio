@@ -1,0 +1,67 @@
+; ==============================================================================
+; FILE: projects/apps/storetrainer/storetrainer.rsip
+; APPLICATION: RaggieSoft StoreTrainer (v2.0.0)
+; COMPILER: RaggieSoft Installer Studio (instbuild.exe -> .msi + Setup.exe)
+; ==============================================================================
+
+@include "..\..\shared\raggiesoft-defaults.rsii"
+
+[Package]
+Name                  = RaggieSoft StoreTrainer
+Tagline               = PC Game & Companion Trainer Organizer
+WebsiteLabel          = storetrainer.raggiesoft.com
+Version               = 2.0.0
+Manufacturer          = RaggieSoft
+UpgradeCode           = {E20427FF-5DC2-569E-A13A-D7237BE67EA2}
+Architecture          = $(ARCH)
+Scope                 = machine
+OutputName            = raggiesoft-storetrainer-$(ARCH)
+OutputDir             = out
+BuildBootstrapper     = true
+AboutUrl              = https://storetrainer.raggiesoft.com
+
+[Install]
+DefaultSubdir         = RaggieSoft\StoreTrainer
+StartMenuFolder       = RaggieSoft StoreTrainer
+MainExecutable        = StoreTrainer.exe
+
+[UI]
+WizardLayout          = standard
+AccentPrimaryHex      = #0EA5E9
+AccentSecondaryHex    = #10B981
+LicenseRtf            = License.rtf
+IconFile              = ..\..\..\..\windows\RaggieSoftApps\StoreTrainer\Assets\StoreTrainer.ico
+InstallButtonText     = &Install
+FinishLaunchCheckbox  = &Open RaggieSoft StoreTrainer when setup finishes
+
+[Payload.App]
+Source                = ..\..\..\..\windows\RaggieSoftApps\StoreTrainer\bin\Release\net10.0-windows\win-$(ARCH)\publish
+Feature               = Main
+
+[Shortcut.StartLink]
+Name                  = RaggieSoft StoreTrainer
+TargetFile            = StoreTrainer.exe
+Location              = StartMenu
+
+[Shortcut.DesktopLink]
+Name                  = RaggieSoft StoreTrainer
+TargetFile            = StoreTrainer.exe
+Location              = Desktop
+
+[Registry.InstallPath]
+Root                  = HKLM
+Key                   = Software\RaggieSoft\StoreTrainer
+Name                  = Install Path
+Value                 = [INSTALLDIR]
+
+[Registry.StfxExt]
+Root                  = HKCR
+Key                   = .stfx
+Name                  = @
+Value                 = RaggieSoft.StoreTrainer.Profile
+
+[Registry.StfxProgId]
+Root                  = HKCR
+Key                   = RaggieSoft.StoreTrainer.Profile
+Name                  = @
+Value                 = RaggieSoft StoreTrainer Game Profile
