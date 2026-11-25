@@ -9,21 +9,23 @@
 //     This file is the **Single Source of Truth Grammar (`constexpr` Descriptor Table)**
 //     for `.rsip` (RaggieSoft Installer Project) and `.rsii` (Include) manifests!
 //
-//   Why put the entire manifest schema (`v0.3`) into `constexpr` C++ tables?
+//   Why put the entire manifest schema (`v0.5`) into `constexpr` C++ tables?
 //     In C++20, `constexpr` arrays live directly in read-only compile-time memory
 //     with zero startup overhead. Defining every valid `.rsip` section, key name,
 //     type, default value, allowed enum tokens, and plain-English description here
 //     keeps THREE subsystems 100% synchronized forever:
 //       1. `RswValidator.hpp` (`instbuild.exe --validate --diagnostics=json`):
-//          Checks syntax, GUIDs, 3-part MSI versions, `&` mnemonics, `[Prerequisite.*]`
-//          rules, AND Microsoft's official Windows Installer Component Rules!
+//          Checks syntax, GUIDs, 3-part MSI versions, `&` mnemonics, WCAG 2.2 AA
+//          brand color contrast, `[Prerequisite.*]` rules, AND Microsoft's official
+//          Windows Installer Component Rules!
 //       2. `RswAiSpecEmitter.hpp` (`instbuild.exe --emit-ai-spec <dir>`):
 //          Deterministically generates `llms.txt`, `llms-full.txt`, and `SKILL.md`
 //          straight from the compiled binary with zero documentation drift!
 //       3. `InstallerStudio.exe` (Native Win32 C++20 Visual IDE):
 //          Powers Destination Folders, Setup Design (`Features -> Components ->
 //          KeyPaths`), Runtime Prerequisites, File Associations, Dual Dialog
-//          Designer, and the Lossless AST Source Editor!
+//          Designer (all 10 WizardLayout variations + Setup Types), and the
+//          Lossless AST Source Editor!
 // ================================================================================
 
 #pragma once
@@ -37,7 +39,7 @@ namespace rsw {
 enum class SectionCardinality {
     SingletonRequired, // Must appear once in a complete `.rsip` project (`[Package]`, `[Install]`)
     SingletonOptional, // May appear 0 or 1 times (`[Requirements]`, `[UI]`, `[Signing]`)
-    NamedRepeatable    // Appears 0 or more times as `[Prefix.<id>]` (`[Feature.*]`, `[Prerequisite.*]`, etc.)
+    NamedRepeatable    // Appears 0 or more times as `[Prefix.<id>]` (`[Feature.*]`, `[SetupType.*]`, etc.)
 };
 
 /// Value data types checked by `RswValidator` before `cabinet.dll` or `msi.dll` ever run.
@@ -80,26 +82,34 @@ inline constexpr std::string_view kAllowedTargetRoots =
 inline constexpr std::string_view kAllowedPrereqPresets =
     "Custom|DotNet10Desktop|DotNet10AspNet|DotNet9Desktop|DotNet8Desktop|EdgeWebView2|VcRedist2022";
 
+/// All selectable customer-facing `SetupWizard.exe` layout variations (`[UI] WizardLayout`).
+inline constexpr std::string_view kAllowedWizardLayouts =
+    "standard|wizard95|wizard97|aerowizard|fluentmica|oneclick|passivetoast|fullscreenblue|fullscreenteal|autorun16x9";
+
 // ================================================================================
-// 1. CANONICAL `.RSIP` SECTION DESCRIPTOR TABLE (`16` SECTIONS)
+// 1. CANONICAL `.RSIP` SECTION DESCRIPTOR TABLE (`18` SECTIONS)
 // ================================================================================
-inline constexpr std::array<SectionDescriptor, 16> kSectionDescriptors{{
+inline constexpr std::array<SectionDescriptor, 18> kSectionDescriptors{{
     {"Package",         SectionCardinality::SingletonRequired, true,
-     "Core product identity, MSI Summary Information, target CPU architecture (x64/arm64), and output settings."},
+     "Core product identity, MSI Summary Information, target CPU architecture (x64/arm64), and universal output settings."},
     {"Requirements",    SectionCardinality::SingletonOptional, false,
      "Minimum Windows 11 build gate (RtlGetVersion & MSI LaunchCondition), downgrade protection, and silent reboot exit code."},
     {"Install",         SectionCardinality::SingletonRequired, true,
      "Default installation subfolder under ProgramFiles64Folder/LocalAppDataFolder and Start Menu group."},
     {"UI",              SectionCardinality::SingletonOptional, false,
-     "Branding, RTF license, icon, C++ Glass/AeroWizard layout, and MSI.DLL Express/Custom dialog workflow preset."},
+     "Branding, RTF license, icon, 10 selectable C++ WizardLayout styles (including Wizard95, FluentMica, FullScreenBlue & ACME FullScreenTeal), SetupTypePreset, and MSI.DLL dialog workflow."},
     {"Signing",         SectionCardinality::SingletonOptional, false,
-     "Optional dual-layer Authenticode code signing (Product.msi first, then outer Setup.exe) via signtool.exe."},
+     "Optional dual-layer Authenticode / Microsoft Azure Artifact Signing (Product.msi first, then outer Setup.exe) via signtool.exe."},
+    {"SetupType",       SectionCardinality::NamedRepeatable,   false,
+     "Custom author-defined setup mode card ([SetupType.<id>]: Typical, Compact, Complete, Developer Workstation, etc.) with '&' mnemonic, description, feature tier, and icon."},
+    {"Billboard",       SectionCardinality::NamedRepeatable,   false,
+     "Optional rotating feature highlight card ([Billboard.<id>]) displayed during installation on FullScreenBlue, FullScreenTeal, and progress views."},
     {"Prerequisite",    SectionCardinality::NamedRepeatable,   false,
      "Runtime prerequisite ([Prerequisite.<id>]: .NET Desktop Runtime, WebView2, VC++ Redist, or Custom .exe/.msi) executed BEFORE msiexec with download/embedded/side-by-side delivery and reboot exit-code tracking."},
     {"MergeModule",     SectionCardinality::NamedRepeatable,   false,
      "Consumes a Windows Installer Merge Module ([MergeModule.<id>]: .msm) merging its Components, Files, Registry, and MergeModule.CABinet directly into Product.msi."},
     {"Feature",         SectionCardinality::NamedRepeatable,   false,
-     "Named MSI Feature or Sub-Feature ([Feature.<id>]) displayed in SetupWizard.exe and MSI SelectionTree."},
+     "Named MSI Feature or Sub-Feature ([Feature.<id>]) with plain-English Inclusion tiers (minimal/typical/complete/hidden) displayed in SetupWizard.exe and MSI SelectionTree."},
     {"Component",       SectionCardinality::NamedRepeatable,   false,
      "Explicit MSI Component ([Component.<id>]) enforcing Microsoft Single-Directory & KeyPath rules (File, Registry, or CreateFolder)."},
     {"Folder",          SectionCardinality::NamedRepeatable,   false,
@@ -123,8 +133,8 @@ inline constexpr std::array<SectionDescriptor, 16> kSectionDescriptors{{
 // ================================================================================
 inline constexpr std::array<FieldDescriptor, 45> kFieldDescriptors{{
     // --- [Package] ---
-    {"Package", "SchemaVersion",         FieldValueKind::String,      false, "0.3",               "",
-     "Manifest grammar version (`0.3`)."},
+    {"Package", "SchemaVersion",         FieldValueKind::String,      false, "0.5",               "",
+     "Manifest grammar version (`0.5`)."},
     {"Package", "Name",                  FieldValueKind::String,      true,  "",                  "",
      "Consumer-facing ProductName written to MSI Property table and VERSIONINFO."},
     {"Package", "Version",               FieldValueKind::MsiVersion,  true,  "",                  "",
@@ -233,50 +243,77 @@ inline constexpr std::array<FieldDescriptor, 45> kFieldDescriptors{{
 }};
 
 // ================================================================================
-// 3. EXTENDED `.RSIP` FIELD DESCRIPTOR TABLE (`v0.3` — PREREQUISITES, SELECTION
-//    TREE ATTRIBUTES, COMPONENTS, KEYPATHS, FOLDERS, FILE ASSOCIATIONS, & DIALOGS)
+// 3. EXTENDED `.RSIP` FIELD DESCRIPTOR TABLE (`v0.5` — WIZARD STYLES, SETUP TYPES,
+//    BILLBOARDS, PREREQUISITES, SELECTION TREE, COMPONENTS, FOLDERS, & DIALOGS)
 // ================================================================================
 inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>({
-    // --- Extended [Package], [Requirements], [UI], [Feature], [Payload], [Shortcut], [Registry] ---
+    // --- Extended [Package], [Requirements], [UI], [SetupType], [Billboard], [Feature], [Payload], [Shortcut], [Registry] ---
     {"Package",  "PackageKind",          FieldValueKind::EnumChoice,  false, "msi",               "msi|msm",
      "`msi` builds a standalone Enterprise `.msi` (+ optional `-setup.exe`); `msm` builds a reusable Merge Module (`.msm`)."},
     {"Package",  "BuildUniversal",       FieldValueKind::Boolean,     false, "false",             "",
-     "When `true` (or when `--universal` is passed to `instbuild.exe`), compiles both `x64` and `arm64` editions and emits `<UniversalOutputName>-offline-setup.exe` (both architectures in one portable EXE) plus `<UniversalOutputName>-setup.exe` (CPU-aware smart web stub when `UniversalDownloadBaseUrl` is set)."},
+     "When `true` (or when `--universal` is passed to `instbuild.exe`), compiles both `x64` and `arm64` editions and emits `<UniversalOutputName>-offline-setup.exe` plus `<UniversalOutputName>-setup.exe`."},
     {"Package",  "UniversalOutputName",  FieldValueKind::String,      false, "",                  "",
-     "Optional base filename stem for universal combined installers; defaults to `OutputName` stripped of `-$(ARCH)` (e.g. `raggiesoft-installer-studio`)."},
+     "Optional base filename stem for universal combined installers; defaults to `OutputName` stripped of `-$(ARCH)`."},
     {"Package",  "UniversalDownloadBaseUrl", FieldValueKind::String,  false, "",                  "",
-     "Optional HTTPS folder URL hosting `<OutputName>-x64-setup.exe` and `<OutputName>-arm64-setup.exe` so `<UniversalOutputName>-setup.exe` auto-detects host silicon via `IsWow64Process2` and downloads the exact native installer with SHA-256 verification."},
+     "Optional HTTPS folder URL hosting `<OutputName>-x64-setup.exe` and `<OutputName>-arm64-setup.exe` for the smart CPU-aware web stub."},
     {"Package",  "Tagline",              FieldValueKind::String,      false, "",                  "",
      "Short subtitle displayed beneath the product title in `SetupWizard.exe` and `InstallerStudio.exe`."},
     {"Package",  "WebsiteLabel",         FieldValueKind::String,      false, "",                  "",
      "Optional domain badge shown in the setup wizard footer (left blank if omitted — 100% white-label!)."},
     {"Requirements", "SilentRebootExitCode", FieldValueKind::Integer, false, "3010",              "",
-     "Process exit code returned in silent mode (`/s` / `/qn`) when a runtime prerequisite or MSI requests a Windows restart (`3010` standard MSI, or `9001` for RaggieSoft Launcher)."},
-    {"UI",       "WizardLayout",         FieldValueKind::EnumChoice,  false, "standard",          "standard|aerowizard|autorun16x9",
-     "`standard` shows the RaggieSoft Glass Setup Wizard; `aerowizard` uses modern Windows AeroWizard header chrome; `autorun16x9` shows the 640x480 16:9 Autorun stage."},
+     "Process exit code returned in silent mode (`/s` / `/qn`) when a runtime prerequisite or MSI requests a Windows restart (`3010` standard MSI)."},
+    {"UI",       "WizardLayout",         FieldValueKind::EnumChoice,  false, "standard",          kAllowedWizardLayouts,
+     "Selects the customer-facing `SetupWizard.exe` style: `standard` (RaggieSoft Glass), `wizard95` (1995 `#C0C0C0` 3D beveled + left sidebar), `wizard97` (classic top-banner), `aerowizard` (command bar + circular `<-` Back), `fluentmica` (Windows 11 Mica + left step rail), `oneclick` (compact 1-click splash), `passivetoast` (`/passive` progress), `fullscreenblue` (1995 `#000080` Cobalt wash + 3D dialog), `fullscreenteal` (1995 `#008080` Microsoft ACME Teal wash + 3D dialog), or `autorun16x9` (640x480 16:9 launcher)."},
+    {"UI",       "SetupTypePreset",      FieldValueKind::EnumChoice,  false, "express_custom",    "express_custom|win95_classic",
+     "`express_custom` displays Express / Compact / Custom cards; `win95_classic` displays classic 4-option Typical / Compact / Complete / Custom cards (overridden if custom `[SetupType.<id>]` sections are defined)."},
     {"UI",       "MsiDialogPreset",      FieldValueKind::EnumChoice,  false, "express_custom",    "express_custom|minimal",
-     "`express_custom` builds the full Express / Compact / Custom + SelectionTree + BrowseDlg + Shortcuts + Office Repair Mode workflow inside MSI.DLL's Dialog table; `minimal` builds a compact 3-screen MSI UI."},
+     "`express_custom` builds the full Express / Compact / Custom + SelectionTree + BrowseDlg + Shortcuts + Repair Mode workflow inside MSI.DLL's Dialog table; `minimal` builds a compact 3-screen MSI UI."},
     {"UI",       "AccentPrimaryHex",     FieldValueKind::String,      false, "#2563EB",           "",
-     "Primary header accent hex color (e.g. `#2563EB` Cobalt, `#38BDF8` Sky Cyan, `#14B8A6` Teal)."},
+     "Primary header/button accent hex color (checked against WCAG 2.2 AA contrast in `instbuild.exe --validate`)."},
     {"UI",       "AccentSecondaryHex",   FieldValueKind::String,      false, "#FBBF24",           "",
      "Secondary gradient accent hex color (e.g. `#FBBF24` Warm Gold, `#10B981` Emerald, `#EC4899` Rose)."},
     {"UI",       "ArtworkPng",           FieldValueKind::Path,        false, "",                  "",
-     "Optional `.png` 16:9 banner or square product/album/book cover rendered inside `SetupWizard.exe`."},
+     "Optional `.png` 16:9 banner, `164x314` wizard sidebar bitmap, or square product cover rendered inside `SetupWizard.exe`."},
     {"UI",       "WelcomeIntro",         FieldValueKind::String,      false, "",                  "",
-     "Optional introductory paragraph displayed beneath the Hero Brand Card on the Welcome page of `SetupWizard.exe`."},
+     "Optional introductory paragraph displayed on the Welcome page of `SetupWizard.exe`."},
     {"UI",       "ReadMeText",           FieldValueKind::String,      false, "",                  "",
      "Optional edition liner notes or ReadMe summary displayed in the ReadMe view of `autorun16x9` installers."},
     {"UI",       "ExpressDescription",   FieldValueKind::String,      false,
      "One-click setup into the default installation folder with recommended shortcuts. Skips extra prompts.", "",
      "Helper caption for the Express Setup mode card in `SetupWizard.exe` and MSI `SetupTypeDlg`."},
     {"UI",       "CompactDescription",   FieldValueKind::String,      false,
-     "Installs essential core application files (`Level = 1`) with minimal disk footprint.", "",
+     "Installs essential core application files (`Inclusion = minimal`) with minimal disk footprint.", "",
      "Helper caption for the Compact Core Setup mode card in `SetupWizard.exe` and MSI `SetupTypeDlg`."},
     {"UI",       "CustomDescription",    FieldValueKind::String,      false,
      "Choose features in the MSI SelectionTree, destination folder, Start Menu group, and shortcuts step by step.", "",
      "Helper caption for the Custom Setup mode card in `SetupWizard.exe` and MSI `SetupTypeDlg`."},
     {"UI",       "AuthorOrArtist",       FieldValueKind::String,      false, "",                  "",
      "Optional author or band credit badge displayed in `autorun16x9` book/album micro-installers."},
+
+    // --- [SetupType.<id>] (Custom Author-Defined Setup Types!) ---
+    {"SetupType","Title",                FieldValueKind::AcceleratorString, true, "",             "",
+     "Option card heading; MUST include a `&` keyboard mnemonic (e.g. `&Developer Workstation (Recommended)`)."},
+    {"SetupType","Description",          FieldValueKind::String,      false, "",                  "",
+     "Plain-English description of what this Setup Type installs."},
+    {"SetupType","Tier",                 FieldValueKind::EnumChoice,  false, "typical",           "minimal|typical|complete|custom",
+     "Target feature tier (`minimal` -> `INSTALLLEVEL=20`, `typical` -> `100`, `complete` -> `1000`, or `custom` -> opens `SelectionTree` + folder steps)."},
+    {"SetupType","Features",             FieldValueKind::String,      false, "",                  "",
+     "Optional comma-separated explicit Feature IDs (`ADDLOCAL=Main,Templates`) overriding `Tier`."},
+    {"SetupType","Glyph",                FieldValueKind::EnumChoice,  false, "Bolt",
+     "Sparkle|ShieldCheck|Bolt|Cube|Sliders|Blocks|Folder|PinGrid|Play|Gear",
+     "Vector icon badge displayed on this Setup Type card."},
+    {"SetupType","Recommended",          FieldValueKind::Boolean,     false, "false",             "",
+     "Marks this Setup Type as the default pre-selected choice on `WizardPage::SetupType`."},
+
+    // --- [Billboard.<id>] (Rotating Feature Highlight Cards During Installation!) ---
+    {"Billboard","Headline",             FieldValueKind::String,      true,  "",                  "",
+     "Short feature headline displayed on the rotating billboard card while files copy."},
+    {"Billboard","Body",                 FieldValueKind::String,      false, "",                  "",
+     "Supporting description displayed beneath `Headline` on the billboard card."},
+    {"Billboard","Glyph",                FieldValueKind::EnumChoice,  false, "Sparkle",
+     "Sparkle|ShieldCheck|Bolt|Cube|Sliders|Blocks|Folder|PinGrid|Play|Gear",
+     "Vector icon badge rendered on this billboard slide."},
+
     {"Feature",  "Inclusion",            FieldValueKind::EnumChoice,  false, "minimal",           "minimal|typical|complete|hidden",
      "Plain-English setup inclusion tier replacing raw numeric `InstallLevel`: `minimal` (`Level = 1`, installed in Minimal/Compact, Typical/Express, & Complete), `typical` (`Level = 50`, installed in Typical/Express & Complete, skipped in Minimal/Compact), `complete` (`Level = 150`, installed in Complete or when opted in inside Custom SelectionTree), or `hidden` (`Level = 0`, hidden/conditional)."},
     {"Feature",  "Parent",               FieldValueKind::String,      false, "",                  "",
@@ -482,10 +519,6 @@ inline constexpr std::string_view ValueKindToDisplayName(FieldValueKind kind) no
 }
 
 /// Plain-English setup inclusion tiers replacing raw numeric Windows Installer `InstallLevel` mystery values!
-///   - `Minimal`  (`Level = 1`)   : Core files installed in Minimal/Compact (`INSTALLLEVEL=20`), Typical/Express (`100`), & Complete (`1000`).
-///   - `Typical`  (`Level = 50`)  : Standard extras installed in Typical/Express & Complete, skipped in Minimal/Compact.
-///   - `Complete` (`Level = 150`) : Optional extras installed in Complete or when checked in Custom `SelectionTree`.
-///   - `Hidden`   (`Level = 0`)   : Hidden from `SelectionTree` unless conditionally enabled.
 enum class FeatureInclusionTier : int {
     Minimal  = 0,
     Typical  = 1,

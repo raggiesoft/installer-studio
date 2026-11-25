@@ -25,6 +25,8 @@
 #include "../common/RswPrerequisites.hpp"
 #include "../common/RswSuiteWorkspace.hpp"
 #include "../common/RswVersion.hpp"
+#include "../common/RswWcagContrast.hpp"
+#include "../common/RswWizardStyles.hpp"
 #include "../compiler/RswAiSpecEmitter.hpp"
 #include "../compiler/RswBootstrapperPackager.hpp"
 #include "../compiler/RswExtraPackages.hpp"
@@ -699,6 +701,65 @@ int wmain() {
                       matchedX64 && strippedOk,
                       "v0.4.5 ReadPeMachineArchitecture, x64 /dlib SignTool dispatch on ARM64, and StripExistingPeCertificates succeed");
             }
+        }
+
+        // 5F. Verify `v0.5.0` 10 Wizard Styles (`Wizard95`, `FluentMica`, `FullScreenBlue`, `FullScreenTeal` ACME),
+        //     `win95_classic` & `[SetupType.*]` Presets, `[Billboard.*]`, and WCAG 2.2 AA Contrast Enforcer!
+        {
+            bool allStylesValid = true;
+            const char* layoutTokens[] = {
+                "standard", "wizard95", "wizard97", "aerowizard", "fluentmica",
+                "oneclick", "passivetoast", "fullscreenblue", "fullscreenteal", "autorun16x9"
+            };
+            for (int k = 0; k < 10; ++k) {
+                const auto parsedKind = rsw::ParseWizardStyleKind(layoutTokens[k]);
+                if (!rsw::EqualsIgnoreCase(rsw::WizardStyleToken(parsedKind), layoutTokens[k])) {
+                    allStylesValid = false;
+                }
+                std::ostringstream layMan;
+                layMan << "[Package]\nName = StyleSample\nVersion = 0.5.0\nManufacturer = RaggieSoft\n"
+                       << "UpgradeCode = {5D8A1E22-3344-4F99-8A22-887766554433}\n"
+                       << "[Install]\nDefaultSubdir = RaggieSoft\\StyleSample\n"
+                       << "[UI]\nWizardLayout = " << layoutTokens[k] << "\nSetupTypePreset = win95_classic\n"
+                       << "[SetupType.Workstation]\nTitle = &Developer Workstation\nDescription = Full IDE\nTier = complete\nRecommended = true\n"
+                       << "[Billboard.Hero]\nHeadline = Retro ACME Setup\nBody = Classic #008080 Teal & #000080 Blue\nGlyph = Sparkle\n"
+                       << "[Payload.MainExe]\nSource = " << rsw::WideToUtf8(payloadToUse.wstring()) << "\n";
+                auto layDoc = rsw::ParseManifestText(layMan.str(), testWorkDir / L"style-sample.rsip");
+                if (!rsw::ValidateManifestDocument(layDoc, hostArch).IsOk()) {
+                    allStylesValid = false;
+                }
+            }
+
+            const auto win95Cards = rsw::BuildEffectiveSetupTypeOptions("win95_classic", {}, L"Exp", L"Cmp", L"Cus");
+            const COLORREF fixedYellow = rsw::wcag::SnapAccentToAccessibleBand(RGB(255, 255, 160));
+            const COLORREF fixedDark   = rsw::wcag::SnapAccentToAccessibleBand(RGB(6, 8, 18));
+            double w1 = 0.0, d1 = 0.0, w2 = 0.0, d2 = 0.0;
+            const bool contrastFixed =
+                rsw::wcag::MeetsDualThemeAccentContrast(fixedYellow, w1, d1) &&
+                rsw::wcag::MeetsDualThemeAccentContrast(fixedDark, w2, d2);
+
+            // Low-contrast `AccentPrimaryHex = #FFFFAA` should trigger WCAG warning `RSW055`!
+            std::ostringstream badHexMan;
+            badHexMan << "[Package]\nName = LowContrastSample\nVersion = 0.5.0\nManufacturer = RaggieSoft\n"
+                      << "UpgradeCode = {5D8A1E22-3344-4F99-8A22-887766554433}\n"
+                      << "[Install]\nDefaultSubdir = RaggieSoft\\LowContrast\n"
+                      << "[UI]\nAccentPrimaryHex = #FFFFAA\n"
+                      << "[Payload.MainExe]\nSource = " << rsw::WideToUtf8(payloadToUse.wstring()) << "\n";
+            auto badHexDoc = rsw::ParseManifestText(badHexMan.str(), testWorkDir / L"low-contrast.rsip");
+            const auto lowContrastRep = rsw::ValidateManifestDocument(badHexDoc, hostArch);
+            bool sawRsw055 = false;
+            for (const auto& dg : lowContrastRep.diagnostics) {
+                if (dg.code == "RSW055") sawRsw055 = true;
+            }
+
+            Check(allStylesValid &&
+                  win95Cards.size() == 4 &&
+                  win95Cards[0].tier == "typical" &&
+                  win95Cards[1].tier == "minimal" &&
+                  win95Cards[2].tier == "complete" &&
+                  win95Cards[3].tier == "custom" &&
+                  contrastFixed && sawRsw055,
+                  "v0.5.0 10 WizardLayout styles (incl. FullScreenBlue & ACME FullScreenTeal), win95_classic SetupTypes, & RSW055 WCAG Contrast Enforcer pass");
         }
     }
 

@@ -646,7 +646,34 @@ inline bool PackageSelfExtractingBootstrapper(
                   "Installs essential application files with minimal disk footprint using recommended folder defaults.")) << "\n"
              << "CustomDescription="  << sanitizeSingleLine(doc.GetString("UI", "", "CustomDescription",
                   "Choose a custom destination folder, Start Menu group, and shortcuts step by step before installing.")) << "\n"
-             << "AuthorOrArtist="     << sanitizeSingleLine(doc.GetString("UI", "", "AuthorOrArtist", "")) << "\n";
+             << "AuthorOrArtist="     << sanitizeSingleLine(doc.GetString("UI", "", "AuthorOrArtist", "")) << "\n"
+             << "SetupTypePreset="    << sanitizeSingleLine(doc.GetString("UI", "", "SetupTypePreset", "express_custom")) << "\n";
+
+    // Serialize optional author-defined `[SetupType.<id>]` cards (`Typical`, `Compact`, `Complete`, custom presets)
+    const auto setupTypeIds = doc.GetNamedSectionIds("SetupType");
+    brandIni << "SetupTypeCount=" << setupTypeIds.size() << "\n";
+    for (std::size_t i = 0; i < setupTypeIds.size(); ++i) {
+        const auto& sid = setupTypeIds[i];
+        const std::string pfx = "SetupType_" + std::to_string(i) + "_";
+        brandIni << pfx << "Id="          << sanitizeSingleLine(sid) << "\n"
+                 << pfx << "Title="       << sanitizeSingleLine(doc.GetString("SetupType", sid, "Title", "&" + sid)) << "\n"
+                 << pfx << "Description=" << sanitizeSingleLine(doc.GetString("SetupType", sid, "Description", "")) << "\n"
+                 << pfx << "Tier="        << sanitizeSingleLine(doc.GetString("SetupType", sid, "Tier", "typical")) << "\n"
+                 << pfx << "Features="    << sanitizeSingleLine(doc.GetString("SetupType", sid, "Features", "")) << "\n"
+                 << pfx << "Glyph="       << sanitizeSingleLine(doc.GetString("SetupType", sid, "Glyph", "Bolt")) << "\n"
+                 << pfx << "Recommended=" << (doc.GetBool("SetupType", sid, "Recommended", i == 0) ? "true" : "false") << "\n";
+    }
+
+    // Serialize optional `[Billboard.<id>]` slides shown on full-screen / progress surfaces during installation
+    const auto billboardIds = doc.GetNamedSectionIds("Billboard");
+    brandIni << "BillboardCount=" << billboardIds.size() << "\n";
+    for (std::size_t i = 0; i < billboardIds.size(); ++i) {
+        const auto& bid = billboardIds[i];
+        const std::string pfx = "Billboard_" + std::to_string(i) + "_";
+        brandIni << pfx << "Headline=" << sanitizeSingleLine(doc.GetString("Billboard", bid, "Headline", "")) << "\n"
+                 << pfx << "Body="     << sanitizeSingleLine(doc.GetString("Billboard", bid, "Body", "")) << "\n"
+                 << pfx << "Glyph="    << sanitizeSingleLine(doc.GetString("Billboard", bid, "Glyph", "Sparkle")) << "\n";
+    }
     const std::string brandStr = brandIni.str();
 
     const std::string licenseRtf = LoadOrSynthesizeLicenseRtf(

@@ -45,6 +45,8 @@
 #include "../common/RswPlatform.hpp"
 #include "../common/RswPrerequisites.hpp"
 #include "../common/RswVersion.hpp"
+#include "../common/RswWcagContrast.hpp"
+#include "../common/RswWizardStyles.hpp"
 
 #include <msi.h>
 #include <msiquery.h>
@@ -78,10 +80,12 @@ constexpr UINT WM_RSW_REQUEST_UAC     = WM_APP + 14;
 
 // Accessible Win32 Child Control IDs (supporting `Tab`, `Arrow`, & `Alt+Mnemonic` traversal)
 enum ControlId : int {
-    // Standard Glass `SetupType` 3-card radio group (`48x48` vector badges)
+    // `SetupType` 1..4-card radio group (`Express/Compact/Custom` OR `Typical/Compact/Complete/Custom`!)
     IDC_MODE_EXPRESS     = 1001,
     IDC_MODE_COMPACT     = 1002,
     IDC_MODE_CUSTOM      = 1003,
+    IDC_MODE_CARD_4      = 1004,
+    IDC_ONECLICK_CUST    = 1008,
 
     // Standard Glass `Maintenance` 3-card radio group (`48x48` vector badges)
     IDC_MAINT_MODIFY     = 1010,
@@ -153,6 +157,7 @@ enum class WizardPage {
 enum class SelectedAction {
     InstallExpress,
     InstallCompact,
+    InstallComplete,
     InstallCustom,
     MaintModify,
     MaintQuickRepair,
@@ -160,7 +165,7 @@ enum class SelectedAction {
     MaintUninstall
 };
 
-///Parsed UTF-8 `[Branding]` resource (`#202`) stamped into `<Product>-setup.exe` by `instbuild.exe`.
+/// Parsed UTF-8 `[Branding]` resource (`#202`) stamped into `<Product>-setup.exe` by `instbuild.exe`.
 struct BrandingConfig {
     std::wstring productName        = L"Application";
     std::wstring tagline            = L"Native Windows Desktop Software";
@@ -178,6 +183,7 @@ struct BrandingConfig {
     int          silentRebootCode   = 3010;
     std::uint64_t uncompressedMsiSz = 0;
     std::wstring osLaunchMessage    = L"This application requires Windows 11 (Build 22000) or later.";
+    rsw::WizardStyleKind wizardStyle = rsw::WizardStyleKind::StandardGlass;
     bool         isAutorun16x9      = false;
     bool         isAeroWizard       = false;
     COLORREF     accentPrimary      = RGB(37, 99, 235);
@@ -194,6 +200,9 @@ struct BrandingConfig {
     std::wstring compactDesc        = L"Installs essential application files with minimal disk footprint using recommended folder defaults.";
     std::wstring customDesc         = L"Choose a custom destination folder, Start Menu group, and shortcuts step by step before installing.";
     std::wstring authorOrArtist;
+    std::string  setupTypePreset    = "express_custom";
+    std::vector<rsw::SetupTypeOptionSpec> setupTypes;
+    std::vector<rsw::BillboardSlideSpec>  billboards;
 };
 
 /// Unescapes `\n` sequences serialized into single-line `[Branding]` values back into `\r\n`.
@@ -277,8 +286,9 @@ BrandingConfig LoadBrandingConfigFromResource() {
         cfg.uncompressedMsiSz = static_cast<std::uint64_t>(std::strtoull(kv["UncompressedMsiSize"].c_str(), nullptr, 10));
     }
     cfg.osLaunchMessage  = getW("OsLaunchMessage", cfg.osLaunchMessage);
-    cfg.isAutorun16x9    = rsw::EqualsIgnoreCase(kv["WizardLayout"], "autorun16x9");
-    cfg.isAeroWizard     = rsw::EqualsIgnoreCase(kv["WizardLayout"], "aerowizard");
+    cfg.wizardStyle      = rsw::ParseWizardStyleKind(kv["WizardLayout"]);
+    cfg.isAutorun16x9    = (cfg.wizardStyle == rsw::WizardStyleKind::Autorun16x9);
+    cfg.isAeroWizard     = (cfg.wizardStyle == rsw::WizardStyleKind::AeroWizard);
     cfg.accentPrimary    = rsw::ui::ParseHexColor(kv["AccentPrimaryHex"], cfg.accentPrimary);
     cfg.accentSecondary  = rsw::ui::ParseHexColor(kv["AccentSecondaryHex"], cfg.accentSecondary);
     cfg.welcomeHeadline  = getW("WelcomeHeadline", L"Welcome to " + cfg.productName + L" Setup");
@@ -293,6 +303,50 @@ BrandingConfig LoadBrandingConfigFromResource() {
     cfg.compactDesc      = getW("CompactDescription", cfg.compactDesc);
     cfg.customDesc       = getW("CustomDescription", cfg.customDesc);
     cfg.authorOrArtist   = getW("AuthorOrArtist", L"");
+    if (!kv["SetupTypePreset"].empty()) {
+        cfg.setupTypePreset = rsw::TrimAscii(kv["SetupTypePreset"]);
+    }
+
+    // Parse optional `[SetupType.<id>]` custom setup type cards (`0..4`)
+    std::vector<rsw::SetupTypeOptionSpec> customTypes;
+    const int stCount = std::clamp(std::atoi(kv["SetupTypeCount"].c_str()), 0, 8);
+    for (int i = 0; i < stCount; ++i) {
+        const std::string pfx = "SetupType_" + std::to_string(i) + "_";
+        rsw::SetupTypeOptionSpec st{};
+        st.id                  = rsw::TrimAscii(kv[pfx + "Id"]);
+        st.titleMnemonic       = getW((pfx + "Title").c_str(), L"&" + rsw::Utf8ToWide(st.id.empty() ? "Standard" : st.id));
+        st.description         = getW((pfx + "Description").c_str(), L"");
+        st.tier                = rsw::AsciiLower(rsw::TrimAscii(kv[pfx + "Tier"]));
+        if (st.tier.empty()) st.tier = "typical";
+        st.explicitFeaturesCsv = rsw::TrimAscii(kv[pfx + "Features"]);
+        st.glyph               = rsw::ParseSetupGlyphName(kv[pfx + "Glyph"], rsw::ui::GlassGlyph::Bolt);
+        st.recommended         = rsw::EqualsIgnoreCase(kv[pfx + "Recommended"], "true");
+        if (st.tier == "minimal") {
+            st.rimRgb = rsw::ui::brand::kRaggieBlue; st.accentRgb = rsw::ui::brand::kSkyCyan;
+        } else if (st.tier == "complete") {
+            st.rimRgb = rsw::ui::brand::kEmeraldOk;  st.accentRgb = rsw::ui::brand::kWarmGold;
+        } else if (st.tier == "custom") {
+            st.rimRgb = rsw::ui::brand::kVioletTune; st.accentRgb = rsw::ui::brand::kWarmGold;
+        } else {
+            st.rimRgb = rsw::ui::brand::kSkyCyan;    st.accentRgb = rsw::ui::brand::kWarmGold;
+        }
+        customTypes.push_back(std::move(st));
+    }
+    cfg.setupTypes = rsw::BuildEffectiveSetupTypeOptions(
+        cfg.setupTypePreset, customTypes, cfg.expressDesc, cfg.compactDesc, cfg.customDesc);
+
+    // Parse optional `[Billboard.<id>]` installation feature showcase cards
+    const int bbCount = std::clamp(std::atoi(kv["BillboardCount"].c_str()), 0, 16);
+    for (int i = 0; i < bbCount; ++i) {
+        const std::string pfx = "Billboard_" + std::to_string(i) + "_";
+        rsw::BillboardSlideSpec bb{};
+        bb.headline = getW((pfx + "Headline").c_str(), L"");
+        bb.body     = getW((pfx + "Body").c_str(), L"");
+        bb.glyph    = rsw::ParseSetupGlyphName(kv[pfx + "Glyph"], rsw::ui::GlassGlyph::Sparkle);
+        if (!bb.headline.empty()) {
+            cfg.billboards.push_back(std::move(bb));
+        }
+    }
     return cfg;
 }
 
@@ -543,6 +597,7 @@ public:
     BrandingConfig          cfg{};
     rsw::ui::RswTheme       theme{};
     HWND                    hWnd              = nullptr;
+    HWND                    hBackdropWnd      = nullptr;
     HMODULE                 hRichEditDll      = nullptr;
     HICON                   hAppIconBig       = nullptr;
     HICON                   hAppIconSmall     = nullptr;
@@ -558,6 +613,11 @@ public:
 
     WizardPage              currentPage       = WizardPage::Welcome;
     SelectedAction          selectedAction    = SelectedAction::InstallExpress;
+    int                     selectedSetupTypeIdx = 0;
+    std::string             selectedExplicitFeaturesCsv;
+    std::wstring            selectedSetupTypeLabel = L"Express Setup (Recommended)";
+    bool                    oneClickExpanded  = false;
+    bool                    passiveAutoStarted = false;
     int                     autorunChoiceIdx  = 0; // 0..3 in `autorun16x9` 2x2 grid
     bool                    alreadyInstalled  = false;
     std::wstring            installedProductCode;
@@ -580,8 +640,10 @@ public:
     std::vector<rsw::RuntimePrerequisiteSpec>       prereqSpecs;
     std::vector<std::size_t>                        pendingPrereqIndices;
 
-    // Standard Glass & Autorun child controls
+    // Standard Glass, Classic 3D, Fluent Mica, One-Click, & Autorun child controls
+    HWND hModeCards[4] = {nullptr, nullptr, nullptr, nullptr};
     HWND hModeExpress = nullptr, hModeCompact = nullptr, hModeCustom = nullptr;
+    HWND hBtnOneClickCust = nullptr;
     HWND hMaintModify = nullptr, hMaintRepair = nullptr, hMaintRemove = nullptr;
     HWND hRepairQuick = nullptr, hRepairFull  = nullptr;
     HWND hUninstCache = nullptr, hUninstPrefs = nullptr;
@@ -641,6 +703,140 @@ public:
         hFontBody     = rsw::ui::CreateScaledFont(L"Segoe UI", 10, FW_NORMAL,   dpi, ts);
         hFontBold     = rsw::ui::CreateScaledFont(L"Segoe UI", 10, FW_SEMIBOLD, dpi, ts);
         hFontSmall    = rsw::ui::CreateScaledFont(L"Segoe UI",  9, FW_NORMAL,   dpi, ts);
+    }
+
+    bool IsCompactOneClickSplash() const noexcept {
+        return (cfg.wizardStyle == rsw::WizardStyleKind::OneClick) && !oneClickExpanded && !alreadyInstalled;
+    }
+
+    bool IsPassiveToastMode() const noexcept {
+        return (cfg.wizardStyle == rsw::WizardStyleKind::PassiveToast);
+    }
+
+    bool UsesClassicWelcomeSidebar() const noexcept {
+        return (rsw::UsesClassic3dDialogSheet(cfg.wizardStyle) ||
+                cfg.wizardStyle == rsw::WizardStyleKind::Wizard97) &&
+               (currentPage == WizardPage::Welcome || currentPage == WizardPage::Finished);
+    }
+
+    int FluentStepStageIndex() const noexcept {
+        switch (currentPage) {
+            case WizardPage::Welcome:
+            case WizardPage::AutorunReadMe:   return 0;
+            case WizardPage::License:         return 1;
+            case WizardPage::SetupType:       return 2;
+            case WizardPage::CustomFeatures:
+            case WizardPage::CustomFolder:
+            case WizardPage::CustomShortcuts: return 3;
+            case WizardPage::ReadyToInstall:
+            case WizardPage::Maintenance:
+            case WizardPage::RepairMode:
+            case WizardPage::SafeUninstall:   return 4;
+            case WizardPage::Installing:      return 5;
+            case WizardPage::Finished:        return 6;
+        }
+        return 0;
+    }
+
+    void RefreshEffectiveThemeAndChrome() noexcept {
+        theme.Refresh(cfg.accentPrimary, cfg.accentSecondary);
+        rsw::ApplyWizardStyleThemeOverrides(cfg.wizardStyle, theme);
+        if (hWnd) {
+            rsw::ui::ApplyWindowChromeAndA11y(hWnd, theme);
+            if (!theme.isHighContrast) {
+                const int backdropVal = (cfg.wizardStyle == rsw::WizardStyleKind::FluentMica) ? 4 : 1;
+                ::DwmSetWindowAttribute(hWnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdropVal, sizeof(backdropVal));
+            }
+        }
+        if (hBackdropWnd) {
+            ::InvalidateRect(hBackdropWnd, nullptr, TRUE);
+        }
+    }
+
+    void SyncSelectedSetupTypeIndex(int idx) {
+        if (cfg.setupTypes.empty()) {
+            cfg.setupTypes = rsw::BuildEffectiveSetupTypeOptions(
+                cfg.setupTypePreset, {}, cfg.expressDesc, cfg.compactDesc, cfg.customDesc);
+        }
+        const int clamped = std::clamp(idx, 0, static_cast<int>(cfg.setupTypes.size()) - 1);
+        selectedSetupTypeIdx = clamped;
+        const auto& st = cfg.setupTypes[static_cast<std::size_t>(clamped)];
+        selectedExplicitFeaturesCsv = st.explicitFeaturesCsv;
+        selectedSetupTypeLabel      = StripMnemonics(st.titleMnemonic);
+        const std::string t = rsw::AsciiLower(st.tier);
+        if (t == "minimal")       selectedAction = SelectedAction::InstallCompact;
+        else if (t == "complete") selectedAction = SelectedAction::InstallComplete;
+        else if (t == "custom")   selectedAction = SelectedAction::InstallCustom;
+        else                      selectedAction = SelectedAction::InstallExpress;
+    }
+
+    void PopulateSetupTypeCardsFromConfig() {
+        if (cfg.setupTypes.empty()) {
+            cfg.setupTypes = rsw::BuildEffectiveSetupTypeOptions(
+                cfg.setupTypePreset, {}, cfg.expressDesc, cfg.compactDesc, cfg.customDesc);
+        }
+        int recIdx = 0;
+        for (std::size_t i = 0; i < cfg.setupTypes.size() && i < 4; ++i) {
+            if (cfg.setupTypes[i].recommended) { recIdx = static_cast<int>(i); break; }
+        }
+        for (int i = 0; i < 4; ++i) {
+            HWND hCard = hModeCards[i];
+            if (!hCard) continue;
+            if (static_cast<std::size_t>(i) < cfg.setupTypes.size()) {
+                const auto& st = cfg.setupTypes[static_cast<std::size_t>(i)];
+                for (auto& cv : cardVisuals) {
+                    if (cv->hwnd == hCard) {
+                        cv->glyph         = st.glyph;
+                        cv->rimRgb        = st.rimRgb;
+                        cv->accentRgb     = st.accentRgb;
+                        cv->titleMnemonic = st.titleMnemonic;
+                        cv->description   = st.description;
+                        break;
+                    }
+                }
+                const std::wstring uiaName = st.titleMnemonic + L" — " + st.description;
+                ::SendMessageW(hCard, WM_SETREDRAW, FALSE, 0);
+                ::SetWindowTextW(hCard, uiaName.c_str());
+                ::SendMessageW(hCard, BM_SETCHECK, (i == recIdx) ? BST_CHECKED : BST_UNCHECKED, 0);
+                ::SendMessageW(hCard, WM_SETREDRAW, TRUE, 0);
+                ::InvalidateRect(hCard, nullptr, FALSE);
+            } else {
+                ::SendMessageW(hCard, BM_SETCHECK, BST_UNCHECKED, 0);
+            }
+        }
+        SyncSelectedSetupTypeIndex(recIdx);
+    }
+
+    void ComputeLogicalDialogSize(int& outLogW, int& outLogH) const noexcept {
+        if (cfg.isAutorun16x9) {
+            outLogW = 640; outLogH = 480;
+        } else if (IsPassiveToastMode()) {
+            outLogW = 500; outLogH = 236;
+        } else if (IsCompactOneClickSplash()) {
+            outLogW = 540; outLogH = 310;
+        } else if (cfg.wizardStyle == rsw::WizardStyleKind::FluentMica) {
+            outLogW = 680; outLogH = 496;
+        } else {
+            outLogW = 620; outLogH = 490;
+        }
+    }
+
+    void ResizeDialogForActiveStyle() {
+        if (!hWnd) return;
+        const UINT dpi = ::GetDpiForWindow(hWnd);
+        int logW = 620, logH = 490;
+        ComputeLogicalDialogSize(logW, logH);
+        RECT winRc{0, 0,
+                   rsw::ui::ScalePx(logW, dpi, theme.textScalePercent),
+                   rsw::ui::ScalePx(logH, dpi, theme.textScalePercent)};
+        const DWORD style = static_cast<DWORD>(::GetWindowLongW(hWnd, GWL_STYLE));
+        ::AdjustWindowRectExForDpi(&winRc, style, FALSE, 0, dpi);
+        const int totalW = winRc.right - winRc.left;
+        const int totalH = winRc.bottom - winRc.top;
+        const int posX   = std::max(0, (::GetSystemMetrics(SM_CXSCREEN) - totalW) / 2);
+        const int posY   = std::max(0, (::GetSystemMetrics(SM_CYSCREEN) - totalH) / 2);
+        ::SetWindowPos(hWnd, nullptr, posX, posY, totalW, totalH, SWP_NOZORDER | SWP_NOACTIVATE);
+        ApplyFontsAndLayout();
     }
 
     /// Checks whether a product sharing `cfg.upgradeCode` is already installed on this PC
@@ -1145,21 +1341,30 @@ public:
                 0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), hInst, nullptr);
         };
 
-        // 1. Standard Glass `SetupType` 3-Card Radio Group (`Bolt`, `Cube`, `Sliders`!)
-        hModeExpress = CreateOptionRadioCard(
+        // 1. `SetupType` 1..4-Card Radio Group (`Express/Compact/Custom` OR `Typical/Compact/Complete/Custom`!)
+        hModeCards[0] = CreateOptionRadioCard(
             IDC_MODE_EXPRESS, true, false,
             rsw::ui::GlassGlyph::Bolt, rsw::ui::brand::kSkyCyan, rsw::ui::brand::kWarmGold,
             L"&Express Setup (Recommended)", cfg.expressDesc);
-        hModeCompact = CreateOptionRadioCard(
+        hModeCards[1] = CreateOptionRadioCard(
             IDC_MODE_COMPACT, false, false,
             rsw::ui::GlassGlyph::Cube, rsw::ui::brand::kRaggieBlue, rsw::ui::brand::kSkyCyan,
             L"Co&mpact Core Setup", cfg.compactDesc);
-        hModeCustom = CreateOptionRadioCard(
+        hModeCards[2] = CreateOptionRadioCard(
             IDC_MODE_CUSTOM, false, false,
             rsw::ui::GlassGlyph::Sliders, rsw::ui::brand::kVioletTune, rsw::ui::brand::kWarmGold,
             L"C&ustom Setup (Choose Features, Folder && Shortcuts)", cfg.customDesc);
-        LinkSiblingGroup({hModeExpress, hModeCompact, hModeCustom});
-        ::SendMessageW(hModeExpress, BM_SETCHECK, BST_CHECKED, 0);
+        hModeCards[3] = CreateOptionRadioCard(
+            IDC_MODE_CARD_4, false, false,
+            rsw::ui::GlassGlyph::Blocks, rsw::ui::brand::kEmeraldOk, rsw::ui::brand::kWarmGold,
+            L"Com&plete", L"Installs all program features, templates, documentation, and optional extras.");
+        hModeExpress = hModeCards[0];
+        hModeCompact = hModeCards[1];
+        hModeCustom  = hModeCards[2];
+        LinkSiblingGroup({hModeCards[0], hModeCards[1], hModeCards[2], hModeCards[3]});
+        PopulateSetupTypeCardsFromConfig();
+
+        hBtnOneClickCust = mkBtn(L"C&ustomize...", IDC_ONECLICK_CUST, BS_PUSHBUTTON);
 
         // 2. Standard Glass `Maintenance` 3-Card Radio Group (`Blocks`, `ShieldCheck`, `Uninstall`!)
         hMaintModify = CreateOptionRadioCard(
@@ -1266,12 +1471,13 @@ public:
 
         // Subclass all push buttons so Dark Mode, Light Mode, & High Contrast render seamlessly
         // without `ComCtl32`'s hardcoded `#FFFFFF` white button background!
-        rsw::ui::AttachAccessiblePushButtonSubclass(hFeatResetBtn, &theme, false, false);
-        rsw::ui::AttachAccessiblePushButtonSubclass(hDirBrowse,    &theme, false, false);
-        rsw::ui::AttachAccessiblePushButtonSubclass(hFinViewLog,   &theme, false, false);
-        rsw::ui::AttachAccessiblePushButtonSubclass(hBtnBack,      &theme, false, true);
-        rsw::ui::AttachAccessiblePushButtonSubclass(hBtnPrimary,   &theme, true,  true);
-        rsw::ui::AttachAccessiblePushButtonSubclass(hBtnCancel,    &theme, false, true);
+        rsw::ui::AttachAccessiblePushButtonSubclass(hFeatResetBtn,   &theme, false, false);
+        rsw::ui::AttachAccessiblePushButtonSubclass(hDirBrowse,      &theme, false, false);
+        rsw::ui::AttachAccessiblePushButtonSubclass(hFinViewLog,     &theme, false, false);
+        rsw::ui::AttachAccessiblePushButtonSubclass(hBtnOneClickCust,&theme, false, true);
+        rsw::ui::AttachAccessiblePushButtonSubclass(hBtnBack,        &theme, false, true);
+        rsw::ui::AttachAccessiblePushButtonSubclass(hBtnPrimary,     &theme, true,  true);
+        rsw::ui::AttachAccessiblePushButtonSubclass(hBtnCancel,      &theme, false, true);
 
         rsw::ui::ApplyDarkScrollbarTheme(hLicRich,    theme);
         rsw::ui::ApplyDarkScrollbarTheme(hReadMeEdit, theme);
@@ -1332,7 +1538,7 @@ public:
         }
         for (HWND h : {hLicRich, hLicAccept, hReadMeEdit, hFeatTree, hFeatResetBtn, hDirEdit, hDirBrowse,
                        hSmEdit, hDeskScChk, hFileAssocChk, hUninstCache, hUninstPrefs,
-                       hProgStatus, hFinLaunch, hFinViewLog, hBtnBack, hBtnCancel}) {
+                       hProgStatus, hFinLaunch, hFinViewLog, hBtnOneClickCust, hBtnBack, hBtnCancel}) {
             if (h) ::SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(hFontBody), TRUE);
         }
         ApplyRichEditReadableColors();
@@ -1348,11 +1554,12 @@ public:
         const int footerY = H - footerH;
         const int btnY    = footerY + (footerH - S(32)) / 2;
 
-        // Universal Footer Buttons (`[< &Back]  [&Next >]  [Cancel]` positioned consistently in the Wizard97 footer!)
+        // Universal Footer Buttons (`[< &Back]  [&Next >]  [Cancel]` + optional `[C&ustomize...]` on One-Click Splash!)
         ::SetWindowTextW(hBtnBack, L"< &Back");
-        ::MoveWindow(hBtnBack,    W - S(320), btnY, S(94),  S(32), TRUE);
-        ::MoveWindow(hBtnPrimary, W - S(218), btnY, S(112), S(32), TRUE);
-        ::MoveWindow(hBtnCancel,  W - S(98),  btnY, S(80),  S(32), TRUE);
+        ::MoveWindow(hBtnOneClickCust, S(18),      btnY, S(118), S(32), TRUE);
+        ::MoveWindow(hBtnBack,         W - S(320), btnY, S(94),  S(32), TRUE);
+        ::MoveWindow(hBtnPrimary,      W - S(218), btnY, S(112), S(32), TRUE);
+        ::MoveWindow(hBtnCancel,       W - S(98),  btnY, S(80),  S(32), TRUE);
 
         if (cfg.isAutorun16x9) {
             // `640 x 480` 16:9 CD-Autorun Geometry:
@@ -1386,21 +1593,37 @@ public:
 
             ::MoveWindow(hFinLaunch,  S(26), footerY - S(52), W - S(190), S(26), TRUE);
             ::MoveWindow(hFinViewLog, W - S(158), footerY - S(54), S(140), S(30), TRUE);
+        } else if (IsPassiveToastMode()) {
+            // `500 x 236` Non-Interactive `/passive` Toast Banner
+            ::MoveWindow(hProgStatus, S(24), S(104), W - S(48), S(24), TRUE);
+            ::MoveWindow(hProgBar,    S(24), S(134), W - S(48), S(22), TRUE);
+        } else if (IsCompactOneClickSplash()) {
+            // `540 x 310` One-Click Express Splash Card
+            ::MoveWindow(hLicAccept,  S(18), footerY - S(34), W - S(36), S(26), TRUE);
+            ::MoveWindow(hProgStatus, S(24), S(116), W - S(48), S(24), TRUE);
+            ::MoveWindow(hProgBar,    S(24), S(148), W - S(48), S(22), TRUE);
+            ::MoveWindow(hFinLaunch,  S(22), footerY - S(38), W - S(180), S(26), TRUE);
+            ::MoveWindow(hFinViewLog, W - S(152), footerY - S(40), S(134), S(28), TRUE);
         } else {
-            // Standard RaggieSoft Glass Wizard (`620 x 490`):
-            //   - `y = 0..92`    : `DrawGlassTopHeader` (`64x64` Step Medallion + `4px` Accent Bar)
-            //   - `y = 104..424` : Step content canvas
-            const int bodyTop = S(104);
-            const int cardX   = S(18);
-            const int cardW   = W - S(36);
+            // Multi-Step Wizard Canvas (`StandardGlass`, `Wizard95`, `Wizard97`, `AeroWizard`,
+            // `FluentMica`, `FullScreenBlue`, `FullScreenTeal`, & expanded `OneClick`):
+            const bool isMica       = (cfg.wizardStyle == rsw::WizardStyleKind::FluentMica);
+            const bool isClassicHdr = rsw::UsesClassic3dDialogSheet(cfg.wizardStyle) ||
+                                      (cfg.wizardStyle == rsw::WizardStyleKind::Wizard97);
+            const int bodyTop = isMica ? S(42) : (isClassicHdr ? S(80) : S(104));
+            const int cardX   = isMica ? S(180) : S(18);
+            const int cardW   = W - cardX - S(18);
 
-            // `SetupType`: 3 Full-Row `48x48` Vector Option Cards (`72px` tall each!)
-            const int optStart = bodyTop + S(38);
-            const int optH     = S(72);
-            const int optGap   = S(10);
-            ::MoveWindow(hModeExpress, cardX, optStart,                      cardW, optH, TRUE);
-            ::MoveWindow(hModeCompact, cardX, optStart + (optH + optGap),    cardW, optH, TRUE);
-            ::MoveWindow(hModeCustom,  cardX, optStart + (optH + optGap) * 2,cardW, optH, TRUE);
+            // `SetupType`: 1..4 Full-Row Vector Option Cards (`Express/Compact/Custom` or `Typical/Compact/Complete/Custom`!)
+            const int nCards   = std::clamp<int>(static_cast<int>(cfg.setupTypes.size()), 1, 4);
+            const int optStart = bodyTop + ((nCards >= 4) ? S(30) : S(38));
+            const int optH     = (nCards >= 4) ? S(62) : S(72);
+            const int optGap   = (nCards >= 4) ? S(6)  : S(10);
+            for (int i = 0; i < 4; ++i) {
+                if (hModeCards[i]) {
+                    ::MoveWindow(hModeCards[i], cardX, optStart + (optH + optGap) * i, cardW, optH, TRUE);
+                }
+            }
 
             // `Maintenance`: Hero Brand Card (`104..166`) + 3 Option Cards (`66px` tall each!)
             const int mntStart = bodyTop + S(74);
@@ -1417,8 +1640,8 @@ public:
             ::MoveWindow(hRepairFull,  cardX, repStart + repH + S(12),cardW, repH, TRUE);
 
             // `SafeUninstall`: Hero Brand Card + 2 safe unchecked checkboxes
-            ::MoveWindow(hUninstCache, S(28), bodyTop + S(162), W - S(56), S(26), TRUE);
-            ::MoveWindow(hUninstPrefs, S(28), bodyTop + S(196), W - S(56), S(26), TRUE);
+            ::MoveWindow(hUninstCache, cardX + S(10), bodyTop + S(162), cardW - S(20), S(26), TRUE);
+            ::MoveWindow(hUninstPrefs, cardX + S(10), bodyTop + S(196), cardW - S(20), S(26), TRUE);
 
             // `License`: Step intro + High-Contrast RichEdit + Accept checkbox
             ::MoveWindow(hLicRich,   cardX, bodyTop + S(30), cardW, footerY - bodyTop - S(76), TRUE);
@@ -1431,8 +1654,8 @@ public:
             ::MoveWindow(hFeatResetBtn, cardX, bodyTop + S(38) + treeH, S(132), S(28), TRUE);
 
             // `CustomFolder`: Path `EDIT` + `&Browse...` (Disk Space Glass Card painted below!)
-            ::MoveWindow(hDirLabel,  cardX, bodyTop + S(38), cardW,      S(22), TRUE);
-            ::MoveWindow(hDirEdit,   cardX, bodyTop + S(64), cardW - S(98), S(30), TRUE);
+            ::MoveWindow(hDirLabel,  cardX, bodyTop + S(38), cardW,          S(22), TRUE);
+            ::MoveWindow(hDirEdit,   cardX, bodyTop + S(64), cardW - S(98),  S(30), TRUE);
             ::MoveWindow(hDirBrowse, cardX + cardW - S(90), bodyTop + S(63), S(90), S(32), TRUE);
 
             // `CustomShortcuts`: Start Menu group + Desktop & File Association checkboxes
@@ -1442,12 +1665,13 @@ public:
             ::MoveWindow(hFileAssocChk, cardX, bodyTop + S(160), cardW, S(28), TRUE);
 
             // `Installing`: Hero Brand Card + Glass Progress Card (`hProgStatus` + `hProgBar`)
-            ::MoveWindow(hProgStatus, S(34), bodyTop + S(136), W - S(68), S(24), TRUE);
-            ::MoveWindow(hProgBar,    S(34), bodyTop + S(168), W - S(68), S(24), TRUE);
+            ::MoveWindow(hProgStatus, cardX + S(16), bodyTop + S(136), cardW - S(32), S(24), TRUE);
+            ::MoveWindow(hProgBar,    cardX + S(16), bodyTop + S(168), cardW - S(32), S(24), TRUE);
 
             // `Finished`: Hero Brand Card + Summary Card + `&Launch` checkbox / `&View Setup Log`
-            ::MoveWindow(hFinLaunch,  S(28), footerY - S(52), W - S(196), S(26), TRUE);
-            ::MoveWindow(hFinViewLog, W - S(162), footerY - S(54), S(144), S(30), TRUE);
+            const int finLeft = UsesClassicWelcomeSidebar() ? S(190) : (cardX + S(10));
+            ::MoveWindow(hFinLaunch,  finLeft, footerY - S(46), W - finLeft - S(168), S(26), TRUE);
+            ::MoveWindow(hFinViewLog, W - S(162), footerY - S(48), S(144), S(30), TRUE);
         }
 
         UpdateControlVisibilityForPage();
@@ -1473,11 +1697,15 @@ public:
         const bool pProg      = (currentPage == WizardPage::Installing);
         const bool pFin       = (currentPage == WizardPage::Finished);
 
+        const bool oneClickSplash = IsCompactOneClickSplash();
+        const bool passiveMode    = IsPassiveToastMode();
+        const int  nSetupCards    = std::clamp<int>(static_cast<int>(cfg.setupTypes.size()), 1, 4);
+
         for (HWND c : hArCell) show(c, cfg.isAutorun16x9 && pWelcome);
 
-        show(hModeExpress, pSetupType);
-        show(hModeCompact, pSetupType);
-        show(hModeCustom,  pSetupType);
+        for (int i = 0; i < 4; ++i) {
+            show(hModeCards[i], pSetupType && !oneClickSplash && !passiveMode && (i < nSetupCards));
+        }
 
         show(hMaintModify, pMaint);
         show(hMaintRepair, pMaint);
@@ -1489,8 +1717,8 @@ public:
         show(hUninstCache, pSafeUn);
         show(hUninstPrefs, pSafeUn);
 
-        show(hLicRich,      pLic);
-        show(hLicAccept,    pLic);
+        show(hLicRich,      pLic && !oneClickSplash);
+        show(hLicAccept,    pLic || (oneClickSplash && pWelcome && cfg.hasLicenseRtf));
         show(hReadMeEdit,   pReadMe);
         show(hFeatTree,     pFeatures);
         show(hFeatResetBtn, pFeatures);
@@ -1504,20 +1732,22 @@ public:
         show(hDeskScChk,    pShort);
         show(hFileAssocChk, pShort);
 
-        show(hProgStatus, pProg);
-        show(hProgBar,    pProg);
+        show(hProgStatus, pProg || passiveMode);
+        show(hProgBar,    pProg || passiveMode);
 
-        const bool canLaunch = pFin &&
+        const bool canLaunch = pFin && !passiveMode &&
                                (finalMsiResult == ERROR_SUCCESS || finalMsiResult == ERROR_SUCCESS_REBOOT_REQUIRED) &&
                                (selectedAction != SelectedAction::MaintUninstall) &&
                                cfg.offerLaunch && !cfg.mainExecutable.empty();
         show(hFinLaunch,  canLaunch);
-        show(hFinViewLog, pFin && (finalMsiResult != ERROR_SUCCESS && finalMsiResult != ERROR_INSTALL_USEREXIT));
+        show(hFinViewLog, pFin && !passiveMode && (finalMsiResult != ERROR_SUCCESS && finalMsiResult != ERROR_INSTALL_USEREXIT));
 
-        const bool canGoBack = pLic || pReadMe || pSetupType || pFeatures || pDir || pShort || pReady || pRepair || pSafeUn;
-        show(hBtnBack,    canGoBack);
-        show(hBtnPrimary, !pProg);
-        show(hBtnCancel,  !pFin);
+        const bool canGoBack = !passiveMode && !oneClickSplash &&
+                               (pLic || pReadMe || pSetupType || pFeatures || pDir || pShort || pReady || pRepair || pSafeUn);
+        show(hBtnOneClickCust, oneClickSplash && pWelcome);
+        show(hBtnBack,         canGoBack);
+        show(hBtnPrimary,      !pProg && !passiveMode);
+        show(hBtnCancel,       !pFin);
 
         // Configure Primary Action Button text, enabled gate, & Windows UAC Shield icon!
         bool showShield = false;
@@ -1527,17 +1757,26 @@ public:
                     const bool direct = !cfg.hasLicenseRtf || alreadyInstalled;
                     ::SetWindowTextW(hBtnPrimary, alreadyInstalled ? L"&Repair" : (direct ? cfg.installBtnText.c_str() : L"&Next >"));
                     showShield = direct && cfg.perMachine;
+                    ::EnableWindow(hBtnPrimary, TRUE);
                 } else if (autorunChoiceIdx == 1) {
                     ::SetWindowTextW(hBtnPrimary, L"&Read Notes");
+                    ::EnableWindow(hBtnPrimary, TRUE);
                 } else if (autorunChoiceIdx == 2) {
                     ::SetWindowTextW(hBtnPrimary, alreadyInstalled ? L"&Continue >" : L"C&hange...");
+                    ::EnableWindow(hBtnPrimary, TRUE);
                 } else {
                     ::SetWindowTextW(hBtnPrimary, L"E&xit");
+                    ::EnableWindow(hBtnPrimary, TRUE);
                 }
+            } else if (oneClickSplash) {
+                ::SetWindowTextW(hBtnPrimary, cfg.installBtnText.c_str());
+                const bool okGate = !cfg.hasLicenseRtf || (::SendMessageW(hLicAccept, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                ::EnableWindow(hBtnPrimary, okGate ? TRUE : FALSE);
+                showShield = cfg.perMachine;
             } else {
                 ::SetWindowTextW(hBtnPrimary, L"&Next >");
+                ::EnableWindow(hBtnPrimary, TRUE);
             }
-            ::EnableWindow(hBtnPrimary, TRUE);
         } else if (pReadMe) {
             ::SetWindowTextW(hBtnPrimary, alreadyInstalled ? L"&Done" : cfg.installBtnText.c_str());
             ::EnableWindow(hBtnPrimary, TRUE);
@@ -1755,10 +1994,18 @@ public:
             // Minimal / Compact Setup installs all features with `Inclusion = minimal` (`Level <= 20`)
             // while skipping `typical` (`Level = 50`) and `complete` (`Level = 150`) extras!
             msiProps += L" INSTALLLEVEL=20";
+        } else if (selectedAction == SelectedAction::InstallComplete) {
+            // Complete Setup raises `INSTALLLEVEL` to `1000` so every `minimal`, `typical`, and `complete` feature installs!
+            msiProps += L" INSTALLLEVEL=1000";
         } else if ((selectedAction == SelectedAction::InstallCustom ||
                     selectedAction == SelectedAction::MaintModify) &&
                    !featureNodes.empty()) {
             msiProps += rsw::BuildMsiFeatureSelectionProps(featureNodes);
+        }
+        if (!selectedExplicitFeaturesCsv.empty() &&
+            selectedAction != SelectedAction::InstallCustom &&
+            selectedAction != SelectedAction::MaintModify) {
+            msiProps += L" ADDLOCAL=" + rsw::Utf8ToWide(selectedExplicitFeaturesCsv);
         }
 
         // Re-evaluate pending `[Prerequisite.*]` runtimes right before execution
@@ -2092,10 +2339,15 @@ public:
 
     void OnTransactionCompleted() {
         currentPermille = (finalMsiResult == ERROR_SUCCESS || finalMsiResult == ERROR_SUCCESS_REBOOT_REQUIRED) ? 1000 : currentPermille;
+        if (IsPassiveToastMode()) {
+            ::DestroyWindow(hWnd);
+            return;
+        }
         currentPage     = WizardPage::Finished;
         UpdateControlVisibilityForPage();
         ::SetFocus(hBtnPrimary);
         ::InvalidateRect(hWnd, nullptr, TRUE);
+        if (hBackdropWnd) ::InvalidateRect(hBackdropWnd, nullptr, FALSE);
     }
 
     // ----------------------------------------------------------------------------
@@ -2104,11 +2356,16 @@ public:
     void NavigateTo(WizardPage target, HWND initialFocus = nullptr) {
         SyncEditableFieldsFromControls();
         currentPage = target;
-        UpdateControlVisibilityForPage();
+        if (rsw::UsesClassic3dDialogSheet(cfg.wizardStyle) || cfg.wizardStyle == rsw::WizardStyleKind::Wizard97) {
+            ApplyFontsAndLayout();
+        } else {
+            UpdateControlVisibilityForPage();
+        }
         if (initialFocus && ::IsWindowVisible(initialFocus) && ::IsWindowEnabled(initialFocus)) {
             ::SetFocus(initialFocus);
         }
         ::InvalidateRect(hWnd, nullptr, TRUE);
+        if (hBackdropWnd) ::InvalidateRect(hBackdropWnd, nullptr, FALSE);
     }
 
     void OnPrimaryButtonClicked() {
@@ -2139,6 +2396,9 @@ public:
                     } else {
                         ::DestroyWindow(hWnd);
                     }
+                } else if (IsCompactOneClickSplash()) {
+                    selectedAction = SelectedAction::InstallExpress;
+                    StartMsiWorkerTransaction();
                 } else {
                     if (cfg.hasLicenseRtf) {
                         NavigateTo(WizardPage::License, hLicAccept);
@@ -2339,13 +2599,138 @@ public:
         const int footerY = H - footerH;
         const int btnsLeftX = ::IsWindowVisible(hBtnBack) ? (W - S(326)) : (W - S(224));
 
-        // 1. Universal Branded Glass Footer Bar (`22x22` Squircle Emblem + `"Publisher  |  website"`)
-        rsw::ui::DrawGlassFooterBar(
-            memDc, g, W, H, footerH, btnsLeftX, dpi, theme, cfg.manufacturer, cfg.websiteLabel);
+        // 1. Footer Bar (Classic 3D Etched Rule on `#C0C0C0` sheets, or Branded Glass Footer Bar!)
+        if (rsw::UsesClassic3dDialogSheet(cfg.wizardStyle)) {
+            rsw::ui::DrawClassicEtchedHorizontalRule(memDc, S(12), W - S(12), footerY, theme);
+            if (!IsCompactOneClickSplash()) {
+                HGDIOBJ oFs = ::SelectObject(memDc, hFontSmall);
+                ::SetTextColor(memDc, theme.textSecondary);
+                const std::wstring pubFoot = cfg.websiteLabel.empty()
+                    ? cfg.manufacturer
+                    : (cfg.manufacturer + L"  •  " + cfg.websiteLabel);
+                RECT pfRc{S(16), footerY + S(4), std::max(S(40), btnsLeftX - S(12)), H};
+                ::DrawTextW(memDc, pubFoot.c_str(), -1, &pfRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                ::SelectObject(memDc, oFs);
+            }
+        } else {
+            const int leftFloor = ::IsWindowVisible(hBtnOneClickCust) ? S(146) : 0;
+            if (leftFloor == 0) {
+                rsw::ui::DrawGlassFooterBar(
+                    memDc, g, W, H, footerH, btnsLeftX, dpi, theme, cfg.manufacturer, cfg.websiteLabel);
+            } else {
+                RECT footerRc{0, footerY, W, H};
+                ::FillRect(memDc, &footerRc, theme.hbrFooter);
+                HPEN divPen = ::CreatePen(PS_SOLID, 1, theme.borderSubtle);
+                HGDIOBJ oP = ::SelectObject(memDc, divPen);
+                ::MoveToEx(memDc, 0, footerY, nullptr);
+                ::LineTo(memDc, W, footerY);
+                ::SelectObject(memDc, oP);
+                ::DeleteObject(divPen);
+            }
+        }
 
         const StepHeaderInfo hdrInfo = CurrentStepHeaderInfo();
 
-        // 2. Top Header Stage (Autorun `16:9` Cover Stage, Autorun Compact Interior Header, or Standard Glass Header!)
+        // 1B. Passive Toast (`500 x 236` `/passive` & `/qb` non-interactive progress window!)
+        if (IsPassiveToastMode()) {
+            rsw::ui::DrawGlassTopHeader(
+                memDc, g, W, dpi, theme,
+                cfg.manufacturer, L"PASSIVE INSTALLATION", cfg.productName,
+                hAppIconBig, rsw::ui::GlassGlyph::Gear, rsw::ui::brand::kRaggieBlue);
+            const int pct = std::clamp(currentPermille / 10, 0, 100);
+            const std::wstring pctTxt = std::to_wstring(pct) + L"%";
+            HGDIOBJ oFp = ::SelectObject(memDc, hFontSection);
+            ::SetTextColor(memDc, theme.textPrimary);
+            RECT pRc{W - S(90), S(100), W - S(24), S(128)};
+            ::DrawTextW(memDc, pctTxt.c_str(), -1, &pRc, DT_RIGHT | DT_SINGLELINE | DT_NOPREFIX);
+            ::SelectObject(memDc, oFp);
+            ::BitBlt(hdcOut, 0, 0, W, H, memDc, 0, 0, SRCCOPY);
+            ::SelectObject(memDc, oldBmp);
+            ::DeleteObject(memBmp);
+            ::DeleteDC(memDc);
+            return;
+        }
+
+        // 1C. Compact One-Click Express Splash (`540 x 310` with `[C&ustomize...]` expansion button!)
+        if (IsCompactOneClickSplash() && currentPage == WizardPage::Welcome) {
+            rsw::ui::DrawGlassTopHeader(
+                memDc, g, W, dpi, theme,
+                cfg.manufacturer, L"ONE-CLICK EXPRESS SETUP", cfg.productName,
+                hAppIconBig, rsw::ui::GlassGlyph::Bolt, rsw::ui::brand::kSkyCyan);
+            RECT heroRc{S(18), S(102), W - S(18), S(168)};
+            rsw::ui::DrawHeroBrandCard(
+                memDc, g, heroRc, dpi, theme,
+                cfg.manufacturer, cfg.tagline, cfg.websiteLabel,
+                L"EXPRESS READY", hAppIconBig);
+            HGDIOBJ oFo = ::SelectObject(memDc, hFontBody);
+            ::SetTextColor(memDc, theme.textSecondary);
+            const std::wstring ocCopy = L"Destination: " + installDir + L"  (Click Customize... to pick features or folder)";
+            RECT ocRc{S(20), S(178), W - S(20), footerY - (cfg.hasLicenseRtf ? S(38) : S(8))};
+            ::DrawTextW(memDc, ocCopy.c_str(), -1, &ocRc, DT_LEFT | DT_WORDBREAK | DT_PATH_ELLIPSIS | DT_NOPREFIX);
+            ::SelectObject(memDc, oFo);
+            ::BitBlt(hdcOut, 0, 0, W, H, memDc, 0, 0, SRCCOPY);
+            ::SelectObject(memDc, oldBmp);
+            ::DeleteObject(memBmp);
+            ::DeleteDC(memDc);
+            return;
+        }
+
+        // 1D. Classic `Wizard95` / `Wizard97` / `FullScreenBlue` / `FullScreenTeal` Welcome & Finish Left Sidebar Rail!
+        if (UsesClassicWelcomeSidebar()) {
+            RECT railRc{S(12), S(12), S(176), footerY - S(10)};
+            rsw::ui::DrawClassicLeftSidebarRail(
+                memDc, g, railRc, dpi, theme,
+                cfg.wizardStyle == rsw::WizardStyleKind::FullScreenTeal,
+                hAppIconBig, hArtworkBmp, artworkW, artworkH, cfg.manufacturer);
+
+            HGDIOBJ oFc = ::SelectObject(memDc, hFontHeadline);
+            ::SetTextColor(memDc, theme.textPrimary);
+            const int rx = S(192);
+            if (currentPage == WizardPage::Welcome) {
+                RECT hRc{rx, S(18), W - S(18), S(84)};
+                ::DrawTextW(memDc, cfg.welcomeHeadline.c_str(), -1, &hRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
+                ::SelectObject(memDc, hFontBody);
+                ::SetTextColor(memDc, theme.textSecondary);
+                const std::wstring introCopy = !cfg.welcomeIntro.empty()
+                    ? cfg.welcomeIntro
+                    : (L"This setup program installs " + cfg.productName + L" (v" + cfg.version +
+                       L") onto your computer.\r\n\r\n"
+                       L"It is strongly recommended that you save any open work before continuing.\r\n\r\n"
+                       L"Choose Next to select your Setup Type, or Cancel to exit Setup without making changes.");
+                RECT bRc{rx, S(92), W - S(18), footerY - S(64)};
+                ::DrawTextW(memDc, introCopy.c_str(), -1, &bRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
+
+                ::SelectObject(memDc, hFontSmall);
+                const bool isRaggie = rsw::ui::UpperWide(cfg.manufacturer).find(L"RAGGIESOFT") != std::wstring::npos;
+                const std::wstring footNote = isRaggie
+                    ? L"Zero Telemetry • Full Keyboard & Screen-Reader Access. Fictitious characters/entities in RaggieSoft works are works of fiction."
+                    : (L"Version " + cfg.version + L" • Zero Telemetry • Full Keyboard & Screen-Reader Accessibility.");
+                RECT fnRc{rx, footerY - S(54), W - S(18), footerY - S(10)};
+                ::DrawTextW(memDc, footNote.c_str(), -1, &fnRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
+            } else {
+                const bool okDone = (finalMsiResult == ERROR_SUCCESS || finalMsiResult == ERROR_SUCCESS_REBOOT_REQUIRED);
+                const std::wstring finHead = okDone
+                    ? ((selectedAction == SelectedAction::MaintUninstall) ? (cfg.productName + L" Was Removed") : (cfg.productName + L" Setup Complete"))
+                    : L"Setup Did Not Complete";
+                RECT hRc{rx, S(18), W - S(18), S(84)};
+                ::DrawTextW(memDc, finHead.c_str(), -1, &hRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
+                ::SelectObject(memDc, hFontBody);
+                ::SetTextColor(memDc, theme.textSecondary);
+                const std::wstring finBody = okDone
+                    ? (cfg.productName + L" (v" + cfg.version + L") has been configured in:\r\n" + installDir + L"\r\n\r\nClick Finish to exit Setup.")
+                    : (L"Windows Installer returned status code " + std::to_wstring(finalMsiResult) + L".");
+                RECT bRc{rx, S(92), W - S(18), footerY - S(58)};
+                ::DrawTextW(memDc, finBody.c_str(), -1, &bRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
+            }
+            ::SelectObject(memDc, oFc);
+            ::BitBlt(hdcOut, 0, 0, W, H, memDc, 0, 0, SRCCOPY);
+            ::SelectObject(memDc, oldBmp);
+            ::DeleteObject(memBmp);
+            ::DeleteDC(memDc);
+            return;
+        }
+
+        // 2. Top Header Stage (Autorun `16:9` Cover Stage, Autorun Compact Interior Header, Fluent Mica Step Rail, Wizard97 Header, Aero, or Glass!)
         if (cfg.isAutorun16x9 && currentPage == WizardPage::Welcome) {
             RECT stageRc{0, 0, W, S(324)};
             rsw::ui::FillHorizontalGradient(memDc, stageRc, theme.bannerNavyLeft, theme.bannerNavyRight);
@@ -2373,12 +2758,30 @@ public:
             return;
         }
 
+        const bool isMica       = (cfg.wizardStyle == rsw::WizardStyleKind::FluentMica);
+        const bool isClassicHdr = rsw::UsesClassic3dDialogSheet(cfg.wizardStyle) ||
+                                  (cfg.wizardStyle == rsw::WizardStyleKind::Wizard97);
+
         if (cfg.isAutorun16x9) {
             const std::wstring pubUpper = rsw::ui::UpperWide(cfg.manufacturer.empty() ? L"RaggieSoft" : cfg.manufacturer);
             const std::wstring kicker   = pubUpper + L"  |  " + hdrInfo.kickerSuffix;
             rsw::ui::DrawAutorunCompactInteriorHeader(
                 memDc, g, W, dpi, theme, cfg.manufacturer, kicker, cfg.productName,
                 hArtworkBmp, artworkW, artworkH);
+        } else if (isMica) {
+            rsw::ui::DrawFluentMicaStepRail(
+                memDc, g, S(164), 0, footerY, FluentStepStageIndex(),
+                dpi, theme, cfg.productName, hAppIconBig);
+            HGDIOBJ oFm = ::SelectObject(memDc, hFontHeadline);
+            ::SetTextColor(memDc, theme.textPrimary);
+            RECT mTitleRc{S(180), S(10), W - S(18), S(38)};
+            ::DrawTextW(memDc, hdrInfo.aeroInstruction, -1, &mTitleRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            ::SelectObject(memDc, oFm);
+        } else if (isClassicHdr) {
+            rsw::ui::DrawWizard97TopHeader(
+                memDc, W, dpi, theme,
+                rsw::UsesClassic3dDialogSheet(cfg.wizardStyle),
+                hdrInfo.aeroInstruction, cfg.bannerTitle, hAppIconBig);
         } else if (cfg.isAeroWizard) {
             const std::wstring winCap = cfg.productName + L" Setup";
             rsw::ui::DrawAeroWizardTopHeader(
@@ -2391,10 +2794,10 @@ public:
                 hAppIconBig, hdrInfo.glyph, hdrInfo.badgeColor);
         }
 
-        // 3. Page-Specific Glass Content Canvas (`y = 104 .. footerY - 10`)
-        const int bodyTop = S(104);
-        const int cardX   = S(18);
-        const int cardW   = W - S(36);
+        // 3. Page-Specific Content Canvas
+        const int bodyTop = isMica ? S(42) : (isClassicHdr ? S(80) : S(104));
+        const int cardX   = isMica ? S(180) : S(18);
+        const int cardW   = W - cardX - S(18);
         HGDIOBJ oldF      = ::SelectObject(memDc, hFontBody);
 
         switch (currentPage) {
@@ -2406,7 +2809,7 @@ public:
                     cfg.manufacturer, cfg.tagline, cfg.websiteLabel,
                     L"OFFICIAL INSTALLER", hAppIconBig);
 
-                int textLeft = S(22);
+                int textLeft = cardX + S(4);
                 if (hArtworkBmp) {
                     RECT artThumb{cardX, bodyTop + S(82), cardX + S(138), bodyTop + S(246)};
                     DrawGlassPanelBox(g, artThumb, S(10));
@@ -2586,10 +2989,8 @@ public:
                 RECT shRc{sumCard.left + S(16), sumCard.top + S(12), sumCard.right - S(16), sumCard.top + S(38)};
                 ::DrawTextW(memDc, L"Review Your Setup Summary", -1, &shRc, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
 
-                const wchar_t* modeName = L"Express Setup (Recommended)";
-                if (selectedAction == SelectedAction::InstallCompact) modeName = L"Compact Core Setup";
-                if (selectedAction == SelectedAction::InstallCustom)  modeName = L"Custom Setup";
-                if (selectedAction == SelectedAction::MaintModify)    modeName = L"Modify Installed Features";
+                std::wstring modeName = selectedSetupTypeLabel.empty() ? L"Express Setup (Recommended)" : selectedSetupTypeLabel;
+                if (selectedAction == SelectedAction::MaintModify) modeName = L"Modify Installed Features";
 
                 std::wstring prereqSummary = L"None required";
                 if (!prereqSpecs.empty()) {
@@ -2755,6 +3156,188 @@ public:
         ::DeleteDC(memDc);
     }
 
+    static constexpr UINT_PTR kPassiveAutostartTimerId = 77;
+
+    // ----------------------------------------------------------------------------
+    // FULL-MONITOR RETRO 1995 COBALT & MICROSOFT ACME `#008080` TEAL BACKDROP WNDPROC
+    // ----------------------------------------------------------------------------
+    static LRESULT CALLBACK BackdropWndProc(HWND hBack, UINT msg, WPARAM wParam, LPARAM lParam) {
+        SetupWizardApp* self = nullptr;
+        if (msg == WM_NCCREATE) {
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            self = static_cast<SetupWizardApp*>(cs->lpCreateParams);
+            ::SetWindowLongPtrW(hBack, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+        } else {
+            self = reinterpret_cast<SetupWizardApp*>(::GetWindowLongPtrW(hBack, GWLP_USERDATA));
+        }
+        if (!self) return ::DefWindowProcW(hBack, msg, wParam, lParam);
+
+        switch (msg) {
+            case WM_ERASEBKGND:
+                return 1;
+            case WM_PAINT: {
+                PAINTSTRUCT ps{};
+                HDC hdcOut = ::BeginPaint(hBack, &ps);
+                RECT rc{};
+                ::GetClientRect(hBack, &rc);
+                const int W = std::max<int>(1, rc.right - rc.left);
+                const int H = std::max<int>(1, rc.bottom - rc.top);
+                HDC memDc   = ::CreateCompatibleDC(hdcOut);
+                HBITMAP bmp = ::CreateCompatibleBitmap(hdcOut, W, H);
+                HGDIOBJ oB  = ::SelectObject(memDc, bmp);
+
+                const rsw::BillboardSlideSpec* bbPtr = nullptr;
+                if (self->currentPage == WizardPage::Installing && !self->cfg.billboards.empty()) {
+                    const std::size_t bbIdx = static_cast<std::size_t>(std::max(0, self->currentPermille / 250)) % self->cfg.billboards.size();
+                    bbPtr = &self->cfg.billboards[bbIdx];
+                }
+                std::wstring statCopy;
+                {
+                    std::lock_guard<std::mutex> lk(self->msgMutex);
+                    statCopy = self->latestStatusText;
+                }
+                {
+                    Gdiplus::Graphics g(memDc);
+                    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+                    g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
+                    rsw::ui::DrawRetroFullScreenBackdrop(
+                        memDc, g, rc, ::GetDpiForWindow(hBack), self->theme,
+                        self->cfg.wizardStyle == rsw::WizardStyleKind::FullScreenTeal,
+                        self->cfg.productName, bbPtr,
+                        self->currentPage == WizardPage::Installing,
+                        self->currentPermille, statCopy);
+                }
+
+                ::BitBlt(hdcOut, 0, 0, W, H, memDc, 0, 0, SRCCOPY);
+                ::SelectObject(memDc, oB);
+                ::DeleteObject(bmp);
+                ::DeleteDC(memDc);
+                ::EndPaint(hBack, &ps);
+                return 0;
+            }
+            case WM_SETTINGCHANGE:
+            case WM_SYSCOLORCHANGE:
+                ::InvalidateRect(hBack, nullptr, TRUE);
+                break;
+        }
+        return ::DefWindowProcW(hBack, msg, wParam, lParam);
+    }
+
+    /// Renders a deterministic `1280 x 800` composite PNG capturing BOTH the full-screen 1995
+    /// Cobalt-Blue (`#000080`) or Microsoft ACME Setup Engine Teal (`#008080`) backdrop (with
+    /// italic serif drop-shadowed title, floating 3D `[Billboard]` card, & bottom-right sunken
+    /// progress gauge) AND the live Win32 `#C0C0C0` 3D beveled `SetupWizard.exe` dialog!
+    bool CaptureRetroFullScreenCompositePng(const std::filesystem::path& outPngPath) {
+        if (!hWnd || !::IsWindow(hWnd)) return false;
+
+        ::RedrawWindow(hWnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
+        MSG msg{};
+        for (int pass = 0; pass < 4; ++pass) {
+            while (::PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                ::TranslateMessage(&msg);
+                ::DispatchMessageW(&msg);
+            }
+            ::Sleep(20);
+        }
+
+        RECT dlgRc{};
+        if (!::GetWindowRect(hWnd, &dlgRc)) return false;
+        const int dlgW = dlgRc.right - dlgRc.left;
+        const int dlgH = dlgRc.bottom - dlgRc.top;
+        const UINT dpi = ::GetDpiForWindow(hWnd);
+        auto S = [&](int px) { return rsw::ui::ScalePx(px, dpi, theme.textScalePercent); };
+
+        const int canvasW = std::max(S(1280), dlgW + S(520));
+        const int canvasH = std::max(S(800),  dlgH + S(210));
+
+        BITMAPINFO bmi{};
+        bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth       = canvasW;
+        bmi.bmiHeader.biHeight      = -canvasH;
+        bmi.bmiHeader.biPlanes      = 1;
+        bmi.bmiHeader.biBitCount    = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        void* pvCanvas = nullptr;
+        HDC screenDc   = ::GetDC(nullptr);
+        HDC canvasDc   = ::CreateCompatibleDC(screenDc);
+        HBITMAP hCanvasDib = ::CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &pvCanvas, nullptr, 0);
+
+        BITMAPINFO dlgBmi = bmi;
+        dlgBmi.bmiHeader.biWidth  = dlgW;
+        dlgBmi.bmiHeader.biHeight = -dlgH;
+        void* pvDlg = nullptr;
+        HDC dlgDc   = ::CreateCompatibleDC(screenDc);
+        HBITMAP hDlgDib = ::CreateDIBSection(screenDc, &dlgBmi, DIB_RGB_COLORS, &pvDlg, nullptr, 0);
+        ::ReleaseDC(nullptr, screenDc);
+
+        if (!hCanvasDib || !pvCanvas || !hDlgDib || !pvDlg) {
+            if (hCanvasDib) ::DeleteObject(hCanvasDib);
+            if (hDlgDib)    ::DeleteObject(hDlgDib);
+            ::DeleteDC(canvasDc);
+            ::DeleteDC(dlgDc);
+            return false;
+        }
+
+        HGDIOBJ oldCanvasBmp = ::SelectObject(canvasDc, hCanvasDib);
+        HGDIOBJ oldDlgBmp    = ::SelectObject(dlgDc, hDlgDib);
+
+        rsw::BillboardSlideSpec demoBillboard{
+            L"Zero-Dependency Win32 C++20 Packaging",
+            L"Author-owned .MSI, .MSM, .MST, .MSP & Universal x64+ARM64 Setup.exe with Dual-Layer Authenticode signing.",
+            rsw::ui::GlassGlyph::ShieldCheck
+        };
+        if (!cfg.billboards.empty()) {
+            demoBillboard = cfg.billboards.front();
+        }
+
+        {
+            Gdiplus::Graphics g(canvasDc);
+            g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+            g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
+            rsw::ui::DrawRetroFullScreenBackdrop(
+                canvasDc, g, RECT{0, 0, canvasW, canvasH}, dpi, theme,
+                cfg.wizardStyle == rsw::WizardStyleKind::FullScreenTeal,
+                cfg.productName, &demoBillboard,
+                true /* showProgressGauge */, 640 /* 64% */, L"Copying native 64-bit program files...");
+        }
+
+        if (!::PrintWindow(hWnd, dlgDc, 0x00000002u)) {
+            if (!::PrintWindow(hWnd, dlgDc, 0)) {
+                ::SendMessageW(hWnd, WM_PRINT, reinterpret_cast<WPARAM>(dlgDc),
+                               PRF_NONCLIENT | PRF_CLIENT | PRF_CHILDREN | PRF_ERASEBKGND);
+            }
+        }
+        ::GdiFlush();
+
+        // Place the floating `#C0C0C0` 3D beveled dialog in the classic left-centered 1995 zone
+        // so the top-left serif title, top-right Billboard card, AND bottom-right progress gauge are 100% visible!
+        const int placeX = S(64);
+        const int placeY = S(116);
+        RECT dropShadow{placeX + S(6), placeY + S(6), placeX + dlgW + S(6), placeY + dlgH + S(6)};
+        HBRUSH hShBr = ::CreateSolidBrush(RGB(0, 0, 0));
+        ::FillRect(canvasDc, &dropShadow, hShBr);
+        ::DeleteObject(hShBr);
+
+        ::BitBlt(canvasDc, placeX, placeY, dlgW, dlgH, dlgDc, 0, 0, SRCCOPY);
+        ::GdiFlush();
+
+        auto* bytes = static_cast<std::uint8_t*>(pvCanvas);
+        const std::size_t totalPx = static_cast<std::size_t>(canvasW) * static_cast<std::size_t>(canvasH);
+        for (std::size_t i = 0; i < totalPx; ++i) {
+            bytes[i * 4 + 3] = 0xFF;
+        }
+        const bool ok = rsw::ui::SaveBgraPixelsToPngFile(bytes, canvasW, canvasH, outPngPath);
+
+        ::SelectObject(dlgDc, oldDlgBmp);
+        ::SelectObject(canvasDc, oldCanvasBmp);
+        ::DeleteObject(hDlgDib);
+        ::DeleteObject(hCanvasDib);
+        ::DeleteDC(dlgDc);
+        ::DeleteDC(canvasDc);
+        return ok;
+    }
+
     // ----------------------------------------------------------------------------
     // MAIN TOP-LEVEL WIN32 WINDOW PROCEDURE
     // ----------------------------------------------------------------------------
@@ -2774,9 +3357,23 @@ public:
         switch (msg) {
             case WM_CREATE:
                 self->CreateControls();
-                rsw::ui::ApplyWindowChromeAndA11y(hWnd, self->theme);
+                self->RefreshEffectiveThemeAndChrome();
                 self->ApplyFontsAndLayout();
                 return 0;
+
+            case WM_TIMER:
+                if (wParam == kPassiveAutostartTimerId) {
+                    ::KillTimer(hWnd, kPassiveAutostartTimerId);
+                    if (self->IsPassiveToastMode() && !self->passiveAutoStarted) {
+                        self->passiveAutoStarted = true;
+                        self->selectedAction = self->alreadyInstalled
+                            ? SelectedAction::MaintQuickRepair
+                            : SelectedAction::InstallExpress;
+                        self->StartMsiWorkerTransaction();
+                    }
+                    return 0;
+                }
+                break;
 
             case WM_ERASEBKGND:
                 return 1; // Flicker-free double-buffered GDI+ painting in `WM_PAINT`
@@ -2824,8 +3421,7 @@ public:
             case WM_SYSCOLORCHANGE:
             case WM_THEMECHANGED:
                 if (rsw::ui::IsLiveThemeBroadcast(msg, wParam, lParam)) {
-                    self->theme.Refresh(self->cfg.accentPrimary, self->cfg.accentSecondary);
-                    rsw::ui::ApplyWindowChromeAndA11y(hWnd, self->theme);
+                    self->RefreshEffectiveThemeAndChrome();
                     self->LoadEmbeddedRtfIntoControl();
                     for (HWND sc : {self->hLicRich, self->hReadMeEdit, self->hFeatTree}) {
                         rsw::ui::ApplyDarkScrollbarTheme(sc, self->theme);
@@ -2921,16 +3517,22 @@ public:
                 }
                 switch (id) {
                     case IDC_MODE_EXPRESS:
-                        self->selectedAction = SelectedAction::InstallExpress;
-                        self->UpdateControlVisibilityForPage();
-                        return 0;
                     case IDC_MODE_COMPACT:
-                        self->selectedAction = SelectedAction::InstallCompact;
+                    case IDC_MODE_CUSTOM:
+                    case IDC_MODE_CARD_4:
+                        self->SyncSelectedSetupTypeIndex(id - IDC_MODE_EXPRESS);
                         self->UpdateControlVisibilityForPage();
                         return 0;
-                    case IDC_MODE_CUSTOM:
-                        self->selectedAction = SelectedAction::InstallCustom;
-                        self->UpdateControlVisibilityForPage();
+
+                    case IDC_ONECLICK_CUST:
+                        self->oneClickExpanded = true;
+                        self->selectedAction   = SelectedAction::InstallCustom;
+                        self->ResizeDialogForActiveStyle();
+                        self->EnsureFeatureTreeLoaded();
+                        self->NavigateTo(
+                            (self->cfg.hasLicenseRtf && ::SendMessageW(self->hLicAccept, BM_GETCHECK, 0, 0) != BST_CHECKED)
+                                ? WizardPage::License
+                                : WizardPage::CustomFeatures);
                         return 0;
 
                     case IDC_REPAIR_QUICK:
@@ -3004,6 +3606,7 @@ public:
                     ::NotifyWinEvent(EVENT_OBJECT_VALUECHANGE, self->hProgBar, OBJID_CLIENT, CHILDID_SELF);
                 }
                 ::InvalidateRect(hWnd, nullptr, FALSE);
+                if (self->hBackdropWnd) ::InvalidateRect(self->hBackdropWnd, nullptr, FALSE);
                 return 0;
             }
 
@@ -3014,6 +3617,7 @@ public:
                     txt = self->latestStatusText;
                 }
                 ::SetWindowTextW(self->hProgStatus, txt.c_str());
+                if (self->hBackdropWnd) ::InvalidateRect(self->hBackdropWnd, nullptr, FALSE);
                 return 0;
             }
 
@@ -3089,6 +3693,11 @@ public:
                 return 0;
 
             case WM_DESTROY:
+                if (self->hBackdropWnd && ::IsWindow(self->hBackdropWnd)) {
+                    HWND hBack = self->hBackdropWnd;
+                    self->hBackdropWnd = nullptr;
+                    ::DestroyWindow(hBack);
+                }
                 ::PostQuitMessage(0);
                 return 0;
         }
@@ -3978,8 +4587,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         }
     }
 
-    // Silent CLI install mode (`/s`, `/S`, `/qn`, `--silent`, `/quiet`) & `--export-screenshots`
-    bool silentInstall = false;
+    // Silent CLI install mode (`/s`, `/S`, `/qn`, `--silent`, `/quiet`), `/passive` (`/qb`), & `--export-screenshots`
+    bool silentInstall  = false;
+    bool cliPassiveMode = false;
+    std::string cliStyleOverride;
     std::wstring silentExtraProps;
     std::filesystem::path exportShotDir;
     for (std::size_t i = 0; i < args.size(); ++i) {
@@ -3990,6 +4601,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
             ++i;
         } else if (a == L"/s" || a == L"/S" || a == L"/qn" || a == L"/quiet" || a == L"--silent") {
             silentInstall = true;
+        } else if (a == L"/passive" || a == L"/qb" || a == L"/qb-" || a == L"--passive") {
+            cliPassiveMode = true;
+        } else if (a.rfind(L"--wizard-style=", 0) == 0) {
+            cliStyleOverride = rsw::WideToUtf8(a.substr(15));
         } else if (a.find(L'=') != std::wstring::npos && a.front() != L'-' && a.front() != L'/') {
             if (!silentExtraProps.empty()) silentExtraProps += L" ";
             silentExtraProps += a;
@@ -4073,6 +4688,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     SetupWizardApp app{};
     app.cfg         = LoadBrandingConfigFromResource();
     app.prereqSpecs = LoadEmbeddedPrerequisitesFromResource();
+    if (!cliStyleOverride.empty()) {
+        app.cfg.wizardStyle   = rsw::ParseWizardStyleKind(cliStyleOverride);
+        app.cfg.isAutorun16x9 = (app.cfg.wizardStyle == rsw::WizardStyleKind::Autorun16x9);
+        app.cfg.isAeroWizard  = (app.cfg.wizardStyle == rsw::WizardStyleKind::AeroWizard);
+    }
+    if (cliPassiveMode) {
+        app.cfg.wizardStyle   = rsw::WizardStyleKind::PassiveToast;
+        app.cfg.isAutorun16x9 = false;
+        app.cfg.isAeroWizard  = false;
+    }
 
     // 3. True Windows 11 Build Gate (`RtlGetVersion` pierces compatibility shims!)
     const auto hostOs = rsw::QueryHostPlatform();
@@ -4088,6 +4713,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     app.startMenuGroup = app.cfg.startMenuFolder;
     app.DetectExistingInstallation();
     app.theme.Refresh(app.cfg.accentPrimary, app.cfg.accentSecondary);
+    rsw::ApplyWizardStyleThemeOverrides(app.cfg.wizardStyle, app.theme);
 
     // Load product `.ico` (`#101` stamped by `instbuild.exe`, falling back to `IDI_APPLICATION`)
     app.hAppIconBig = static_cast<HICON>(::LoadImageW(
@@ -4107,7 +4733,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         }
     }
 
-    // 4. Register top-level window class and center on active monitor!
+    // 4. Register optional Full-Monitor Retro Backdrop (`#000080` Cobalt & `#008080` ACME Teal) + Main Setup Dialog!
+    constexpr const wchar_t* kBackClass = L"RaggieSoftRetroSetupBackdropWindow";
+    WNDCLASSEXW bwc{};
+    bwc.cbSize        = sizeof(bwc);
+    bwc.lpfnWndProc   = &SetupWizardApp::BackdropWndProc;
+    bwc.hInstance     = hInstance;
+    bwc.hCursor       = ::LoadCursorW(nullptr, IDC_ARROW);
+    bwc.lpszClassName = kBackClass;
+    ::RegisterClassExW(&bwc);
+
     constexpr const wchar_t* kWndClass = L"RaggieSoftSetupWizardWindow";
     WNDCLASSEXW wc{};
     wc.cbSize        = sizeof(wc);
@@ -4119,9 +4754,29 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     wc.lpszClassName = kWndClass;
     ::RegisterClassExW(&wc);
 
+    if (rsw::UsesFullScreenRetroBackdrop(app.cfg.wizardStyle) && exportShotDir.empty()) {
+        POINT ptCursor{0, 0};
+        ::GetCursorPos(&ptCursor);
+        HMONITOR hMon = ::MonitorFromPoint(ptCursor, MONITOR_DEFAULTTOPRIMARY);
+        MONITORINFO mi{sizeof(mi)};
+        RECT monRc{0, 0, ::GetSystemMetrics(SM_CXSCREEN), ::GetSystemMetrics(SM_CYSCREEN)};
+        if (hMon && ::GetMonitorInfoW(hMon, &mi)) {
+            monRc = mi.rcMonitor;
+        }
+        const std::wstring backTitle = app.cfg.productName + L" Setup Background";
+        app.hBackdropWnd = ::CreateWindowExW(
+            0, kBackClass, backTitle.c_str(), WS_POPUP | WS_CLIPCHILDREN,
+            monRc.left, monRc.top, monRc.right - monRc.left, monRc.bottom - monRc.top,
+            nullptr, nullptr, hInstance, &app);
+        if (app.hBackdropWnd) {
+            ::ShowWindow(app.hBackdropWnd, SW_SHOWNOACTIVATE);
+            ::UpdateWindow(app.hBackdropWnd);
+        }
+    }
+
     const UINT screenDpi = ::GetDpiForSystem();
-    const int logW = app.cfg.isAutorun16x9 ? 640 : 620;
-    const int logH = app.cfg.isAutorun16x9 ? 480 : 490;
+    int logW = 620, logH = 490;
+    app.ComputeLogicalDialogSize(logW, logH);
     RECT winRc{0, 0,
                rsw::ui::ScalePx(logW, screenDpi, app.theme.textScalePercent),
                rsw::ui::ScalePx(logH, screenDpi, app.theme.textScalePercent)};
@@ -4136,15 +4791,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     HWND hWnd = ::CreateWindowExW(
         0, kWndClass, winTitle.c_str(), kWinStyle,
         posX, posY, totalW, totalH,
-        nullptr, nullptr, hInstance, &app);
+        app.hBackdropWnd /* Owned by full-screen backdrop so Z-order never hides dialog! */,
+        nullptr, hInstance, &app);
 
     if (!hWnd) {
+        if (app.hBackdropWnd) ::DestroyWindow(app.hBackdropWnd);
         ::CoUninitialize();
         return 1;
     }
 
     ::ShowWindow(hWnd, nCmdShow);
     ::UpdateWindow(hWnd);
+    if (app.IsPassiveToastMode() && exportShotDir.empty()) {
+        ::SetTimer(hWnd, SetupWizardApp::kPassiveAutostartTimerId, 120, nullptr);
+    }
 
     if (!exportShotDir.empty()) {
         app.alreadyInstalled = false;
@@ -4182,9 +4842,36 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         app.UpdateControlVisibilityForPage();
         const bool okLight = rsw::ui::CaptureWindowToPngFile(hWnd, exportShotDir / L"setupwizard-setup-type-light.png");
 
+        // --- NEW IN v0.5.0: Export Fluent Mica Step-Rail, Classic Wizard95 3D, FullScreen Cobalt Blue, & ACME #008080 Teal! ---
+        auto switchExportStyle = [&](rsw::WizardStyleKind style, int forcedTheme, const char* presetTok, WizardPage pg) {
+            rsw::ui::ForcedThemeOverride() = forcedTheme;
+            app.cfg.wizardStyle     = style;
+            app.cfg.isAutorun16x9   = (style == rsw::WizardStyleKind::Autorun16x9);
+            app.cfg.isAeroWizard    = (style == rsw::WizardStyleKind::AeroWizard);
+            app.cfg.setupTypePreset = presetTok;
+            app.cfg.setupTypes      = rsw::BuildEffectiveSetupTypeOptions(
+                app.cfg.setupTypePreset, {}, app.cfg.expressDesc, app.cfg.compactDesc, app.cfg.customDesc);
+            app.PopulateSetupTypeCardsFromConfig();
+            app.currentPage = pg;
+            app.RefreshEffectiveThemeAndChrome();
+            app.ResizeDialogForActiveStyle();
+        };
+
+        switchExportStyle(rsw::WizardStyleKind::FluentMica, 1 /* Dark */, "express_custom", WizardPage::SetupType);
+        const bool okMica = rsw::ui::CaptureWindowToPngFile(hWnd, exportShotDir / L"setupwizard-fluent-mica.png");
+
+        switchExportStyle(rsw::WizardStyleKind::Wizard95, 0 /* Classic #C0C0C0 */, "win95_classic", WizardPage::Welcome);
+        const bool okWiz95 = rsw::ui::CaptureWindowToPngFile(hWnd, exportShotDir / L"setupwizard-wizard95.png");
+
+        switchExportStyle(rsw::WizardStyleKind::FullScreenBlue, 0, "win95_classic", WizardPage::SetupType);
+        const bool okBlue = app.CaptureRetroFullScreenCompositePng(exportShotDir / L"setupwizard-fullscreen-blue.png");
+
+        switchExportStyle(rsw::WizardStyleKind::FullScreenTeal, 0, "win95_classic", WizardPage::SetupType);
+        const bool okTeal = app.CaptureRetroFullScreenCompositePng(exportShotDir / L"setupwizard-fullscreen-teal.png");
+
         ::DestroyWindow(hWnd);
         ::CoUninitialize();
-        return (okType && okTree && okUacDark && okUacLight && okLight) ? 0 : 2;
+        return (okType && okTree && okUacDark && okUacLight && okLight && okMica && okWiz95 && okBlue && okTeal) ? 0 : 2;
     }
 
     // 5. Accessible keyboard-aware Win32 message loop (`IsDialogMessageW` powers `Tab`, `Shift+Tab`,

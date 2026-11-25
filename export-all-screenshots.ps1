@@ -120,6 +120,10 @@ $requiredPngs = @(
     "setupwizard-license.png",
     "setupwizard-ready-uac.png",
     "setupwizard-ready-uac-light.png",
+    "setupwizard-wizard95.png",
+    "setupwizard-fluent-mica.png",
+    "setupwizard-fullscreen-blue.png",
+    "setupwizard-fullscreen-teal.png",
     "msiprism-sql-inspector.png",
     "helpviewer-contents.png"
 )
@@ -136,4 +140,4 @@ foreach ($png in $requiredPngs) {
     Write-Host ("     [OK] {0,-34} {1,8:N1} KB  ({2})" -f $png, ($item.Length / 1KB), $item.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss")) -ForegroundColor Green
 }
 
-Write-Host "ALL 13 WEBSITE SCREENSHOTS EXPORTED AND VERIFIED CLEANLY!" -ForegroundColor Green
+Write-Host "ALL 17 WEBSITE SCREENSHOTS EXPORTED AND VERIFIED CLEANLY!" -ForegroundColor Green

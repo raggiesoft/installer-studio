@@ -26,6 +26,8 @@
 #include "../common/RswCryptoAndPe.hpp"
 #include "../common/RswManifestAst.hpp"
 #include "../common/RswSchema.hpp"
+#include "../common/RswWcagContrast.hpp"
+#include "../common/RswWin32UiTheme.hpp"
 
 #include <filesystem>
 #include <set>
@@ -527,6 +529,23 @@ inline ValidationReport ValidateManifestDocument(
                 addErr("RSW037", 1, "MergeModule." + mid, "Source",
                        "Merge Module (.msm) file does not exist on disk: " + WideToUtf8(absMsm.wstring()));
             }
+        }
+    }
+
+    // 5. WCAG 2.2 AA Brand Accent Contrast Verification (`[UI] AccentPrimaryHex`)
+    const std::string rawPrimaryHex = TrimAscii(doc.GetString("UI", "", "AccentPrimaryHex"));
+    if (!rawPrimaryHex.empty()) {
+        const COLORREF fallback = RGB(37, 99, 235);
+        const COLORREF parsed   = ui::ParseHexColor(rawPrimaryHex, fallback);
+        double vsWhite = 0.0, vsDarkCard = 0.0;
+        if (!wcag::MeetsDualThemeAccentContrast(parsed, vsWhite, vsDarkCard)) {
+            const COLORREF suggested = wcag::SnapAccentToAccessibleBand(parsed);
+            char ratioBuf[160]{};
+            std::snprintf(
+                ratioBuf, sizeof(ratioBuf),
+                "AccentPrimaryHex '%s' measures %.2f:1 against #FFFFFF button text (min 4.5:1 AA) and %.2f:1 against #15203A Dark Mode cards (min 3.0:1 AA). Nearest hue-preserving accessible shade: %s.",
+                rawPrimaryHex.c_str(), vsWhite, vsDarkCard, wcag::FormatHexColor(suggested).c_str());
+            addWarn("RSW055", 1, "UI", "AccentPrimaryHex", ratioBuf);
         }
     }
 

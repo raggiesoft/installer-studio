@@ -1201,6 +1201,58 @@ inline void DrawAccessiblePushButton(
     const float h = static_cast<float>(rc.bottom - rc.top);
     if (w <= 12.0f || h <= 10.0f) return;
 
+    // Classic Windows 95 / ACME `#C0C0C0` 3D Beveled Push Button Mode (`Wizard95`, `FullScreenBlue`, `FullScreenTeal`)!
+    const bool classicWin95Bevel = !theme.isHighContrast && (theme.windowBg == RGB(192, 192, 192));
+    if (classicWin95Bevel) {
+        HBRUSH hFace = ::CreateSolidBrush(RGB(192, 192, 192));
+        ::FillRect(hdc, &rc, hFace);
+        ::DeleteObject(hFace);
+
+        RECT edgeRc = rc;
+        if (isPrimaryAccent && isEnabled) {
+            // Classic Win95 `BS_DEFPUSHBUTTON` 1px solid black outer frame around the 3D bevel!
+            HGDIOBJ oldB = ::SelectObject(hdc, ::GetStockObject(NULL_BRUSH));
+            HGDIOBJ oldP = ::SelectObject(hdc, ::GetStockObject(BLACK_PEN));
+            ::Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
+            ::SelectObject(hdc, oldP);
+            ::SelectObject(hdc, oldB);
+            ::InflateRect(&edgeRc, -1, -1);
+        }
+        ::DrawEdge(hdc, &edgeRc, isPressed ? EDGE_SUNKEN : EDGE_RAISED, BF_RECT);
+
+        if (hasFocus) {
+            RECT focRc = rc;
+            ::InflateRect(&focRc, -S(4), -S(4));
+            ::SetTextColor(hdc, RGB(0, 0, 0));
+            ::SetBkColor(hdc, RGB(192, 192, 192));
+            ::DrawFocusRect(hdc, &focRc);
+        }
+
+        HFONT hClassicFont = CreateScaledFont(L"Segoe UI", 9, isPrimaryAccent ? FW_BOLD : FW_NORMAL, dpi, theme.textScalePercent);
+        ::SetBkMode(hdc, TRANSPARENT);
+        HGDIOBJ oldCF = ::SelectObject(hdc, hClassicFont);
+        ::SetTextColor(hdc, isEnabled ? RGB(0, 0, 0) : RGB(109, 109, 109));
+        const int ox = rc.left;
+        const int oy = rc.top;
+        const int pressShift = isPressed ? 1 : 0;
+        RECT cTxt{ox + S(6) + pressShift, oy + pressShift, rc.right - S(6) + pressShift, rc.bottom + pressShift};
+        if (showUacShield && hShieldIcon && isEnabled) {
+            const int icoSz = S(16);
+            RECT mRc{0, 0, static_cast<int>(w), static_cast<int>(h)};
+            ::DrawTextW(hdc, labelWithMnemonic.data(), static_cast<int>(labelWithMnemonic.size()), &mRc, DT_SINGLELINE | DT_CALCRECT);
+            const int tw = mRc.right - mRc.left;
+            const int sx = ox + std::max(S(5), (static_cast<int>(w) - (icoSz + S(5) + tw)) / 2) + pressShift;
+            ::DrawIconEx(hdc, sx, oy + (static_cast<int>(h) - icoSz) / 2 + pressShift, hShieldIcon, icoSz, icoSz, 0, nullptr, DI_NORMAL);
+            cTxt.left = sx + icoSz + S(5);
+            ::DrawTextW(hdc, labelWithMnemonic.data(), static_cast<int>(labelWithMnemonic.size()), &cTxt, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        } else {
+            ::DrawTextW(hdc, labelWithMnemonic.data(), static_cast<int>(labelWithMnemonic.size()), &cTxt, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
+        ::SelectObject(hdc, oldCF);
+        ::DeleteObject(hClassicFont);
+        return;
+    }
+
     const float rad    = static_cast<float>(S(6));
     const bool  activeTab = !labelWithMnemonic.empty() && labelWithMnemonic.front() == L'[';
 
@@ -1255,9 +1307,11 @@ inline void DrawAccessiblePushButton(
         }
     }
 
+    const float fx = static_cast<float>(rc.left);
+    const float fy = static_cast<float>(rc.top);
     Gdiplus::SolidBrush fillBr(ToGpColor(fillCol));
     Gdiplus::Pen borderPen(ToGpColor(borderCol), borderPx);
-    FillAndStrokeRoundRect(g, 1.0f, 1.0f, w - 2.0f, h - 2.0f, rad, &fillBr, &borderPen);
+    FillAndStrokeRoundRect(g, fx + 1.0f, fy + 1.0f, w - 2.0f, h - 2.0f, rad, &fillBr, &borderPen);
 
     // WCAG 2.4.11 / 2.4.13 High-Contrast Keyboard Focus Ring (`#FBBF24` Dark / `#1D4ED8` Light)
     if (hasFocus) {
@@ -1265,7 +1319,7 @@ inline void DrawAccessiblePushButton(
             ? ::GetSysColor(COLOR_HIGHLIGHT)
             : (theme.isDarkMode ? brand::kWarmGold : (isPrimaryAccent ? RGB(255, 255, 255) : RGB(29, 78, 216)));
         Gdiplus::Pen focusPen(ToGpColor(focusCol), 2.2f);
-        FillAndStrokeRoundRect(g, 2.5f, 2.5f, w - 5.0f, h - 5.0f, std::max(2.0f, rad - 1.5f), nullptr, &focusPen);
+        FillAndStrokeRoundRect(g, fx + 2.5f, fy + 2.5f, w - 5.0f, h - 5.0f, std::max(2.0f, rad - 1.5f), nullptr, &focusPen);
     }
 
     const int fontWeight = (isPrimaryAccent || activeTab) ? FW_BOLD : FW_SEMIBOLD;
@@ -1274,18 +1328,18 @@ inline void DrawAccessiblePushButton(
     HGDIOBJ oldF = ::SelectObject(hdc, hBtnFont);
     ::SetTextColor(hdc, textCol);
 
-    RECT txtRc{S(6), 0, static_cast<int>(w) - S(6), static_cast<int>(h)};
+    RECT txtRc{rc.left + S(6), rc.top, rc.right - S(6), rc.bottom};
     if (showUacShield && hShieldIcon && isEnabled) {
         const int icoSz = S(16);
         RECT measRc{0, 0, static_cast<int>(w), static_cast<int>(h)};
         ::DrawTextW(hdc, labelWithMnemonic.data(), static_cast<int>(labelWithMnemonic.size()), &measRc, DT_SINGLELINE | DT_CALCRECT);
         const int textW  = measRc.right - measRc.left;
         const int totalW = icoSz + S(6) + textW;
-        const int startX = std::max(S(6), (static_cast<int>(w) - totalW) / 2);
-        const int icoY   = (static_cast<int>(h) - icoSz) / 2;
+        const int startX = rc.left + std::max(S(6), (static_cast<int>(w) - totalW) / 2);
+        const int icoY   = rc.top + (static_cast<int>(h) - icoSz) / 2;
         ::DrawIconEx(hdc, startX, icoY, hShieldIcon, icoSz, icoSz, 0, nullptr, DI_NORMAL);
         txtRc.left  = startX + icoSz + S(6);
-        txtRc.right = std::min<LONG>(static_cast<LONG>(w) - S(4), txtRc.left + textW + S(6));
+        txtRc.right = std::min<LONG>(rc.right - S(4), txtRc.left + textW + S(6));
         ::DrawTextW(hdc, labelWithMnemonic.data(), static_cast<int>(labelWithMnemonic.size()), &txtRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     } else {
         ::DrawTextW(hdc, labelWithMnemonic.data(), static_cast<int>(labelWithMnemonic.size()), &txtRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);

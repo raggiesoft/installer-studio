@@ -10,8 +10,8 @@
 #include <winver.h>
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,4,5,0
- PRODUCTVERSION 0,4,5,0
+ FILEVERSION 0,5,0,0
+ PRODUCTVERSION 0,5,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -24,12 +24,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "RaggieSoft"
             VALUE "FileDescription",  "RaggieSoft Installer Studio CLI Compiler (instbuild.exe)"
-            VALUE "FileVersion",      "0.4.5.0"
+            VALUE "FileVersion",      "0.5.0.0"
             VALUE "InternalName",     "instbuild"
             VALUE "LegalCopyright",   "Copyright (c) 2026 Michael P. Ragsdale / RaggieSoft (MIT License)"
             VALUE "OriginalFilename", "instbuild.exe"
             VALUE "ProductName",      "RaggieSoft Installer Studio"
-            VALUE "ProductVersion",   "0.4.5"
+            VALUE "ProductVersion",   "0.5.0"
         END
     END
     BLOCK "VarFileInfo"
