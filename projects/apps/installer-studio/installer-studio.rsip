@@ -1,6 +1,6 @@
 ; ==============================================================================
 ; FILE: projects/apps/installer-studio/installer-studio.rsip
-; APPLICATION: RaggieSoft Installer Studio (v0.4.4 Technical Preview)
+; APPLICATION: RaggieSoft Installer Studio (v0.4.5 Technical Preview)
 ; COMPILER: RaggieSoft Installer Studio (instbuild.exe -> .msi + Universal Setup.exe)
 ; ==============================================================================
 
@@ -10,7 +10,7 @@
 Name                     = RaggieSoft Installer Studio
 Tagline                  = Install Without Limits - Tree-First AeroWizard IDE, MSI Compiler, Prism & Help
 WebsiteLabel             = raggiesoftstudio.com
-Version                  = 0.4.4
+Version                  = 0.4.5
 Manufacturer             = RaggieSoft
 UpgradeCode              = {D9C0EF36-990C-519C-A9C7-D7E19FDD5627}
 Architecture             = $(ARCH)

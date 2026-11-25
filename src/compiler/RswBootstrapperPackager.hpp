@@ -41,12 +41,16 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <imagehlp.h>
 #include <sstream>
 #include <string>
 #include <vector>
+
+#pragma comment(lib, "imagehlp.lib")
 
 namespace rsw {
 
@@ -259,8 +263,79 @@ private:
     }
 };
 
+/// Inspects a Portable Executable (`.exe` or `.dll`) header on disk and returns its
+/// COFF `IMAGE_FILE_HEADER::Machine` constant (`0x8664` AMD64, `0xAA64` ARM64, `0x014C` x86),
+/// or `0` if the file is missing or not a valid PE image.
+inline std::uint16_t ReadPeMachineArchitecture(const std::filesystem::path& pePath) noexcept {
+    std::ifstream in(pePath, std::ios::binary);
+    if (!in) return 0;
+    IMAGE_DOS_HEADER dos{};
+    if (!in.read(reinterpret_cast<char*>(&dos), sizeof(dos)) || dos.e_magic != IMAGE_DOS_SIGNATURE) {
+        return 0;
+    }
+    if (dos.e_lfanew <= 0 || dos.e_lfanew > 64 * 1024 * 1024) return 0;
+    in.seekg(dos.e_lfanew, std::ios::beg);
+    DWORD peSig = 0;
+    IMAGE_FILE_HEADER fh{};
+    if (!in.read(reinterpret_cast<char*>(&peSig), sizeof(peSig)) || peSig != IMAGE_NT_SIGNATURE) {
+        return 0;
+    }
+    if (!in.read(reinterpret_cast<char*>(&fh), sizeof(fh))) {
+        return 0;
+    }
+    return fh.Machine;
+}
+
+/// Strips any existing Authenticode `WIN_CERTIFICATE` entries (`IMAGE_DIRECTORY_ENTRY_SECURITY`)
+/// from a copied PE template BEFORE calling `BeginUpdateResourceW` / `EndUpdateResourceW`.
+/// Why is this essential?
+///   When `SetupWizard.exe` inside `Program Files\RaggieSoft\Installer Studio\` is itself
+///   Authenticode-signed, mutating its `.rsrc` section via `EndUpdateResourceW` without first
+///   removing the old certificate table would leave a stale `SECURITY` data directory pointing
+///   to shifted file offsets! Calling `ImageRemoveCertificate` (`imagehlp.dll`) resets the
+///   security directory cleanly before stamping new resources and re-signing.
+inline bool StripExistingPeCertificates(const std::filesystem::path& exePath) noexcept {
+    HANDLE hFile = ::CreateFileW(
+        exePath.wstring().c_str(),
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    DWORD certCount = 0;
+    if (::ImageEnumerateCertificates(hFile, CERT_SECTION_TYPE_ANY, &certCount, nullptr, 0) && certCount > 0) {
+        for (DWORD i = certCount; i > 0; --i) {
+            ::ImageRemoveCertificate(hFile, i - 1u);
+        }
+    }
+    ::CloseHandle(hFile);
+    return true;
+}
+
+/// Reads an optional Win32 environment variable as UTF-8 (`""` when unset) without CRT warnings.
+inline std::string ReadSignEnvUtf8(const wchar_t* varName) {
+    const DWORD needed = ::GetEnvironmentVariableW(varName, nullptr, 0);
+    if (needed == 0) return {};
+    std::wstring buf(needed, L'\0');
+    const DWORD written = ::GetEnvironmentVariableW(varName, buf.data(), needed);
+    if (written == 0) return {};
+    buf.resize(written);
+    return TrimAscii(WideToUtf8(buf));
+}
+
 /// Discovers `signtool.exe` inside the installed Windows 11 SDK (`C:\Program Files (x86)\Windows Kits\10\bin\...`).
-inline std::filesystem::path LocateWindowsSdkSignTool() {
+/// Architecture-Matching Rule for Azure Artifact Signing (`/dlib`):
+///   `signtool.exe` loads `Azure.CodeSigning.Dlib.dll` in-process via `LoadLibraryW`.
+///   Because Microsoft's `Microsoft.Trusted.Signing.Client` NuGet package ships `x64` and `x86`
+///   C++/CLI (`Ijwhost.dll`) binaries, running `arm64\signtool.exe` against `x64\Azure.CodeSigning.Dlib.dll`
+///   on a Windows 11 ARM64 PC would fail with `0x800700C1` (`ERROR_BAD_EXE_FORMAT`).
+///   Inspecting `ReadPeMachineArchitecture(optionalDlibPath)` selects the exact matching
+///   `x64\signtool.exe`, `arm64\signtool.exe`, or `x86\signtool.exe` automatically!
+inline std::filesystem::path LocateWindowsSdkSignTool(const std::filesystem::path& optionalDlibPath = {}) {
     std::error_code ec;
     const std::filesystem::path kitsBin = L"C:\\Program Files (x86)\\Windows Kits\\10\\bin";
     if (!std::filesystem::exists(kitsBin, ec)) {
@@ -276,6 +351,24 @@ inline std::filesystem::path LocateWindowsSdkSignTool() {
     }
     std::sort(verDirs.rbegin(), verDirs.rend()); // Newest SDK version first (`10.0.26100.0`)
 
+    // If an external `/dlib` DLL was supplied, strictly match its PE `Machine` architecture!
+    if (!optionalDlibPath.empty() && std::filesystem::exists(optionalDlibPath, ec)) {
+        const std::uint16_t dlibMachine = ReadPeMachineArchitecture(optionalDlibPath);
+        const wchar_t* requiredSubdir = nullptr;
+        if (dlibMachine == IMAGE_FILE_MACHINE_AMD64)      requiredSubdir = L"x64";
+        else if (dlibMachine == IMAGE_FILE_MACHINE_ARM64) requiredSubdir = L"arm64";
+        else if (dlibMachine == IMAGE_FILE_MACHINE_I386)  requiredSubdir = L"x86";
+
+        if (requiredSubdir != nullptr) {
+            for (const auto& vd : verDirs) {
+                auto candidate = vd / requiredSubdir / L"signtool.exe";
+                if (std::filesystem::exists(candidate, ec)) {
+                    return candidate;
+                }
+            }
+        }
+    }
+
     const wchar_t* archOrder[] = {L"arm64", L"x64", L"x86"};
     for (const auto& vd : verDirs) {
         for (const wchar_t* a : archOrder) {
@@ -288,20 +381,19 @@ inline std::filesystem::path LocateWindowsSdkSignTool() {
     return {};
 }
 
-/// Runs Authenticode signing via `signtool.exe` (supporting local Certificate Store OR Azure Artifact Signing).
+/// Runs Authenticode signing via `signtool.exe` (supporting local Certificate Store OR Azure Artifact Signing,
+/// plus CI/release `RSW_SIGN_*` environment overrides so public `.rsip` repos stay free of local workstation paths).
 inline bool RunAuthenticodeSignTool(
     const RswManifestDocument& doc,
     const std::filesystem::path& targetBinary,
     std::string& outError)
 {
-    if (!doc.GetBool("Signing", "", "Enabled", false)) {
+    const std::string envEnabled = ReadSignEnvUtf8(L"RSW_SIGN_ENABLED");
+    const bool signEnabled = doc.GetBool("Signing", "", "Enabled", false) ||
+                             envEnabled == "1" ||
+                             EqualsIgnoreCase(envEnabled, "true");
+    if (!signEnabled) {
         return true;
-    }
-
-    const std::filesystem::path signTool = LocateWindowsSdkSignTool();
-    if (signTool.empty()) {
-        outError = "Signing is enabled in [Signing], but Windows SDK signtool.exe was not found.";
-        return false;
     }
 
     const std::filesystem::path baseDir = doc.sourcePath.empty()
@@ -313,10 +405,25 @@ inline bool RunAuthenticodeSignTool(
         return p.is_absolute() ? p : (baseDir / p);
     };
 
-    const std::string thumb     = doc.GetString("Signing", "", "Thumbprint");
-    const std::string tsUrl     = doc.GetString("Signing", "", "TimestampUrl", "http://timestamp.acs.microsoft.com");
-    const auto dlibPath         = resolveOptPath(doc.GetString("Signing", "", "DlibPath"));
-    const auto metaPath         = resolveOptPath(doc.GetString("Signing", "", "MetadataJson"));
+    std::string rawDlib  = doc.GetString("Signing", "", "DlibPath");
+    std::string rawMeta  = doc.GetString("Signing", "", "MetadataJson");
+    std::string thumb    = doc.GetString("Signing", "", "Thumbprint");
+    std::string tsUrl    = doc.GetString("Signing", "", "TimestampUrl");
+
+    if (rawDlib.empty()) rawDlib = ReadSignEnvUtf8(L"RSW_SIGN_DLIB");
+    if (rawMeta.empty()) rawMeta = ReadSignEnvUtf8(L"RSW_SIGN_METADATA");
+    if (thumb.empty())   thumb   = ReadSignEnvUtf8(L"RSW_SIGN_THUMBPRINT");
+    if (tsUrl.empty())   tsUrl   = ReadSignEnvUtf8(L"RSW_SIGN_TIMESTAMP_URL");
+    if (tsUrl.empty())   tsUrl   = "http://timestamp.acs.microsoft.com";
+
+    const auto dlibPath = resolveOptPath(rawDlib);
+    const auto metaPath = resolveOptPath(rawMeta);
+
+    const std::filesystem::path signTool = LocateWindowsSdkSignTool(dlibPath);
+    if (signTool.empty()) {
+        outError = "Signing is enabled, but a matching Windows SDK signtool.exe was not found.";
+        return false;
+    }
 
     std::wostringstream cmd;
     cmd << L"\"" << signTool.wstring() << L"\" sign /fd SHA256 /td SHA256 /tr \""
@@ -331,27 +438,71 @@ inline bool RunAuthenticodeSignTool(
     }
     cmd << L"\"" << targetBinary.wstring() << L"\"";
 
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
-    std::wstring mutableCmd = cmd.str();
-    if (!::CreateProcessW(nullptr, mutableCmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        outError = "Failed launching signtool.exe (" + std::to_string(::GetLastError()) + ").";
-        return false;
+    // Retry up to 3 times to ride through transient RFC 3161 timestamp or Azure RBAC warm-up blips.
+    std::string lastOutput;
+    DWORD lastExitCode = 1;
+    for (int attempt = 1; attempt <= 3; ++attempt) {
+        SECURITY_ATTRIBUTES sa{};
+        sa.nLength              = sizeof(sa);
+        sa.bInheritHandle       = TRUE;
+        HANDLE hReadPipe        = nullptr;
+        HANDLE hWritePipe       = nullptr;
+        const bool hasPipe      = (::CreatePipe(&hReadPipe, &hWritePipe, &sa, 0) != FALSE);
+        if (hasPipe) {
+            ::SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
+        }
+
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        if (hasPipe) {
+            si.dwFlags    = STARTF_USESTDHANDLES;
+            si.hStdOutput = hWritePipe;
+            si.hStdError  = hWritePipe;
+        }
+        PROCESS_INFORMATION pi{};
+        std::wstring mutableCmd = cmd.str();
+        if (!::CreateProcessW(nullptr, mutableCmd.data(), nullptr, nullptr, hasPipe ? TRUE : FALSE,
+                              CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+            const DWORD err = ::GetLastError();
+            if (hasPipe) {
+                ::CloseHandle(hReadPipe);
+                ::CloseHandle(hWritePipe);
+            }
+            outError = "Failed launching signtool.exe (" + std::to_string(err) + ").";
+            return false;
+        }
+        if (hasPipe) {
+            ::CloseHandle(hWritePipe);
+        }
+
+        std::string captured;
+        if (hasPipe) {
+            char buf[512];
+            DWORD bytesRead = 0;
+            while (::ReadFile(hReadPipe, buf, sizeof(buf), &bytesRead, nullptr) && bytesRead > 0) {
+                captured.append(buf, bytesRead);
+            }
+            ::CloseHandle(hReadPipe);
+        }
+
+        ::WaitForSingleObject(pi.hProcess, INFINITE);
+        ::GetExitCodeProcess(pi.hProcess, &lastExitCode);
+        ::CloseHandle(pi.hThread);
+        ::CloseHandle(pi.hProcess);
+
+        if (lastExitCode == 0) {
+            return true;
+        }
+        lastOutput = TrimAscii(captured);
+        if (attempt < 3) {
+            ::Sleep(2500);
+        }
     }
 
-    ::WaitForSingleObject(pi.hProcess, INFINITE);
-    DWORD exitCode = 1;
-    ::GetExitCodeProcess(pi.hProcess, &exitCode);
-    ::CloseHandle(pi.hThread);
-    ::CloseHandle(pi.hProcess);
-
-    if (exitCode != 0) {
-        outError = "signtool.exe exited with code " + std::to_string(exitCode) +
-                   " while signing '" + WideToUtf8(targetBinary.filename().wstring()) + "'.";
-        return false;
-    }
-    return true;
+    outError = "signtool.exe exited with code " + std::to_string(lastExitCode) +
+               " while signing '" + WideToUtf8(targetBinary.filename().wstring()) + "'" +
+               (lastOutput.empty() ? "." : (": " + lastOutput));
+    return false;
 }
 
 /// Packages `compiledMsi` + product branding + `.ico` + `VS_VERSION_INFO` into `<OutputName>-setup.exe`!
@@ -400,6 +551,7 @@ inline bool PackageSelfExtractingBootstrapper(
         outError = "Failed copying SetupWizard.exe template to '" + WideToUtf8(outSetupExePath.wstring()) + "'.";
         return false;
     }
+    StripExistingPeCertificates(outSetupExePath);
 
     // 3. Read `Product.msi` bytes, compress with Windows `COMPRESS_ALGORITHM_LZMS` (`Cabinet.lib`),
     //    resolve `[Prerequisite.*]` runtimes, and synthesize the UTF-8 branding & layout manifest (`#202`)!
@@ -870,6 +1022,7 @@ inline bool PackageUniversalInstallers(
             outError = "Failed copying universal x64 stub to '" + WideToUtf8(offlinePath.wstring()) + "'.";
             return false;
         }
+        StripExistingPeCertificates(offlinePath);
 
         std::vector<std::uint8_t> compX64   = CompressWithLzmsIfSmaller(rawX64Bytes);
         std::vector<std::uint8_t> compArm64 = CompressWithLzmsIfSmaller(rawArm64Bytes);
@@ -919,6 +1072,7 @@ inline bool PackageUniversalInstallers(
                 outError = "Failed copying universal x64 stub to '" + WideToUtf8(webStubPath.wstring()) + "'.";
                 return false;
             }
+            StripExistingPeCertificates(webStubPath);
 
             const std::string urlX64   = baseUrl + "/" + x64FileName;
             const std::string urlArm64 = baseUrl + "/" + arm64FileName;

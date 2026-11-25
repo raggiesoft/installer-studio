@@ -6,7 +6,7 @@
 **Version History & Changelog:** [https://raggiesoftstudio.com/changelog](https://raggiesoftstudio.com/changelog)  
 **Developer & AI Spec Hub:** [https://raggiesoft.dev](https://raggiesoft.dev)  
 **Frequently Asked Questions:** [https://raggiesoftstudio.com/faq](https://raggiesoftstudio.com/faq)  
-**Current Milestone:** `v0.4.4` Open Technical Preview (`x64` & `ARM64` Universal Single-Download)  
+**Current Milestone:** `v0.4.5` Open Technical Preview (`x64` & `ARM64` Universal Single-Download • Signed via Microsoft Azure Artifact Signing)  
 **License:** MIT License (Core Toolchain Source)
 
 <p align="center">

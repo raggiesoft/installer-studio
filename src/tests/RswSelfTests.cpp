@@ -648,7 +648,7 @@ int wmain() {
         // 5D. Verify `v0.4.4` Plain-English Feature `Inclusion` Tiers (`minimal`, `typical`, `complete`, `hidden`)!
         {
             std::ostringstream tierManifest;
-            tierManifest << "[Package]\nName = TierSample\nVersion = 0.4.4\nManufacturer = RaggieSoft\n"
+            tierManifest << "[Package]\nName = TierSample\nVersion = 0.4.5\nManufacturer = RaggieSoft\n"
                          << "UpgradeCode = {4C7A9D11-2233-4E88-9B11-776655443322}\n"
                          << "[Install]\nDefaultSubdir = RaggieSoft\\TierSample\n"
                          << "[Feature.Main]\nTitle = Core Engine\nInclusion = minimal\nDisallowAbsent = true\n"
@@ -676,6 +676,29 @@ int wmain() {
                   tNodes[2].installLevel == 150 && tNodes[2].defaultState == rsw::MsiTreeState::Absent,
                   "Plain-English Feature Inclusion (minimal/typical/complete/hidden) maps cleanly to MSI Feature.Level & SelectionTree defaults",
                   tierErr);
+        }
+
+        // 5E. Verify `v0.4.5` PE `Machine` `/dlib` SignTool Architecture Matching & `StripExistingPeCertificates`!
+        {
+            const auto x64StubExe   = binDir.parent_path() / L"x64" / L"SetupWizard.exe";
+            const auto arm64StubExe = binDir.parent_path() / L"arm64" / L"SetupWizard.exe";
+            const bool bothBuilt    = std::filesystem::exists(x64StubExe, ec) && std::filesystem::exists(arm64StubExe, ec);
+            if (bothBuilt) {
+                const auto machX64   = rsw::ReadPeMachineArchitecture(x64StubExe);
+                const auto machArm64 = rsw::ReadPeMachineArchitecture(arm64StubExe);
+                const auto stForX64  = rsw::LocateWindowsSdkSignTool(x64StubExe);
+                const bool matchedX64 = stForX64.empty() || (rsw::ReadPeMachineArchitecture(stForX64) == IMAGE_FILE_MACHINE_AMD64);
+
+                const auto stripCopy = testWorkDir / L"strip-cert-test.exe";
+                std::filesystem::copy_file(x64StubExe, stripCopy, std::filesystem::copy_options::overwrite_existing, ec);
+                const bool strippedOk = rsw::StripExistingPeCertificates(stripCopy) &&
+                                        rsw::ReadPeMachineArchitecture(stripCopy) == IMAGE_FILE_MACHINE_AMD64;
+
+                Check(machX64 == IMAGE_FILE_MACHINE_AMD64 &&
+                      machArm64 == IMAGE_FILE_MACHINE_ARM64 &&
+                      matchedX64 && strippedOk,
+                      "v0.4.5 ReadPeMachineArchitecture, x64 /dlib SignTool dispatch on ARM64, and StripExistingPeCertificates succeed");
+            }
         }
     }
 
