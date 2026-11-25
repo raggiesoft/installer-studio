@@ -1,24 +1,27 @@
 ; ==============================================================================
 ; FILE: projects/apps/installer-studio/installer-studio.rsip
-; APPLICATION: RaggieSoft Installer Studio (v0.4.2 Technical Preview)
-; COMPILER: RaggieSoft Installer Studio (instbuild.exe -> .msi + Setup.exe)
+; APPLICATION: RaggieSoft Installer Studio (v0.4.3 Technical Preview)
+; COMPILER: RaggieSoft Installer Studio (instbuild.exe -> .msi + Universal Setup.exe)
 ; ==============================================================================
 
 @include "..\..\shared\raggiesoft-defaults.rsii"
 
 [Package]
-Name                  = RaggieSoft Installer Studio
-Tagline               = Install Without Limits - Tree-First AeroWizard IDE, MSI Compiler, Prism & Help
-WebsiteLabel          = raggiesoftstudio.com
-Version               = 0.4.2
-Manufacturer          = RaggieSoft
-UpgradeCode           = {D9C0EF36-990C-519C-A9C7-D7E19FDD5627}
-Architecture          = $(ARCH)
-Scope                 = machine
-OutputName            = raggiesoft-installer-studio-$(ARCH)
-OutputDir             = out
-BuildBootstrapper     = true
-AboutUrl              = https://raggiesoftstudio.com
+Name                     = RaggieSoft Installer Studio
+Tagline                  = Install Without Limits - Tree-First AeroWizard IDE, MSI Compiler, Prism & Help
+WebsiteLabel             = raggiesoftstudio.com
+Version                  = 0.4.3
+Manufacturer             = RaggieSoft
+UpgradeCode              = {D9C0EF36-990C-519C-A9C7-D7E19FDD5627}
+Architecture             = $(ARCH)
+Scope                    = machine
+OutputName               = raggiesoft-installer-studio-$(ARCH)
+UniversalOutputName      = raggiesoft-installer-studio
+BuildUniversal           = true
+UniversalDownloadBaseUrl = https://assets.raggiesoft.com/desktop-apps/windows/apps/installer-studio
+OutputDir                = out
+BuildBootstrapper        = true
+AboutUrl                 = https://raggiesoftstudio.com
 
 [Install]
 DefaultSubdir         = RaggieSoft\Installer Studio

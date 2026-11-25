@@ -29,7 +29,7 @@
 //     for core MSI, Prerequisite, Native, or Scripting features!
 //
 //   Community Edition White-Label Attribution Rule:
-//     `kGeneratorSigWide` (`"RaggieSoft Installer Studio (instbuild.exe 0.4.2)"`) is
+//     `kGeneratorSigWide` (`"RaggieSoft Installer Studio (instbuild.exe 0.4.3)"`) is
 //     written ONLY to the non-visible MSI `SummaryInformation` `PID_APPNAME`
 //     (Creating Application) diagnostic field—never stamped as a visible watermark
 //     onto customer dialogs or `Setup.exe` `VERSIONINFO`!
@@ -41,13 +41,13 @@
 
 namespace rsw {
 
-// Semantic Versioning (`0.4.2`)
+// Semantic Versioning (`0.4.3`)
 inline constexpr int kVersionMajor = 0;
 inline constexpr int kVersionMinor = 4;
-inline constexpr int kVersionPatch = 2;
+inline constexpr int kVersionPatch = 3;
 
-inline constexpr std::string_view  kVersionString      = "0.4.2";
-inline constexpr std::wstring_view kVersionStringWide  = L"0.4.2";
+inline constexpr std::string_view  kVersionString      = "0.4.3";
+inline constexpr std::wstring_view kVersionStringWide  = L"0.4.3";
 
 // Suite, Runtime Wizard, Help Viewer, & MSI Prism Product Identity
 inline constexpr std::string_view  kSuiteTitle         = "RaggieSoft Installer Studio";
@@ -62,8 +62,8 @@ inline constexpr std::string_view  kCanonicalExt       = ".rsip";
 inline constexpr std::string_view  kSuiteExt           = ".rsis";
 inline constexpr std::string_view  kIncludeExt         = ".rsii";
 inline constexpr std::string_view  kScriptExt          = ".rssc";
-inline constexpr std::string_view  kGeneratorSignature = "RaggieSoft Installer Studio (instbuild.exe 0.4.2)";
-inline constexpr std::wstring_view kGeneratorSigWide   = L"RaggieSoft Installer Studio (instbuild.exe 0.4.2)";
+inline constexpr std::string_view  kGeneratorSignature = "RaggieSoft Installer Studio (instbuild.exe 0.4.3)";
+inline constexpr std::wstring_view kGeneratorSigWide   = L"RaggieSoft Installer Studio (instbuild.exe 0.4.3)";
 inline constexpr std::string_view  kManifestSchemaVer  = "0.4";
 
 /// IDE Product Editions (`Community` permanently maintains 100% feature parity with `Premier`!).
@@ -106,11 +106,14 @@ inline constexpr bool EditionHasFullPremierParity(RswIdeEdition ed) noexcept {
 }
 
 // Embedded Win32 RCDATA resource IDs inside `SetupWizard.exe` -> `<Product>-setup.exe`
-inline constexpr int kResIdEmbeddedMsi       = 201; // Full compiled `Product.msi` stream
-inline constexpr int kResIdBrandingIni       = 202; // UTF-8 `[Branding]` manifest
-inline constexpr int kResIdLicenseRtf        = 203; // RTF / plain-text software license
-inline constexpr int kResIdArtworkPng        = 204; // Optional cover / 16:9 banner PNG
-inline constexpr int kResIdPrereqManifest    = 205; // UTF-8 serialized `[Prerequisite.*]` runtime table
-inline constexpr int kResIdPrereqPayloadBase = 300; // `300 + idx`: Embedded offline runtime binaries!
+inline constexpr int kResIdEmbeddedMsi         = 201; // Full compiled `Product.msi` stream
+inline constexpr int kResIdBrandingIni         = 202; // UTF-8 `[Branding]` manifest
+inline constexpr int kResIdLicenseRtf          = 203; // RTF / plain-text software license
+inline constexpr int kResIdArtworkPng          = 204; // Optional cover / 16:9 banner PNG
+inline constexpr int kResIdPrereqManifest      = 205; // UTF-8 serialized `[Prerequisite.*]` runtime table
+inline constexpr int kResIdUniversalManifest   = 210; // UTF-8 `[Universal]` CPU-dispatch manifest (`Mode=offline|web`)
+inline constexpr int kResIdUniversalSetupX64   = 211; // LZMS-compressed native `<Product>-x64-setup.exe` (Offline Universal)
+inline constexpr int kResIdUniversalSetupArm64 = 212; // LZMS-compressed native `<Product>-arm64-setup.exe` (Offline Universal)
+inline constexpr int kResIdPrereqPayloadBase   = 300; // `300 + idx`: Embedded offline runtime binaries!
 
 } // namespace rsw

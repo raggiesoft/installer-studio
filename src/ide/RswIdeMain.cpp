@@ -662,8 +662,11 @@ public:
     HWND hNavTree = nullptr, hConsoleEdit = nullptr;
 
     // View 0: Package & Identity
+    static constexpr int IDC_PKG_UNIV_CHK = 2221;
+    static constexpr int IDC_PKG_UNIV_URL = 2222;
     HWND hPkgName = nullptr, hPkgTag = nullptr, hPkgWeb = nullptr, hPkgVer = nullptr, hPkgPub = nullptr;
-    HWND hPkgGuid = nullptr, hPkgBtnGuid = nullptr, hPkgSub = nullptr, hPkgExe = nullptr, hPkgScope = nullptr, hPkgApply = nullptr;
+    HWND hPkgGuid = nullptr, hPkgBtnGuid = nullptr, hPkgSub = nullptr, hPkgExe = nullptr, hPkgScope = nullptr;
+    HWND hPkgUnivChk = nullptr, hPkgUnivUrl = nullptr, hPkgApply = nullptr;
 
     // View 1: Application Runtimes (`[Prerequisite.*]`) & Merge Modules (`[MergeModule.*]`) Tree
     HWND hPrTree = nullptr, hPrPreset = nullptr, hPrDist = nullptr, hPrSource = nullptr;
@@ -964,9 +967,11 @@ public:
         mkLbl(VIEW_PACKAGE, L"&Manufacturer:");       hPkgPub  = mkEd(VIEW_PACKAGE, IDC_PKG_PUBLISHER);
         mkLbl(VIEW_PACKAGE, L"&UpgradeCode GUID:");   hPkgGuid = mkEd(VIEW_PACKAGE, IDC_PKG_UPGRADECODE);
         hPkgBtnGuid = mkBtn(VIEW_PACKAGE, L"New &GUID", IDC_PKG_NEW_GUID);
-        mkLbl(VIEW_PACKAGE, L"Install &Subfolder:");  hPkgSub  = mkEd(VIEW_PACKAGE, IDC_PKG_SUBDIR);
-        mkLbl(VIEW_PACKAGE, L"Main &Executable:");    hPkgExe  = mkEd(VIEW_PACKAGE, IDC_PKG_MAINEXE);
-        mkLbl(VIEW_PACKAGE, L"Install S&cope:");      hPkgScope= mkCombo(VIEW_PACKAGE, IDC_PKG_SCOPE, {L"machine", L"user"}, 0);
+        mkLbl(VIEW_PACKAGE, L"Install &Subfolder:");  hPkgSub     = mkEd(VIEW_PACKAGE, IDC_PKG_SUBDIR);
+        mkLbl(VIEW_PACKAGE, L"Main &Executable:");    hPkgExe     = mkEd(VIEW_PACKAGE, IDC_PKG_MAINEXE);
+        mkLbl(VIEW_PACKAGE, L"Install S&cope:");      hPkgScope   = mkCombo(VIEW_PACKAGE, IDC_PKG_SCOPE, {L"machine", L"user"}, 0);
+        hPkgUnivChk = mkBtn(VIEW_PACKAGE, L"Build &Universal Combined EXE (x64+ARM64 + Web Stub)", IDC_PKG_UNIV_CHK, BS_AUTOCHECKBOX);
+        mkLbl(VIEW_PACKAGE, L"Universal Web &URL:");  hPkgUnivUrl = mkEd(VIEW_PACKAGE, IDC_PKG_UNIV_URL);
         hPkgApply = mkBtn(VIEW_PACKAGE, L"&Apply Package Identity to .rsip AST (Preserves Comments)", IDC_PKG_APPLY);
 
         // --- VIEW 1: Application Runtimes (`[Prerequisite.*]`) & Merge Modules (`[MergeModule.*]`) Tree ---
@@ -1164,9 +1169,10 @@ public:
             0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CONSOLE_EDIT)), hInst, nullptr));
         ::SendMessageW(hConsoleEdit, EM_SETLIMITTEXT, 0, 0);
 
-        rsw::ui::AttachAccessibleCheckboxSubclass(hFtReqChk,  &theme, false);
-        rsw::ui::AttachAccessibleCheckboxSubclass(hFaAdvChk,  &theme, false);
-        rsw::ui::AttachAccessibleCheckboxSubclass(hSigEnable, &theme, false);
+        rsw::ui::AttachAccessibleCheckboxSubclass(hPkgUnivChk, &theme, false);
+        rsw::ui::AttachAccessibleCheckboxSubclass(hFtReqChk,   &theme, false);
+        rsw::ui::AttachAccessibleCheckboxSubclass(hFaAdvChk,   &theme, false);
+        rsw::ui::AttachAccessibleCheckboxSubclass(hSigEnable,  &theme, false);
         for (HWND sc : {hSourceEdit, hConsoleEdit}) {
             rsw::ui::ApplyDarkScrollbarTheme(sc, theme);
         }
@@ -1242,22 +1248,24 @@ public:
         // View 0: Package & Identity
         {
             auto v = viewCtrls(VIEW_PACKAGE);
-            int y = contentTop + S(4);
-            const int lw = S(148), fw = std::min(S(480), paneW - lw - S(16));
+            int y = contentTop + S(2);
+            const int lw = S(148), fw = std::min(S(520), paneW - lw - S(16));
             auto row = [&](HWND lbl, HWND ed, int rsv = 0) {
-                ::MoveWindow(lbl, paneX, y + S(4), lw, S(22), TRUE);
-                ::MoveWindow(ed,  paneX + lw, y, fw - rsv, S(26), TRUE);
-                y += S(31);
+                ::MoveWindow(lbl, paneX, y + S(3), lw, S(20), TRUE);
+                ::MoveWindow(ed,  paneX + lw, y, fw - rsv, S(25), TRUE);
+                y += S(28);
             };
-            if (v.size() >= 20) {
+            if (v.size() >= 23) {
                 row(v[0], v[1]); row(v[2], v[3]); row(v[4], v[5]); row(v[6], v[7]); row(v[8], v[9]);
                 row(v[10], v[11], S(92));
-                ::MoveWindow(hPkgBtnGuid, paneX + lw + fw - S(86), y - S(31), S(86), S(26), TRUE);
+                ::MoveWindow(hPkgBtnGuid, paneX + lw + fw - S(86), y - S(28), S(86), S(25), TRUE);
                 row(v[13], v[14]); row(v[15], v[16]);
-                ::MoveWindow(v[17], paneX, y + S(4), lw, S(22), TRUE);
-                ::MoveWindow(hPkgScope, paneX + lw, y, S(160), S(140), TRUE);
-                y += S(36);
-                ::MoveWindow(hPkgApply, paneX, y, fw + lw, S(34), TRUE);
+                ::MoveWindow(v[17],       paneX,               y + S(3), lw,     S(20),  TRUE);
+                ::MoveWindow(hPkgScope,   paneX + lw,          y,        S(112), S(140), TRUE);
+                ::MoveWindow(hPkgUnivChk, paneX + lw + S(122), y + S(1), std::max(S(240), paneW - lw - S(132)), S(24), TRUE);
+                y += S(29);
+                row(v[20], hPkgUnivUrl);
+                ::MoveWindow(hPkgApply, paneX, y + S(2), fw + lw, S(32), TRUE);
             }
         }
 
@@ -2213,6 +2221,9 @@ public:
         ::SetWindowTextW(hPkgExe,  rsw::Utf8ToWide(effectiveDoc.GetString("Install", "", "MainExecutable")).c_str());
         const bool isUser = rsw::EqualsIgnoreCase(effectiveDoc.GetString("Package", "", "Scope", "machine"), "user");
         ::SendMessageW(hPkgScope, CB_SETCURSEL, isUser ? 1 : 0, 0);
+        const bool isUniv = effectiveDoc.GetBool("Package", "", "BuildUniversal", false);
+        ::SendMessageW(hPkgUnivChk, BM_SETCHECK, isUniv ? BST_CHECKED : BST_UNCHECKED, 0);
+        ::SetWindowTextW(hPkgUnivUrl, rsw::Utf8ToWide(effectiveDoc.GetString("Package", "", "UniversalDownloadBaseUrl")).c_str());
 
         RebuildPrerequisitesTree(effectiveDoc);
         RebuildFeaturesTree(effectiveDoc);
@@ -2428,6 +2439,12 @@ public:
         astDoc.SetString("Package", "", "Manufacturer",   ReadCtlUtf8(hPkgPub));
         astDoc.SetString("Package", "", "UpgradeCode",    ReadCtlUtf8(hPkgGuid));
         astDoc.SetString("Package", "", "Scope",          (::SendMessageW(hPkgScope, CB_GETCURSEL, 0, 0) == 1) ? "user" : "machine");
+        const bool univOn = (::SendMessageW(hPkgUnivChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
+        astDoc.SetString("Package", "", "BuildUniversal", univOn ? "true" : "false");
+        const std::string univUrl = ReadCtlUtf8(hPkgUnivUrl);
+        if (!univUrl.empty() || univOn) {
+            astDoc.SetString("Package", "", "UniversalDownloadBaseUrl", univUrl);
+        }
         astDoc.SetString("Install", "", "DefaultSubdir",  ReadCtlUtf8(hPkgSub));
         astDoc.SetString("Install", "", "MainExecutable", ReadCtlUtf8(hPkgExe));
         SyncSourceEditorFromAst();
@@ -2577,11 +2594,15 @@ public:
             return;
         }
         const std::wstring arch = rsw::Utf8ToWide(SelectedArch());
+        const auto effDoc = ResolvedEffectiveDoc();
+        const bool buildUniv = !mergeModule && effDoc.GetBool("Package", "", "BuildUniversal", false);
         std::wstring cmd = L"\"" + cliExe.wstring() + L"\" ";
         if (mergeModule) {
             const auto msmOut = currentFilePath.parent_path() / L"out" /
                                 (currentFilePath.stem().wstring() + L"-" + arch + L".msm");
             cmd += L"--emit-msm \"" + currentFilePath.wstring() + L"\" \"" + msmOut.wstring() + L"\" --arch=" + arch;
+        } else if (buildUniv) {
+            cmd += L"\"" + currentFilePath.wstring() + L"\" --universal";
         } else {
             cmd += L"\"" + currentFilePath.wstring() + L"\" --arch=" + arch;
         }

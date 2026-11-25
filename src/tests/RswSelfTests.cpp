@@ -558,6 +558,92 @@ int wmain() {
             Check(descClean && tmplPresent,
                   "ActionText separates Description from '[1]' Template (prevents 'Copying New File: [1]' bug)");
         }
+
+        // 5C. Verify `v0.4.3` Combined Universal Packaging (`<stem>-offline-setup.exe` + Smart CPU Web Stub `<stem>-setup.exe`)!
+        {
+            std::ostringstream univManifest;
+            univManifest << "[Package]\n"
+                         << "Name = UniversalSample\n"
+                         << "Version = 0.4.3\n"
+                         << "Manufacturer = RaggieSoft\n"
+                         << "UpgradeCode = {8B1E4C77-3456-4D22-8A99-CC33DD44EE55}\n"
+                         << "Architecture = $(ARCH)\n"
+                         << "OutputName = universal-sample-$(ARCH)\n"
+                         << "UniversalOutputName = universal-sample\n"
+                         << "BuildUniversal = true\n"
+                         << "UniversalDownloadBaseUrl = https://assets.raggiesoft.com/samples/universal-sample\n"
+                         << "[Install]\n"
+                         << "DefaultSubdir = RaggieSoft\\UniversalSample\n"
+                         << "[Payload.MainExe]\n"
+                         << "Source = " << rsw::WideToUtf8(payloadToUse.wstring()) << "\n";
+            auto univDoc = rsw::ParseManifestText(univManifest.str(), testWorkDir / L"universal-sample.rsip");
+            univDoc.SetString("Package", "", "OutputDir", rsw::WideToUtf8((testWorkDir / L"univ-out").wstring()));
+
+            rsw::CompiledMsiSummary uX64Sum{}, uArm64Sum{};
+            std::filesystem::path uX64Setup, uArm64Setup;
+            rsw::UniversalPackageOutputs uOut{};
+            std::string uErr;
+            const bool uBuilt =
+                rsw::CompileManifestToMsi(univDoc, "x64", uX64Sum, uErr) &&
+                rsw::PackageSelfExtractingBootstrapper(univDoc, uX64Sum, binDir, uX64Setup, uErr) &&
+                rsw::CompileManifestToMsi(univDoc, "arm64", uArm64Sum, uErr) &&
+                rsw::PackageSelfExtractingBootstrapper(univDoc, uArm64Sum, binDir, uArm64Setup, uErr) &&
+                rsw::PackageUniversalInstallers(univDoc, uX64Sum, uX64Setup, uArm64Sum, uArm64Setup, binDir, uOut, uErr);
+
+            const auto webStubBytes = (!uOut.webStubExePath.empty() && std::filesystem::exists(uOut.webStubExePath, ec))
+                ? std::filesystem::file_size(uOut.webStubExePath, ec) : 0u;
+            Check(uBuilt &&
+                  std::filesystem::exists(uOut.offlineSetupExePath, ec) &&
+                  std::filesystem::exists(uOut.webStubExePath, ec) &&
+                  rsw::IsX64PortableExecutable(uOut.offlineSetupExePath) &&
+                  rsw::IsX64PortableExecutable(uOut.webStubExePath) &&
+                  webStubBytes > 64 * 1024 && webStubBytes < 1536 * 1024 &&
+                  uOut.sha256X64.size() == 64 && uOut.sha256Arm64.size() == 64,
+                  "PackageUniversalInstallers emits x64-bootable Combined Offline EXE + compact SHA-256 Web Stub EXE",
+                  uErr);
+
+            // Execute `<stem>-offline-setup.exe --extract-msi` (auto-detecting host CPU!) AND `--force-arch=x64 --extract-msi`!
+            auto runUniversalExtract = [&](const std::wstring& extraArg, const std::filesystem::path& destDir) -> std::string {
+                std::filesystem::create_directories(destDir, ec);
+                std::wstring cmd = L"\"" + uOut.offlineSetupExePath.wstring() + L"\" ";
+                if (!extraArg.empty()) cmd += extraArg + L" ";
+                cmd += L"--extract-msi \"" + destDir.wstring() + L"\"";
+                STARTUPINFOW si{};
+                si.cb = sizeof(si);
+                PROCESS_INFORMATION pi{};
+                if (!::CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+                    return "";
+                }
+                ::WaitForSingleObject(pi.hProcess, 20000);
+                DWORD exitCode = 1;
+                ::GetExitCodeProcess(pi.hProcess, &exitCode);
+                ::CloseHandle(pi.hThread);
+                ::CloseHandle(pi.hProcess);
+                if (exitCode != 0) return "";
+
+                const auto extractedMsi = destDir / L"UniversalSample.msi";
+                rsw::ScopedMsiHandle hSum;
+                if (::MsiGetSummaryInformationW(0, extractedMsi.wstring().c_str(), 0, hSum.Put()) != ERROR_SUCCESS) {
+                    return "";
+                }
+                UINT dataType = 0;
+                INT iVal = 0;
+                FILETIME ft{};
+                wchar_t tmplBuf[128]{};
+                DWORD cch = static_cast<DWORD>(std::size(tmplBuf));
+                if (::MsiSummaryInfoGetPropertyW(hSum.Get(), 7 /* PID_TEMPLATE */, &dataType, &iVal, &ft, tmplBuf, &cch) != ERROR_SUCCESS) {
+                    return "";
+                }
+                return rsw::WideToUtf8(tmplBuf);
+            };
+
+            const std::string expectedNativeTmpl = (hp.nativeMachine == IMAGE_FILE_MACHINE_ARM64) ? "Arm64;1033" : "x64;1033";
+            const std::string autoTmpl = uBuilt ? runUniversalExtract(L"", testWorkDir / L"univ-extract-auto") : "";
+            const std::string x64Tmpl  = uBuilt ? runUniversalExtract(L"--force-arch=x64", testWorkDir / L"univ-extract-x64") : "";
+            Check(autoTmpl == expectedNativeTmpl && x64Tmpl == "x64;1033",
+                  "Combined Offline Universal EXE pierces Prism via IsWow64Process2 and dispatches native silicon child installer",
+                  "auto=" + autoTmpl + " forcedX64=" + x64Tmpl);
+        }
     }
 
     // 6. Live Windows Installer (`msi.dll`) Engine Verification (`AppSearch`, `Signature`, `LaunchConditions`,

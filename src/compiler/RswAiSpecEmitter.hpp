@@ -72,7 +72,7 @@ inline bool EmitAiSpecifications(const std::filesystem::path& outDir, std::strin
           << "- **100% Lossless IDE Parity & White-Label Output**: `InstallerStudio.exe` preserves every comment and `@include` byte-for-byte, and Community Edition maintains 100% feature parity with Premier Edition with zero UI watermarks (`VERSIONINFO` & wizard footers belong 100% to `[Package] Manufacturer`).\n\n"
           << "## Core CLI Commands (`instbuild.exe`, `msiprism.exe`, & `RaggieSoftHelp.exe`)\n"
           << "- `instbuild.exe --validate --diagnostics=json <project.rsip|suite.rsis> [--arch=x64|arm64]`: Sub-millisecond schema, GUID, 3-part MSI version, Component rule (`RSW031`/`RSW032`), filesystem, and `&` mnemonic linter.\n"
-          << "- `instbuild.exe <project.rsip|suite.rsis> [--arch=x64|arm64] [--category=<cat>] [--project=<id>] [--with-vpat]`: Compiles standalone Enterprise `<OutputName>.msi` + LZMS-compressed `<OutputName>-setup.exe` (or `<OutputName>.msm` when `PackageKind = msm`).\n"
+          << "- `instbuild.exe <project.rsip|suite.rsis> [--arch=x64|arm64] [--universal] [--category=<cat>] [--project=<id>] [--with-vpat]`: Compiles standalone Enterprise `<OutputName>.msi` + LZMS-compressed `<OutputName>-setup.exe`—plus combined Universal Single-File outputs (`<UniversalOutputName>-offline-setup.exe` with x64+ARM64 in one EXE, and `<UniversalOutputName>-setup.exe` CPU-aware WinHTTP Web Stub) when `BuildUniversal = true` or `--universal` is passed.\n"
           << "- `instbuild.exe --emit-vpat <project.rsip> <out-dir>`: Generates an audited WCAG 2.2 AA & Revised Section 508 HTML5 VPAT 2.5 Conformance Report.\n"
           << "- `instbuild.exe --emit-msm <project.rsip> <out.msm> [--arch=x64|arm64]`: Compiles a 64-bit Windows Installer Merge Module (`.msm`).\n"
           << "- `instbuild.exe --generate-mst <base.msi> <target.msi> <out.mst>`: Generates a GPO Transform (`.mst`).\n"
@@ -110,7 +110,8 @@ inline bool EmitAiSpecifications(const std::filesystem::path& outDir, std::strin
           << "5. **Mandatory `&` Keyboard Mnemonics**: Custom interactive labels (`[UI] InstallButtonText = &Install`, `FinishLaunchCheckbox = &Launch app`) MUST include `&` for WCAG 2.2 AA keyboard access.\n"
           << "6. **Microsoft Component Rules (`RSW031` & `RSW032`)**: Every `[Payload.*]` assigned to an explicit `[Component.<Id>]` must share one destination directory (`RSW031`), and components targeting per-user folders (`AppDataFolder`, `LocalAppDataFolder`, `StartMenu`, `Desktop`) must use `KeyPathKind = registry` (`HKCU`, `RSW032`).\n"
           << "7. **Pre-MSI `[Prerequisite.<Id>]` Execution**: Runtimes (`DotNet10Desktop`, `DotNet10AspNet`, `DotNet9Desktop`, `DotNet8Desktop`, `EdgeWebView2`, `VcRedist2022`, or `Custom`) execute BEFORE `msiexec` under a single UAC prompt (`download`, `embedded` LZMS, or `side-by-side` `Redist\\`) and latch `RebootExitCodes` (`3010, 1641, 23`).\n"
-          << "8. **Lossless AST Comments**: `;` and `#` comments plus `@include` directives survive `InstallerStudio.exe` GUI edits byte-for-byte.\n\n"
+          << "8. **64-Bit Silicon & `PID_TEMPLATE` Rules (`x64;1033` vs `Arm64;1033` — Zero `IA-64` / `x86` Host Builds)**: Host toolchain & outer Universal `Setup.exe` stubs are strictly 64-bit (`IMAGE_FILE_MACHINE_AMD64` `0x8664` outer stub using `IsWow64Process2` to pierce Windows 11 Prism and dispatch native `ARM64` `0xAA64` vs `x64` `0x8664`). MSI `SummaryInformation` `PID_TEMPLATE` MUST strictly use `x64;1033` (AMD64/Intel 64-bit) or `Arm64;1033` (64-bit ARM)—NEVER `Intel64;1033` (deceased IA-64 Itanium!).\n"
+          << "9. **Lossless AST Comments**: `;` and `#` comments plus `@include` directives survive `InstallerStudio.exe` GUI edits byte-for-byte.\n\n"
           << "## 2. Complete `.rsip` Project Schema (`v" << kManifestSchemaVer << "`)\n\n";
 
         for (const auto& sd : kSectionDescriptors) {
@@ -281,10 +282,13 @@ inline bool EmitAiSpecifications(const std::filesystem::path& outDir, std::strin
           << "   - Declare `[Prerequisite.<Id>]` for any required `.NET`, `WebView2`, `VC++`, or custom runtimes so `SetupWizard.exe` runs them before `msiexec` and latches `RebootExitCodes`.\n"
           << "2. **Run Instant JSON Validation Before Compiling**:\n"
           << "   - Execute `instbuild.exe --validate --diagnostics=json <project.rsip|suite.rsis> --arch=arm64` (and `--arch=x64`) until `\"ok\": true` (`0` errors).\n"
-          << "3. **Compile & Verify MSI / MSM / MST / MSP Integrity**:\n"
-          << "   - Execute `instbuild.exe <project.rsip|suite.rsis> --arch=arm64` and `--arch=x64` (and optionally inspect SQL tables via `msiprism.exe --inspect-summary <out.msi>`).\n"
+          << "3. **Compile & Verify MSI / MSM / MST / MSP & Universal Installers**:\n"
+          << "   - Execute `instbuild.exe <project.rsip|suite.rsis> --arch=arm64` and `--arch=x64` (or set `BuildUniversal = true` / pass `--universal` to emit `<stem>-offline-setup.exe` bundling both architectures in one EXE plus `<stem>-setup.exe` CPU-aware smart web stub, and optionally inspect SQL tables via `msiprism.exe --inspect-summary <out.msi>`).\n"
           << "4. **Optional Compliance Export**:\n"
-          << "   - Execute `instbuild.exe --emit-vpat <project.rsip> <out-dir>` (or pass `--with-vpat`) when generating WCAG 2.2 AA / Revised Section 508 procurement documentation.\n";
+          << "   - Execute `instbuild.exe --emit-vpat <project.rsip> <out-dir>` (or pass `--with-vpat`) when generating WCAG 2.2 AA / Revised Section 508 procurement documentation.\n\n"
+          << "## Permanent Release & Website Screenshot Rule\n\n"
+          << "- **Standing Rule**: Screenshots on `https://raggiesoftstudio.com/screenshots` MUST ALWAYS reflect the most recently released version of RaggieSoft Installer Studio.\n"
+          << "- Whenever shipping a new release of `desktop-apps/installer-studio/`, ALWAYS run `powershell -NoProfile -ExecutionPolicy Bypass -File .\\export-all-screenshots.ps1` after compiling so 100% of `SetupWizard.exe`, `InstallerStudio.exe`, `msiprism.exe`, and `RaggieSoftHelp.exe` PNG captures match the newly released version before building and deploying `raggiesoftstudio.com`.\n";
 
         std::ofstream f(outDir / "SKILL.md", std::ios::binary);
         if (!f) { outError = "Could not write SKILL.md"; return false; }

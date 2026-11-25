@@ -240,6 +240,12 @@ inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>
     // --- Extended [Package], [Requirements], [UI], [Feature], [Payload], [Shortcut], [Registry] ---
     {"Package",  "PackageKind",          FieldValueKind::EnumChoice,  false, "msi",               "msi|msm",
      "`msi` builds a standalone Enterprise `.msi` (+ optional `-setup.exe`); `msm` builds a reusable Merge Module (`.msm`)."},
+    {"Package",  "BuildUniversal",       FieldValueKind::Boolean,     false, "false",             "",
+     "When `true` (or when `--universal` is passed to `instbuild.exe`), compiles both `x64` and `arm64` editions and emits `<UniversalOutputName>-offline-setup.exe` (both architectures in one portable EXE) plus `<UniversalOutputName>-setup.exe` (CPU-aware smart web stub when `UniversalDownloadBaseUrl` is set)."},
+    {"Package",  "UniversalOutputName",  FieldValueKind::String,      false, "",                  "",
+     "Optional base filename stem for universal combined installers; defaults to `OutputName` stripped of `-$(ARCH)` (e.g. `raggiesoft-installer-studio`)."},
+    {"Package",  "UniversalDownloadBaseUrl", FieldValueKind::String,  false, "",                  "",
+     "Optional HTTPS folder URL hosting `<OutputName>-x64-setup.exe` and `<OutputName>-arm64-setup.exe` so `<UniversalOutputName>-setup.exe` auto-detects host silicon via `IsWow64Process2` and downloads the exact native installer with SHA-256 verification."},
     {"Package",  "Tagline",              FieldValueKind::String,      false, "",                  "",
      "Short subtitle displayed beneath the product title in `SetupWizard.exe` and `InstallerStudio.exe`."},
     {"Package",  "WebsiteLabel",         FieldValueKind::String,      false, "",                  "",

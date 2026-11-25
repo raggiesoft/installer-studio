@@ -614,4 +614,344 @@ inline bool PackageSelfExtractingBootstrapper(
     return RunAuthenticodeSignTool(doc, outSetupExePath, outError);
 }
 
+/// Checks whether a PE executable on disk has `IMAGE_FILE_MACHINE_AMD64` (`0x8664`) so our
+/// outer Universal Stub starts natively on Intel/AMD `x64` AND via Prism on Windows 11 `ARM64`!
+inline bool IsX64PortableExecutable(const std::filesystem::path& exePath) noexcept {
+    std::ifstream in(exePath, std::ios::binary);
+    if (!in) return false;
+    IMAGE_DOS_HEADER dos{};
+    if (!in.read(reinterpret_cast<char*>(&dos), sizeof(dos)) || dos.e_magic != IMAGE_DOS_SIGNATURE) {
+        return false;
+    }
+    if (dos.e_lfanew <= 0 || dos.e_lfanew > 16 * 1024 * 1024) return false;
+    in.seekg(dos.e_lfanew, std::ios::beg);
+    DWORD peSig = 0;
+    IMAGE_FILE_HEADER fh{};
+    if (!in.read(reinterpret_cast<char*>(&peSig), sizeof(peSig)) || peSig != IMAGE_NT_SIGNATURE) {
+        return false;
+    }
+    if (!in.read(reinterpret_cast<char*>(&fh), sizeof(fh))) {
+        return false;
+    }
+    return fh.Machine == IMAGE_FILE_MACHINE_AMD64;
+}
+
+/// Locates the `x64` (`IMAGE_FILE_MACHINE_AMD64`) `SetupWizard.exe` template used as the outer
+/// universal dispatcher binary for both `*-offline-setup.exe` and `*-setup.exe`.
+inline std::filesystem::path LocateUniversalOuterX64Stub(const std::filesystem::path& compilerExeDir) {
+    std::error_code ec;
+    const std::vector<std::filesystem::path> candidates = {
+        compilerExeDir.parent_path() / L"x64" / L"SetupWizard.exe",
+        compilerExeDir / L"x64" / L"SetupWizard.exe",
+        compilerExeDir / L"SetupWizard.exe"
+    };
+    for (const auto& c : candidates) {
+        if (std::filesystem::exists(c, ec) && IsX64PortableExecutable(c)) {
+            return c;
+        }
+    }
+    return {};
+}
+
+/// Derives a clean architecture-neutral filename stem (e.g., `raggiesoft-installer-studio`)
+/// from `[Package] UniversalOutputName`, `OutputName`, or `Name`.
+inline std::string DeriveUniversalOutputStem(const RswManifestDocument& doc) {
+    std::string explicitStem = TrimAscii(doc.GetString("Package", "", "UniversalOutputName"));
+    if (!explicitStem.empty()) return explicitStem;
+
+    std::string rawOut = TrimAscii(doc.GetString("Package", "", "OutputName"));
+    auto stripToken = [](std::string& s, std::string_view tok) {
+        for (;;) {
+            const auto pos = AsciiLower(s).find(AsciiLower(tok));
+            if (pos == std::string::npos) break;
+            s.erase(pos, tok.size());
+        }
+    };
+    if (!rawOut.empty()) {
+        stripToken(rawOut, "-$(ARCH)");
+        stripToken(rawOut, "_$(ARCH)");
+        stripToken(rawOut, "$(ARCH)");
+        for (std::string_view suf : {"-x64", "-arm64", "-amd64", "_x64", "_arm64", "_amd64"}) {
+            if (rawOut.size() > suf.size() &&
+                EqualsIgnoreCase(std::string_view(rawOut).substr(rawOut.size() - suf.size()), suf)) {
+                rawOut.resize(rawOut.size() - suf.size());
+                break;
+            }
+        }
+        while (!rawOut.empty() && (rawOut.back() == '-' || rawOut.back() == '_')) rawOut.pop_back();
+        if (!rawOut.empty()) return rawOut;
+    }
+
+    const std::string prodName = doc.GetString("Package", "", "Name", "app");
+    std::string kebab;
+    for (char c : prodName) {
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) kebab.push_back(c);
+        else if (c >= 'A' && c <= 'Z') kebab.push_back(static_cast<char>(c - 'A' + 'a'));
+        else if (!kebab.empty() && kebab.back() != '-') kebab.push_back('-');
+    }
+    while (!kebab.empty() && kebab.back() == '-') kebab.pop_back();
+    return kebab.empty() ? "application" : kebab;
+}
+
+/// Stamps optional `[UI] IconFile` (`RT_GROUP_ICON` #101) and publisher `VS_VERSION_INFO` (`RT_VERSION` #1)
+/// onto an open `BeginUpdateResourceW` handle (`hRes`).
+inline bool StampIconAndVersionOnExeResource(
+    HANDLE hRes,
+    const std::filesystem::path& iconFilePath,
+    std::string_view companyName,
+    std::string_view fileDescription,
+    std::string_view productVersion,
+    std::string_view internalName,
+    std::string_view originalFileName,
+    std::string_view productName,
+    std::string& outError)
+{
+    constexpr WORD kLangEnUs = MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US);
+    std::error_code ec;
+    bool ok = true;
+
+    if (!iconFilePath.empty() && std::filesystem::exists(iconFilePath, ec)) {
+        std::vector<std::uint8_t> icoBytes;
+        if (ReadBinaryFileBytes(iconFilePath, icoBytes, outError) &&
+            icoBytes.size() >= sizeof(DiskIconDirHeader)) {
+            DiskIconDirHeader hdr{};
+            std::memcpy(&hdr, icoBytes.data(), sizeof(hdr));
+            const std::size_t entriesBytes = static_cast<std::size_t>(hdr.idCount) * sizeof(DiskIconDirEntry);
+            if (hdr.idReserved == 0 && hdr.idType == 1 && hdr.idCount > 0 &&
+                icoBytes.size() >= sizeof(hdr) + entriesBytes) {
+                std::vector<std::uint8_t> grpBuf(sizeof(DiskIconDirHeader) + hdr.idCount * sizeof(PeGrpIconDirEntry));
+                std::memcpy(grpBuf.data(), &hdr, sizeof(hdr));
+
+                bool framesValid = true;
+                for (std::uint16_t i = 0; i < hdr.idCount; ++i) {
+                    DiskIconDirEntry de{};
+                    std::memcpy(&de, icoBytes.data() + sizeof(hdr) + i * sizeof(de), sizeof(de));
+                    if (static_cast<std::size_t>(de.dwImageOffset) + de.dwBytesInRes > icoBytes.size()) {
+                        framesValid = false;
+                        break;
+                    }
+                    const std::uint16_t iconId = static_cast<std::uint16_t>(i + 1u);
+                    ok = ok && ::UpdateResourceW(
+                        hRes, RT_ICON, MAKEINTRESOURCEW(iconId), kLangEnUs,
+                        icoBytes.data() + de.dwImageOffset, de.dwBytesInRes);
+
+                    PeGrpIconDirEntry ge{};
+                    ge.bWidth       = de.bWidth;
+                    ge.bHeight      = de.bHeight;
+                    ge.bColorCount  = de.bColorCount;
+                    ge.bReserved    = de.bReserved;
+                    ge.wPlanes      = de.wPlanes;
+                    ge.wBitCount    = de.wBitCount;
+                    ge.dwBytesInRes = de.dwBytesInRes;
+                    ge.nID          = iconId;
+                    std::memcpy(grpBuf.data() + sizeof(hdr) + i * sizeof(ge), &ge, sizeof(ge));
+                }
+                if (framesValid) {
+                    ok = ok && ::UpdateResourceW(
+                        hRes, RT_GROUP_ICON, MAKEINTRESOURCEW(101), kLangEnUs,
+                        grpBuf.data(), static_cast<DWORD>(grpBuf.size()));
+                }
+            }
+        }
+    }
+
+    const std::string copyright = "Copyright (c) 2026 " + std::string(companyName);
+    auto verBytes = VersionResourceBuilder::Build(
+        companyName, fileDescription, productVersion, internalName, copyright, originalFileName, productName);
+    ok = ok && ::UpdateResourceW(
+        hRes, RT_VERSION, MAKEINTRESOURCEW(1), kLangEnUs,
+        verBytes.data(), static_cast<DWORD>(verBytes.size()));
+    return ok;
+}
+
+/// Summary of combined Universal Single-File outputs emitted by `PackageUniversalInstallers(...)`.
+struct UniversalPackageOutputs {
+    std::filesystem::path offlineSetupExePath; // Single portable offline EXE bundling BOTH `x64` & `ARM64` installers!
+    std::filesystem::path webStubExePath;      // Compact CPU-aware smart web stub downloading `x64` or `ARM64` on demand!
+    std::string           sha256X64;
+    std::string           sha256Arm64;
+    std::uint64_t         sizeX64   = 0;
+    std::uint64_t         sizeArm64 = 0;
+};
+
+/// Emits `<univStem>-offline-setup.exe` (both `x64` and `ARM64` native installers compressed inside one
+/// self-contained portable `.exe`) AND, when `UniversalDownloadBaseUrl` is configured, `<univStem>-setup.exe`
+/// (a ~400 KB CPU-aware WinHTTP web stub that pierces Prism via `IsWow64Process2`, downloads ONLY the
+/// host processor's native installer with SHA-256 verification, and launches it natively!).
+inline bool PackageUniversalInstallers(
+    const RswManifestDocument& doc,
+    const CompiledMsiSummary& x64Summary,
+    const std::filesystem::path& x64SetupExePath,
+    const CompiledMsiSummary& arm64Summary,
+    const std::filesystem::path& arm64SetupExePath,
+    const std::filesystem::path& compilerExeDir,
+    UniversalPackageOutputs& outUniversal,
+    std::string& outError)
+{
+    outUniversal = {};
+    std::error_code ec;
+
+    if (x64SetupExePath.empty() || !std::filesystem::exists(x64SetupExePath, ec)) {
+        outError = "Universal packaging requires a compiled x64 Setup.exe payload.";
+        return false;
+    }
+    if (arm64SetupExePath.empty() || !std::filesystem::exists(arm64SetupExePath, ec)) {
+        outError = "Universal packaging requires a compiled ARM64 Setup.exe payload.";
+        return false;
+    }
+
+    const std::filesystem::path outerX64Stub = LocateUniversalOuterX64Stub(compilerExeDir);
+    if (outerX64Stub.empty()) {
+        outError = "Could not locate x64 'SetupWizard.exe' (IMAGE_FILE_MACHINE_AMD64) required for Universal Launcher packaging.";
+        return false;
+    }
+
+    std::vector<std::uint8_t> rawX64Bytes, rawArm64Bytes;
+    if (!ReadBinaryFileBytes(x64SetupExePath, rawX64Bytes, outError) ||
+        !ReadBinaryFileBytes(arm64SetupExePath, rawArm64Bytes, outError)) {
+        return false;
+    }
+
+    outUniversal.sizeX64   = static_cast<std::uint64_t>(rawX64Bytes.size());
+    outUniversal.sizeArm64 = static_cast<std::uint64_t>(rawArm64Bytes.size());
+    if (!ComputeFileSha256Hex(x64SetupExePath, outUniversal.sha256X64) ||
+        !ComputeFileSha256Hex(arm64SetupExePath, outUniversal.sha256Arm64)) {
+        outError = "Failed computing SHA-256 digests for x64 / ARM64 installers.";
+        return false;
+    }
+
+    const std::string univStem      = DeriveUniversalOutputStem(doc);
+    const std::filesystem::path dir = x64SetupExePath.parent_path();
+    const std::string x64FileName   = WideToUtf8(x64SetupExePath.filename().wstring());
+    const std::string arm64FileName = WideToUtf8(arm64SetupExePath.filename().wstring());
+
+    auto sanitizeLine = [](std::string s) {
+        std::string out;
+        out.reserve(s.size());
+        for (char c : s) {
+            if (c == '\r') continue;
+            if (c == '\n') out += "\\n";
+            else out += c;
+        }
+        return out;
+    };
+
+    auto buildUniversalIni = [&](std::string_view mode, std::string_view urlX64, std::string_view urlArm64) {
+        std::ostringstream ini;
+        ini << "[Universal]\n"
+            << "Mode="               << mode << "\n"
+            << "ProductName="        << sanitizeLine(x64Summary.productName) << "\n"
+            << "Tagline="            << sanitizeLine(ExpandArchToken(doc.GetString("Package", "", "Tagline", x64Summary.manufacturer + " Setup"), "universal")) << "\n"
+            << "WebsiteLabel="       << sanitizeLine(doc.GetString("Package", "", "WebsiteLabel", "")) << "\n"
+            << "Version="            << sanitizeLine(x64Summary.productVersion) << "\n"
+            << "Manufacturer="       << sanitizeLine(x64Summary.manufacturer) << "\n"
+            << "MinWindowsBuild="    << x64Summary.minWindowsBuild << "\n"
+            << "OsLaunchMessage="    << sanitizeLine(x64Summary.osLaunchMessage) << "\n"
+            << "AccentPrimaryHex="   << sanitizeLine(doc.GetString("UI", "", "AccentPrimaryHex", "#2563EB")) << "\n"
+            << "AccentSecondaryHex=" << sanitizeLine(doc.GetString("UI", "", "AccentSecondaryHex", "#FBBF24")) << "\n"
+            << "X64FileName="        << sanitizeLine(x64FileName) << "\n"
+            << "Arm64FileName="      << sanitizeLine(arm64FileName) << "\n"
+            << "Sha256X64="          << outUniversal.sha256X64 << "\n"
+            << "Sha256Arm64="        << outUniversal.sha256Arm64 << "\n"
+            << "SizeX64="            << outUniversal.sizeX64 << "\n"
+            << "SizeArm64="          << outUniversal.sizeArm64 << "\n"
+            << "UrlX64="             << sanitizeLine(std::string(urlX64)) << "\n"
+            << "UrlArm64="           << sanitizeLine(std::string(urlArm64)) << "\n";
+        return ini.str();
+    };
+
+    constexpr WORD kLangNeutral = MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL);
+
+    // 1. Emit Single-File Offline Universal Installer (`<univStem>-offline-setup.exe`: x64 + ARM64 combined!)
+    {
+        const auto offlinePath = dir / Utf8ToWide(univStem + "-offline-setup.exe");
+        std::filesystem::remove(offlinePath, ec);
+        if (!std::filesystem::copy_file(outerX64Stub, offlinePath, std::filesystem::copy_options::overwrite_existing, ec)) {
+            outError = "Failed copying universal x64 stub to '" + WideToUtf8(offlinePath.wstring()) + "'.";
+            return false;
+        }
+
+        std::vector<std::uint8_t> compX64   = CompressWithLzmsIfSmaller(rawX64Bytes);
+        std::vector<std::uint8_t> compArm64 = CompressWithLzmsIfSmaller(rawArm64Bytes);
+        const std::string offlineIni        = buildUniversalIni("offline", "", "");
+
+        HANDLE hRes = ::BeginUpdateResourceW(offlinePath.wstring().c_str(), FALSE);
+        if (!hRes) {
+            outError = "BeginUpdateResourceW failed on offline universal EXE.";
+            return false;
+        }
+        bool ok = true;
+        ok = ok && ::UpdateResourceW(
+            hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdUniversalManifest), kLangNeutral,
+            const_cast<char*>(offlineIni.data()), static_cast<DWORD>(offlineIni.size()));
+        ok = ok && ::UpdateResourceW(
+            hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdUniversalSetupX64), kLangNeutral,
+            compX64.data(), static_cast<DWORD>(compX64.size()));
+        ok = ok && ::UpdateResourceW(
+            hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdUniversalSetupArm64), kLangNeutral,
+            compArm64.data(), static_cast<DWORD>(compArm64.size()));
+
+        const std::string origName = WideToUtf8(offlinePath.filename().wstring());
+        const std::string desc     = x64Summary.productName + " Offline Universal Setup (x64 & ARM64)";
+        ok = ok && StampIconAndVersionOnExeResource(
+            hRes, x64Summary.iconFilePath, x64Summary.manufacturer, desc,
+            x64Summary.productVersion, univStem + "-offline", origName, x64Summary.productName, outError);
+
+        if (!::EndUpdateResourceW(hRes, !ok) || !ok) {
+            outError = "EndUpdateResourceW failed while stamping '" + origName + "'.";
+            return false;
+        }
+        if (!RunAuthenticodeSignTool(doc, offlinePath, outError)) {
+            return false;
+        }
+        outUniversal.offlineSetupExePath = offlinePath;
+    }
+
+    // 2. Emit Smart CPU-Aware Universal Web Stub (`<univStem>-setup.exe`) when `UniversalDownloadBaseUrl` is set!
+    std::string baseUrl = TrimAscii(doc.GetString("Package", "", "UniversalDownloadBaseUrl"));
+    while (!baseUrl.empty() && baseUrl.back() == '/') baseUrl.pop_back();
+    if (!baseUrl.empty()) {
+        const auto webStubPath = dir / Utf8ToWide(univStem + "-setup.exe");
+        // Safety guard: never overwrite one of the per-arch child EXEs if `OutputName` lacked `$(ARCH)`!
+        if (webStubPath != x64SetupExePath && webStubPath != arm64SetupExePath) {
+            std::filesystem::remove(webStubPath, ec);
+            if (!std::filesystem::copy_file(outerX64Stub, webStubPath, std::filesystem::copy_options::overwrite_existing, ec)) {
+                outError = "Failed copying universal x64 stub to '" + WideToUtf8(webStubPath.wstring()) + "'.";
+                return false;
+            }
+
+            const std::string urlX64   = baseUrl + "/" + x64FileName;
+            const std::string urlArm64 = baseUrl + "/" + arm64FileName;
+            const std::string webIni   = buildUniversalIni("web", urlX64, urlArm64);
+
+            HANDLE hRes = ::BeginUpdateResourceW(webStubPath.wstring().c_str(), FALSE);
+            if (!hRes) {
+                outError = "BeginUpdateResourceW failed on universal web stub EXE.";
+                return false;
+            }
+            bool ok = ::UpdateResourceW(
+                hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdUniversalManifest), kLangNeutral,
+                const_cast<char*>(webIni.data()), static_cast<DWORD>(webIni.size()));
+
+            const std::string origName = WideToUtf8(webStubPath.filename().wstring());
+            const std::string desc     = x64Summary.productName + " Setup (Auto-Detects x64 & ARM64)";
+            ok = ok && StampIconAndVersionOnExeResource(
+                hRes, x64Summary.iconFilePath, x64Summary.manufacturer, desc,
+                x64Summary.productVersion, univStem + "-setup", origName, x64Summary.productName, outError);
+
+            if (!::EndUpdateResourceW(hRes, !ok) || !ok) {
+                outError = "EndUpdateResourceW failed while stamping '" + origName + "'.";
+                return false;
+            }
+            if (!RunAuthenticodeSignTool(doc, webStubPath, outError)) {
+                return false;
+            }
+            outUniversal.webStubExePath = webStubPath;
+        }
+    }
+
+    (void)arm64Summary;
+    return true;
+}
+
 } // namespace rsw

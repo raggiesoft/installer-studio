@@ -3303,6 +3303,626 @@ int RunElevatedMsiWorkerFromJobFile(const std::filesystem::path& jobFile) {
     return static_cast<int>(rc);
 }
 
+// ================================================================================
+// UNIVERSAL SINGLE-DOWNLOAD DISPATCHER (`kResIdUniversalManifest` `#210`):
+//   1. `Mode=offline` (`<Product>-offline-setup.exe`):
+//      Embeds BOTH `x64` (`#211`) and `ARM64` (`#212`) LZMS-compressed native
+//      installers in one portable `.exe`, detects true host silicon via
+//      `IsWow64Process2` (piercing Windows 11 Prism emulation!), extracts ONLY
+//      the native child installer, verifies SHA-256, and forwards all CLI args.
+//   2. `Mode=web` (`<Product>-setup.exe` Smart CPU-Aware Web Stub):
+//      Compact ~400 KB `.exe` that detects true host silicon (`ARM64` vs `x64`),
+//      streams ONLY the matching native installer over HTTPS (`WinHTTP`) inside
+//      an accessible Dark/Light/High-Contrast progress dialog (or silently in `/s`),
+//      verifies SHA-256 (`bcrypt.dll`), and launches the genuine native installer!
+// ================================================================================
+struct UniversalLauncherConfig {
+    std::string   mode              = "offline";
+    std::wstring  productName       = L"Application";
+    std::wstring  tagline           = L"Universal Windows 11 Setup";
+    std::wstring  websiteLabel;
+    std::wstring  version           = L"1.0.0";
+    std::wstring  manufacturer      = L"RaggieSoft";
+    int           minWindowsBuild   = 22000;
+    std::wstring  osLaunchMessage   = L"This application requires Windows 11 (Build 22000) or later.";
+    COLORREF      accentPrimary     = RGB(37, 99, 235);
+    COLORREF      accentSecondary   = RGB(251, 191, 36);
+    std::wstring  x64FileName       = L"setup-x64.exe";
+    std::wstring  arm64FileName     = L"setup-arm64.exe";
+    std::string   sha256X64;
+    std::string   sha256Arm64;
+    std::uint64_t sizeX64           = 0;
+    std::uint64_t sizeArm64         = 0;
+    std::string   urlX64;
+    std::string   urlArm64;
+};
+
+UniversalLauncherConfig ParseUniversalLauncherConfig(std::string_view text) {
+    UniversalLauncherConfig cfg{};
+    std::istringstream iss{std::string(text)};
+    std::string line;
+    std::map<std::string, std::string> kv;
+    while (std::getline(iss, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty() || line.front() == '[' || line.front() == ';') continue;
+        const auto eq = line.find('=');
+        if (eq != std::string::npos) {
+            kv[line.substr(0, eq)] = line.substr(eq + 1);
+        }
+    }
+    auto getW = [&](const char* k, const std::wstring& defVal) -> std::wstring {
+        auto it = kv.find(k);
+        return (it != kv.end() && !it->second.empty())
+            ? UnescapeIniNewlines(rsw::Utf8ToWide(it->second))
+            : defVal;
+    };
+    if (!kv["Mode"].empty()) cfg.mode = rsw::AsciiLower(rsw::TrimAscii(kv["Mode"]));
+    cfg.productName     = getW("ProductName", cfg.productName);
+    cfg.tagline         = getW("Tagline", cfg.tagline);
+    cfg.websiteLabel    = getW("WebsiteLabel", L"");
+    cfg.version         = getW("Version", cfg.version);
+    cfg.manufacturer    = getW("Manufacturer", cfg.manufacturer);
+    if (!kv["MinWindowsBuild"].empty()) cfg.minWindowsBuild = std::atoi(kv["MinWindowsBuild"].c_str());
+    cfg.osLaunchMessage = getW("OsLaunchMessage", cfg.osLaunchMessage);
+    cfg.accentPrimary   = rsw::ui::ParseHexColor(kv["AccentPrimaryHex"], cfg.accentPrimary);
+    cfg.accentSecondary = rsw::ui::ParseHexColor(kv["AccentSecondaryHex"], cfg.accentSecondary);
+    cfg.x64FileName     = getW("X64FileName", cfg.x64FileName);
+    cfg.arm64FileName   = getW("Arm64FileName", cfg.arm64FileName);
+    cfg.sha256X64       = rsw::AsciiLower(rsw::TrimAscii(kv["Sha256X64"]));
+    cfg.sha256Arm64     = rsw::AsciiLower(rsw::TrimAscii(kv["Sha256Arm64"]));
+    if (!kv["SizeX64"].empty())   cfg.sizeX64   = static_cast<std::uint64_t>(std::strtoull(kv["SizeX64"].c_str(), nullptr, 10));
+    if (!kv["SizeArm64"].empty()) cfg.sizeArm64 = static_cast<std::uint64_t>(std::strtoull(kv["SizeArm64"].c_str(), nullptr, 10));
+    cfg.urlX64          = rsw::TrimAscii(kv["UrlX64"]);
+    cfg.urlArm64        = rsw::TrimAscii(kv["UrlArm64"]);
+    return cfg;
+}
+
+std::wstring QuoteWin32Argument(const std::wstring& arg) {
+    if (!arg.empty() && arg.find_first_of(L" \t\"") == std::wstring::npos) {
+        return arg;
+    }
+    std::wstring out = L"\"";
+    for (std::size_t i = 0; i < arg.size(); ++i) {
+        std::size_t bs = 0;
+        while (i < arg.size() && arg[i] == L'\\') {
+            ++bs;
+            ++i;
+        }
+        if (i == arg.size()) {
+            out.append(bs * 2, L'\\');
+            break;
+        } else if (arg[i] == L'"') {
+            out.append(bs * 2 + 1, L'\\');
+            out.push_back(L'"');
+        } else {
+            out.append(bs, L'\\');
+            out.push_back(arg[i]);
+        }
+    }
+    out.push_back(L'"');
+    return out;
+}
+
+class UniversalWebDownloaderUi {
+public:
+    static constexpr UINT WM_UNIV_PROGRESS = WM_APP + 40;
+    static constexpr UINT WM_UNIV_FINISHED = WM_APP + 41;
+    static constexpr int  IDC_UNIV_PROG    = 1401;
+    static constexpr int  IDC_UNIV_CANCEL  = 1402;
+
+    UniversalLauncherConfig cfg{};
+    rsw::ui::RswTheme       theme{};
+    bool                    targetArm64    = false;
+    std::string             targetUrl;
+    std::string             expectedSha256;
+    std::uint64_t           expectedBytes  = 0;
+    std::filesystem::path   destPath;
+
+    HWND                    hWnd           = nullptr;
+    HWND                    hProgBar       = nullptr;
+    HWND                    hBtnCancel     = nullptr;
+    HICON                   hIconBig       = nullptr;
+    HICON                   hIconSmall     = nullptr;
+    HFONT                   hFontTitle     = nullptr;
+    HFONT                   hFontBold      = nullptr;
+    HFONT                   hFontBody      = nullptr;
+
+    std::atomic<bool>       cancelFlag{false};
+    std::mutex              mtx;
+    std::wstring            statusLine     = L"Connecting to download server...";
+    std::string             errorUtf8;
+    bool                    downloadSucceeded = false;
+    std::thread             dlThread;
+
+    ~UniversalWebDownloaderUi() {
+        cancelFlag.store(true);
+        if (dlThread.joinable()) dlThread.join();
+        for (HFONT* f : {&hFontTitle, &hFontBold, &hFontBody}) {
+            if (*f) { ::DeleteObject(*f); *f = nullptr; }
+        }
+    }
+
+    void RebuildFonts(UINT dpi) {
+        for (HFONT* f : {&hFontTitle, &hFontBold, &hFontBody}) {
+            if (*f) { ::DeleteObject(*f); *f = nullptr; }
+        }
+        const int ts = theme.textScalePercent;
+        hFontTitle = rsw::ui::CreateScaledFont(L"Segoe UI", 13, FW_BOLD,     dpi, ts);
+        hFontBold  = rsw::ui::CreateScaledFont(L"Segoe UI", 10, FW_SEMIBOLD, dpi, ts);
+        hFontBody  = rsw::ui::CreateScaledFont(L"Segoe UI",  9, FW_NORMAL,   dpi, ts);
+        if (hBtnCancel) ::SendMessageW(hBtnCancel, WM_SETFONT, reinterpret_cast<WPARAM>(hFontBody), TRUE);
+    }
+
+    void LayoutControls() {
+        if (!hWnd) return;
+        const UINT dpi = ::GetDpiForWindow(hWnd);
+        RebuildFonts(dpi);
+        RECT rc{};
+        ::GetClientRect(hWnd, &rc);
+        const int W = rc.right - rc.left;
+        const int H = rc.bottom - rc.top;
+        auto S = [&](int px) { return rsw::ui::ScalePx(px, dpi, theme.textScalePercent); };
+
+        if (hProgBar) {
+            ::MoveWindow(hProgBar, S(28), S(162), std::max(S(160), W - S(56)), S(20), TRUE);
+        }
+        if (hBtnCancel) {
+            ::MoveWindow(hBtnCancel, W - S(124), H - S(46), S(96), S(32), TRUE);
+        }
+    }
+
+    void StartDownloadAttempt() {
+        cancelFlag.store(false);
+        if (dlThread.joinable()) dlThread.join();
+        {
+            std::lock_guard<std::mutex> lk(mtx);
+            errorUtf8.clear();
+            statusLine = std::wstring(L"Downloading native ") + (targetArm64 ? L"ARM64" : L"x64") + L" installer...";
+        }
+        if (hProgBar) ::SendMessageW(hProgBar, PBM_SETPOS, 0, 0);
+        ::InvalidateRect(hWnd, nullptr, FALSE);
+
+        dlThread = std::thread([this]() {
+            std::string err;
+            const bool okDl = rsw::DownloadFileViaWinHttp(
+                targetUrl,
+                destPath,
+                &cancelFlag,
+                [this](std::uint64_t got, std::uint64_t total) {
+                    const std::uint64_t denom = (total > 0) ? total : expectedBytes;
+                    int permille = 0;
+                    std::wstring txt;
+                    if (denom > 0) {
+                        permille = static_cast<int>(std::min<std::uint64_t>(980, (got * 980u) / denom));
+                        const int pct = static_cast<int>(std::min<std::uint64_t>(99, (got * 100u) / denom));
+                        txt = std::wstring(L"Downloading native ") + (targetArm64 ? L"ARM64" : L"x64") +
+                              L" installer (" + FormatByteSizeFriendly(got) + L" of " +
+                              FormatByteSizeFriendly(denom) + L" — " + std::to_wstring(pct) + L"%)...";
+                    } else {
+                        txt = std::wstring(L"Downloading native ") + (targetArm64 ? L"ARM64" : L"x64") +
+                              L" installer (" + FormatByteSizeFriendly(got) + L")...";
+                    }
+                    {
+                        std::lock_guard<std::mutex> lk(mtx);
+                        statusLine = std::move(txt);
+                    }
+                    ::PostMessageW(hWnd, WM_UNIV_PROGRESS, static_cast<WPARAM>(permille), 0);
+                },
+                err);
+
+            bool okAll = okDl;
+            if (okAll && !expectedSha256.empty()) {
+                {
+                    std::lock_guard<std::mutex> lk(mtx);
+                    statusLine = L"Verifying SHA-256 cryptographic checksum...";
+                }
+                ::PostMessageW(hWnd, WM_UNIV_PROGRESS, 990, 0);
+                std::string actualHex;
+                if (!rsw::ComputeFileSha256Hex(destPath, actualHex) ||
+                    !rsw::EqualsIgnoreCase(actualHex, expectedSha256)) {
+                    okAll = false;
+                    err = "Downloaded installer SHA-256 digest did not match expected publisher signature.";
+                    std::error_code rmEc;
+                    std::filesystem::remove(destPath, rmEc);
+                }
+            }
+            {
+                std::lock_guard<std::mutex> lk(mtx);
+                errorUtf8 = err;
+            }
+            ::PostMessageW(hWnd, WM_UNIV_FINISHED, okAll ? 1 : 0, 0);
+        });
+    }
+
+    void PaintWindow(HDC hdcOut) {
+        RECT rc{};
+        ::GetClientRect(hWnd, &rc);
+        const int W = std::max<int>(1, rc.right - rc.left);
+        const int H = std::max<int>(1, rc.bottom - rc.top);
+        const UINT dpi = ::GetDpiForWindow(hWnd);
+        auto S = [&](int px) { return rsw::ui::ScalePx(px, dpi, theme.textScalePercent); };
+
+        HDC memDc = ::CreateCompatibleDC(hdcOut);
+        HBITMAP memBmp = ::CreateCompatibleBitmap(hdcOut, W, H);
+        HGDIOBJ oldBmp = ::SelectObject(memDc, memBmp);
+        ::SetBkMode(memDc, TRANSPARENT);
+
+        HBRUSH bgBr = ::CreateSolidBrush(theme.windowBg);
+        ::FillRect(memDc, &rc, bgBr);
+        ::DeleteObject(bgBr);
+
+        const int hdrH = S(68);
+        RECT hdrRc{0, 0, W, hdrH};
+        HBRUSH hdrBr = ::CreateSolidBrush(theme.isHighContrast ? theme.windowBg : (theme.isDarkMode ? RGB(11, 19, 43) : RGB(248, 250, 252)));
+        ::FillRect(memDc, &hdrRc, hdrBr);
+        ::DeleteObject(hdrBr);
+
+        // 3px Accent Divider Bar (uses semantic highlight color in Windows Contrast Themes)
+        RECT barRc{0, hdrH - S(3), W, hdrH};
+        HBRUSH barBr = ::CreateSolidBrush(theme.isHighContrast ? theme.accentPrimary : cfg.accentPrimary);
+        ::FillRect(memDc, &barRc, barBr);
+        ::DeleteObject(barBr);
+
+        if (hIconBig) {
+            ::DrawIconEx(memDc, S(20), S(16), hIconBig, S(36), S(36), 0, nullptr, DI_NORMAL);
+        }
+
+        ::SelectObject(memDc, hFontTitle);
+        ::SetTextColor(memDc, theme.textPrimary);
+        const std::wstring headTitle = cfg.productName + L" Setup (v" + cfg.version + L")";
+        RECT tRc{S(68), S(12), W - S(20), S(38)};
+        ::DrawTextW(memDc, headTitle.c_str(), -1, &tRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+        ::SelectObject(memDc, hFontBody);
+        ::SetTextColor(memDc, theme.textSecondary);
+        RECT subRc{S(68), S(38), W - S(20), S(60)};
+        ::DrawTextW(memDc, L"Smart Universal Installer — Automatically matching your Windows processor", -1, &subRc,
+                    DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+        // Card Box around CPU detection & live status
+        RECT cardRc{S(18), S(82), W - S(18), H - S(58)};
+        HBRUSH cardBr = ::CreateSolidBrush(theme.cardBg);
+        HPEN cardPen  = ::CreatePen(PS_SOLID, theme.isHighContrast ? 2 : 1, theme.borderSubtle);
+        HGDIOBJ oldBr = ::SelectObject(memDc, cardBr);
+        HGDIOBJ oldPn = ::SelectObject(memDc, cardPen);
+        ::RoundRect(memDc, cardRc.left, cardRc.top, cardRc.right, cardRc.bottom, S(10), S(10));
+        ::SelectObject(memDc, oldPn);
+        ::SelectObject(memDc, oldBr);
+        ::DeleteObject(cardPen);
+        ::DeleteObject(cardBr);
+
+        ::SelectObject(memDc, hFontBold);
+        ::SetTextColor(memDc, theme.textPrimary);
+        const std::wstring cpuLine = targetArm64
+            ? L"Detected Processor: Windows 11 ARM64 (Native Silicon)"
+            : L"Detected Processor: Windows 11 x64 (64-Bit Intel / AMD)";
+        RECT cpuRc{S(30), S(94), W - S(30), S(120)};
+        ::DrawTextW(memDc, cpuLine.c_str(), -1, &cpuRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+        std::wstring curStatus;
+        {
+            std::lock_guard<std::mutex> lk(mtx);
+            curStatus = statusLine;
+        }
+        ::SelectObject(memDc, hFontBody);
+        ::SetTextColor(memDc, theme.textSecondary);
+        RECT stRc{S(30), S(124), W - S(30), S(154)};
+        ::DrawTextW(memDc, curStatus.c_str(), -1, &stRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+        if (!cfg.websiteLabel.empty()) {
+            RECT footRc{S(20), H - S(38), W - S(140), H - S(14)};
+            ::DrawTextW(memDc, cfg.websiteLabel.c_str(), -1, &footRc, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        }
+
+        ::BitBlt(hdcOut, 0, 0, W, H, memDc, 0, 0, SRCCOPY);
+        ::SelectObject(memDc, oldBmp);
+        ::DeleteObject(memBmp);
+        ::DeleteDC(memDc);
+    }
+
+    static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+        auto* self = reinterpret_cast<UniversalWebDownloaderUi*>(::GetWindowLongPtrW(hWnd, GWLP_USERDATA));
+        if (msg == WM_NCCREATE) {
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            self = static_cast<UniversalWebDownloaderUi*>(cs->lpCreateParams);
+            ::SetWindowLongPtrW(hWnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+            self->hWnd = hWnd;
+            rsw::ui::ApplyWindowChromeAndA11y(hWnd, self->theme);
+        }
+        if (!self) return ::DefWindowProcW(hWnd, msg, wParam, lParam);
+
+        switch (msg) {
+            case WM_CREATE: {
+                HINSTANCE hInst = ::GetModuleHandleW(nullptr);
+                self->hProgBar = ::CreateWindowExW(
+                    0, PROGRESS_CLASSW, L"Installer Download Progress",
+                    WS_CHILD | WS_VISIBLE | PBS_SMOOTH,
+                    0, 0, 100, 20, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_UNIV_PROG)), hInst, nullptr);
+                ::SendMessageW(self->hProgBar, PBM_SETRANGE32, 0, 1000);
+                self->hBtnCancel = ::CreateWindowExW(
+                    0, L"BUTTON", L"&Cancel",
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                    0, 0, 96, 32, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_UNIV_CANCEL)), hInst, nullptr);
+                rsw::ui::AttachAccessiblePushButtonSubclass(self->hBtnCancel, &self->theme, false, false);
+                self->LayoutControls();
+                self->StartDownloadAttempt();
+                return 0;
+            }
+            case WM_DPICHANGED: {
+                const auto* suggested = reinterpret_cast<const RECT*>(lParam);
+                ::SetWindowPos(hWnd, nullptr, suggested->left, suggested->top,
+                               suggested->right - suggested->left, suggested->bottom - suggested->top,
+                               SWP_NOZORDER | SWP_NOACTIVATE);
+                self->LayoutControls();
+                ::InvalidateRect(hWnd, nullptr, TRUE);
+                return 0;
+            }
+            case WM_SETTINGCHANGE:
+            case WM_SYSCOLORCHANGE:
+            case WM_THEMECHANGED: {
+                if (rsw::ui::IsLiveThemeBroadcast(msg, wParam, lParam)) {
+                    self->theme.Refresh(self->cfg.accentPrimary, self->cfg.accentSecondary);
+                    rsw::ui::ApplyWindowChromeAndA11y(hWnd, self->theme);
+                    self->LayoutControls();
+                    if (self->hBtnCancel) ::InvalidateRect(self->hBtnCancel, nullptr, TRUE);
+                    ::InvalidateRect(hWnd, nullptr, TRUE);
+                    return 0;
+                }
+                break;
+            }
+            case WM_ERASEBKGND:
+                return 1;
+            case WM_PAINT: {
+                PAINTSTRUCT ps{};
+                HDC hdc = ::BeginPaint(hWnd, &ps);
+                self->PaintWindow(hdc);
+                ::EndPaint(hWnd, &ps);
+                return 0;
+            }
+            case WM_UNIV_PROGRESS: {
+                if (self->hProgBar) {
+                    ::SendMessageW(self->hProgBar, PBM_SETPOS, wParam, 0);
+                }
+                ::InvalidateRect(hWnd, nullptr, FALSE);
+                return 0;
+            }
+            case WM_UNIV_FINISHED: {
+                if (wParam == 1) {
+                    if (self->hProgBar) ::SendMessageW(self->hProgBar, PBM_SETPOS, 1000, 0);
+                    self->downloadSucceeded = true;
+                    ::DestroyWindow(hWnd);
+                    return 0;
+                }
+                if (self->cancelFlag.load()) {
+                    self->downloadSucceeded = false;
+                    ::DestroyWindow(hWnd);
+                    return 0;
+                }
+                std::wstring errW;
+                {
+                    std::lock_guard<std::mutex> lk(self->mtx);
+                    errW = rsw::Utf8ToWide(self->errorUtf8);
+                }
+                const std::wstring msgBody =
+                    L"Could not download the native installer package:\n" + errW +
+                    L"\n\nCheck your internet connection and choose Retry, or use the Full Offline Universal Installer for air-gapped PCs.";
+                int chosenBtn = IDCANCEL;
+                ::TaskDialog(
+                    hWnd, ::GetModuleHandleW(nullptr),
+                    (self->cfg.productName + L" Setup").c_str(),
+                    L"Download Interrupted",
+                    msgBody.c_str(),
+                    TDCBF_RETRY_BUTTON | TDCBF_CANCEL_BUTTON,
+                    TD_WARNING_ICON,
+                    &chosenBtn);
+                if (chosenBtn == IDRETRY) {
+                    self->StartDownloadAttempt();
+                } else {
+                    self->downloadSucceeded = false;
+                    ::DestroyWindow(hWnd);
+                }
+                return 0;
+            }
+            case WM_COMMAND: {
+                if (LOWORD(wParam) == IDC_UNIV_CANCEL || LOWORD(wParam) == IDCANCEL) {
+                    self->cancelFlag.store(true);
+                    if (self->hBtnCancel) ::EnableWindow(self->hBtnCancel, FALSE);
+                    return 0;
+                }
+                break;
+            }
+            case WM_CLOSE: {
+                self->cancelFlag.store(true);
+                ::DestroyWindow(hWnd);
+                return 0;
+            }
+            case WM_DESTROY: {
+                ::PostQuitMessage(0);
+                return 0;
+            }
+            default:
+                break;
+        }
+        return ::DefWindowProcW(hWnd, msg, wParam, lParam);
+    }
+};
+
+int RunUniversalInstallerDispatcher(
+    HINSTANCE hInstance,
+    int nCmdShow,
+    const std::vector<std::wstring>& rawArgs,
+    std::string_view manifestText)
+{
+    const UniversalLauncherConfig ucfg = ParseUniversalLauncherConfig(manifestText);
+    const auto hostOs = rsw::QueryHostPlatform();
+    bool targetArm64  = (hostOs.nativeMachine == IMAGE_FILE_MACHINE_ARM64);
+    bool headlessMode = false;
+
+    std::wstring forwardedArgs;
+    for (std::size_t i = 0; i < rawArgs.size(); ++i) {
+        const auto& a = rawArgs[i];
+        if (a == L"--force-arch=arm64" || a == L"--force-arch=ARM64") {
+            targetArm64 = true;
+            continue;
+        }
+        if (a == L"--force-arch=x64" || a == L"--force-arch=amd64") {
+            targetArm64 = false;
+            continue;
+        }
+        if (a == L"/s" || a == L"/S" || a == L"/qn" || a == L"/quiet" || a == L"--silent" ||
+            a == L"--extract-msi" || a == L"/extract" || a == L"--export-screenshots") {
+            headlessMode = true;
+        }
+        if (!forwardedArgs.empty()) forwardedArgs.push_back(L' ');
+        forwardedArgs += QuoteWin32Argument(a);
+    }
+
+    if (!rsw::MeetsWindowsBuildFloor(ucfg.minWindowsBuild)) {
+        if (!headlessMode) {
+            const std::wstring title  = ucfg.productName + L" Setup";
+            const std::wstring detail = ucfg.osLaunchMessage + L"\n\nDetected OS Build: " + std::to_wstring(hostOs.buildNumber);
+            ::TaskDialog(nullptr, hInstance, title.c_str(), L"Unsupported Windows Version",
+                         detail.c_str(), TDCBF_CLOSE_BUTTON, TD_WARNING_ICON, nullptr);
+        }
+        return 1603;
+    }
+
+    std::error_code ec;
+    const std::filesystem::path tmpDir = std::filesystem::temp_directory_path(ec) /
+                                         (L"rsw-univ-" + std::to_wstring(::GetCurrentProcessId()));
+    std::filesystem::create_directories(tmpDir, ec);
+
+    const std::wstring childName = targetArm64 ? ucfg.arm64FileName : ucfg.x64FileName;
+    const std::filesystem::path childPath = tmpDir / childName;
+    const std::string& expectedSha = targetArm64 ? ucfg.sha256Arm64 : ucfg.sha256X64;
+
+    if (ucfg.mode == "offline") {
+        const int resId = targetArm64 ? rsw::kResIdUniversalSetupArm64 : rsw::kResIdUniversalSetupX64;
+        std::wstring extErr;
+        if (!ExtractEmbeddedResourceToFile(resId, childPath, extErr)) {
+            if (!headlessMode) {
+                ::TaskDialog(nullptr, hInstance, (ucfg.productName + L" Setup").c_str(),
+                             L"Package Extraction Error", extErr.c_str(), TDCBF_CLOSE_BUTTON, TD_ERROR_ICON, nullptr);
+            }
+            std::filesystem::remove_all(tmpDir, ec);
+            return 1619;
+        }
+        if (!expectedSha.empty()) {
+            std::string actualHex;
+            if (!rsw::ComputeFileSha256Hex(childPath, actualHex) || !rsw::EqualsIgnoreCase(actualHex, expectedSha)) {
+                std::filesystem::remove_all(tmpDir, ec);
+                return 1620;
+            }
+        }
+    } else {
+        const std::string& targetUrl = targetArm64 ? ucfg.urlArm64 : ucfg.urlX64;
+        if (targetUrl.empty()) {
+            std::filesystem::remove_all(tmpDir, ec);
+            return 1619;
+        }
+        if (headlessMode) {
+            std::string dlErr;
+            if (!rsw::DownloadFileViaWinHttp(targetUrl, childPath, nullptr, nullptr, dlErr)) {
+                std::filesystem::remove_all(tmpDir, ec);
+                return 9011;
+            }
+            if (!expectedSha.empty()) {
+                std::string actualHex;
+                if (!rsw::ComputeFileSha256Hex(childPath, actualHex) || !rsw::EqualsIgnoreCase(actualHex, expectedSha)) {
+                    std::filesystem::remove_all(tmpDir, ec);
+                    return 9012;
+                }
+            }
+        } else {
+            ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+            {
+                rsw::ui::ScopedGdiPlusSession gpSession;
+                INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES | ICC_PROGRESS_CLASS};
+                ::InitCommonControlsEx(&icc);
+
+                UniversalWebDownloaderUi ui{};
+                ui.cfg            = ucfg;
+                ui.targetArm64    = targetArm64;
+                ui.targetUrl      = targetUrl;
+                ui.expectedSha256 = expectedSha;
+                ui.expectedBytes  = targetArm64 ? ucfg.sizeArm64 : ucfg.sizeX64;
+                ui.destPath       = childPath;
+                ui.theme.Refresh(ucfg.accentPrimary, ucfg.accentSecondary);
+                ui.hIconBig = static_cast<HICON>(::LoadImageW(
+                    hInstance, MAKEINTRESOURCEW(IDI_RAGGIESOFT_APP_ICON), IMAGE_ICON, 48, 48, LR_DEFAULTCOLOR));
+                ui.hIconSmall = static_cast<HICON>(::LoadImageW(
+                    hInstance, MAKEINTRESOURCEW(IDI_RAGGIESOFT_APP_ICON), IMAGE_ICON, 16, 16, LR_DEFAULTCOLOR));
+                if (!ui.hIconBig) ui.hIconBig = ::LoadIconW(nullptr, IDI_APPLICATION);
+
+                constexpr const wchar_t* kUnivWndClass = L"RaggieSoftUniversalWebSetupWindow";
+                WNDCLASSEXW wc{};
+                wc.cbSize        = sizeof(wc);
+                wc.lpfnWndProc   = &UniversalWebDownloaderUi::WndProc;
+                wc.hInstance     = hInstance;
+                wc.hCursor       = ::LoadCursorW(nullptr, IDC_ARROW);
+                wc.hIcon         = ui.hIconBig;
+                wc.hIconSm       = ui.hIconSmall ? ui.hIconSmall : ui.hIconBig;
+                wc.lpszClassName = kUnivWndClass;
+                ::RegisterClassExW(&wc);
+
+                const UINT dpi = ::GetDpiForSystem();
+                RECT wRc{0, 0,
+                         rsw::ui::ScalePx(540, dpi, ui.theme.textScalePercent),
+                         rsw::ui::ScalePx(256, dpi, ui.theme.textScalePercent)};
+                constexpr DWORD kStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+                ::AdjustWindowRectExForDpi(&wRc, kStyle, FALSE, 0, dpi);
+                const int wW = wRc.right - wRc.left;
+                const int wH = wRc.bottom - wRc.top;
+                const int wX = std::max(0, (::GetSystemMetrics(SM_CXSCREEN) - wW) / 2);
+                const int wY = std::max(0, (::GetSystemMetrics(SM_CYSCREEN) - wH) / 2);
+
+                const std::wstring wTitle = ucfg.productName + L" Setup";
+                HWND hUnivWnd = ::CreateWindowExW(
+                    0, kUnivWndClass, wTitle.c_str(), kStyle, wX, wY, wW, wH, nullptr, nullptr, hInstance, &ui);
+                if (hUnivWnd) {
+                    ::ShowWindow(hUnivWnd, nCmdShow);
+                    ::UpdateWindow(hUnivWnd);
+                    MSG msg{};
+                    while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
+                        if (!::IsDialogMessageW(hUnivWnd, &msg)) {
+                            ::TranslateMessage(&msg);
+                            ::DispatchMessageW(&msg);
+                        }
+                    }
+                }
+                if (ui.dlThread.joinable()) ui.dlThread.join();
+                if (!ui.downloadSucceeded) {
+                    ::CoUninitialize();
+                    std::filesystem::remove_all(tmpDir, ec);
+                    return ERROR_INSTALL_USEREXIT;
+                }
+            }
+            ::CoUninitialize();
+        }
+    }
+
+    // Launch the verified 100% native (`ARM64` or `x64`) installer process and return its exact exit code!
+    std::wstring childCmd = L"\"" + childPath.wstring() + L"\"";
+    if (!forwardedArgs.empty()) {
+        childCmd += L" " + forwardedArgs;
+    }
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    const std::wstring workDir = tmpDir.wstring();
+    if (!::CreateProcessW(nullptr, childCmd.data(), nullptr, nullptr, FALSE, 0, nullptr, workDir.c_str(), &si, &pi)) {
+        std::filesystem::remove_all(tmpDir, ec);
+        return ERROR_INSTALL_FAILURE;
+    }
+    ::WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD childExitCode = 0;
+    ::GetExitCodeProcess(pi.hProcess, &childExitCode);
+    ::CloseHandle(pi.hThread);
+    ::CloseHandle(pi.hProcess);
+    std::filesystem::remove_all(tmpDir, ec);
+    return static_cast<int>(childExitCode);
+}
+
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
@@ -3315,7 +3935,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         ::LocalFree(argv);
     }
 
-    // Fast automated self-check, `--elevated-msi-worker`, & `--extract-msi` flags
+    // Fast automated self-check & `--elevated-msi-worker` flags
     for (std::size_t i = 0; i < args.size(); ++i) {
         if (args[i] == L"--elevated-msi-worker") {
             if (i + 1 >= args.size()) return ERROR_BAD_ARGUMENTS;
@@ -3325,6 +3945,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
             const auto hp = rsw::QueryHostPlatform();
             return (hp.majorVersion >= 10) ? 0 : 1;
         }
+    }
+
+    // Universal Single-Download Mode (`Mode=offline` x64+ARM64 combined EXE or `Mode=web` Smart CPU Web Stub!)
+    {
+        const std::uint8_t* univPtr = nullptr;
+        std::size_t univSz = 0;
+        if (GetEmbeddedRcDataView(rsw::kResIdUniversalManifest, univPtr, univSz) && univSz > 0) {
+            return RunUniversalInstallerDispatcher(
+                hInstance, nCmdShow, args,
+                std::string_view(reinterpret_cast<const char*>(univPtr), univSz));
+        }
+    }
+
+    // Per-architecture `--extract-msi` flag
+    for (std::size_t i = 0; i < args.size(); ++i) {
         if (args[i] == L"--extract-msi" || args[i] == L"/extract") {
             if (i + 1 >= args.size()) return 2;
             const std::filesystem::path targetDir(args[i + 1]);

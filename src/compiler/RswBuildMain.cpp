@@ -45,9 +45,9 @@ namespace {
 void PrintUsageBanner() {
     std::cout
         << rsw::kSuiteTitle << " — " << rsw::kProductTagline << " (v" << rsw::kVersionString << ")\n"
-        << "Zero-Dependency Native Win32 C++20 Compiler (`instbuild.exe` -> MSI, MSM, MST, MSP, Setup.exe & VPAT 2.5)\n\n"
+        << "Zero-Dependency Native Win32 C++20 Compiler (`instbuild.exe` -> MSI, MSM, MST, MSP, Universal Setup.exe & VPAT 2.5)\n\n"
         << "Usage:\n"
-        << "  instbuild.exe <project.rsip | suite.rsis> [--arch=x64|arm64] [--category=<cat>] [--project=<id>]\n"
+        << "  instbuild.exe <project.rsip | suite.rsis> [--arch=x64|arm64] [--universal] [--with-vpat]\n"
         << "  instbuild.exe --validate [--diagnostics=json] <project.rsip | suite.rsis> [--arch=x64|arm64]\n"
         << "  instbuild.exe --emit-ai-spec <output-dir>\n"
         << "  instbuild.exe --emit-vpat <project.rsip> <output-dir>\n"
@@ -63,6 +63,7 @@ int ProcessSingleProject(
     const std::filesystem::path& manifestPath,
     const std::map<std::string, std::string>& variables,
     const std::string& archOverride,
+    bool forceUniversal,
     bool validateOnly,
     bool jsonDiagnostics,
     bool emitVpatAlongside,
@@ -93,6 +94,57 @@ int ProcessSingleProject(
             std::cerr << "[ERROR] " << parseError << "\n";
         }
         return 1;
+    }
+
+    const bool buildUniversal = archOverride.empty() &&
+                                !rsw::EqualsIgnoreCase(doc.GetString("Package", "", "PackageKind", "msi"), "msm") &&
+                                (forceUniversal || doc.GetBool("Package", "", "BuildUniversal", false));
+
+    if (buildUniversal && !validateOnly) {
+        for (const char* arch : {"x64", "arm64"}) {
+            const auto rep = rsw::ValidateManifestDocument(doc, arch);
+            if (!rep.IsOk()) {
+                for (const auto& d : rep.diagnostics) {
+                    std::cerr << "[" << d.code << " Line " << d.lineNumber << "] " << d.message << "\n";
+                }
+                return 1;
+            }
+        }
+
+        rsw::CompiledMsiSummary x64Sum{}, arm64Sum{};
+        std::filesystem::path x64Setup, arm64Setup;
+        std::string buildErr;
+        if (!rsw::CompileManifestToMsi(doc, "x64", x64Sum, buildErr) ||
+            !rsw::PackageSelfExtractingBootstrapper(doc, x64Sum, compilerExeDir, x64Setup, buildErr) ||
+            !rsw::CompileManifestToMsi(doc, "arm64", arm64Sum, buildErr) ||
+            !rsw::PackageSelfExtractingBootstrapper(doc, arm64Sum, compilerExeDir, arm64Setup, buildErr)) {
+            std::cerr << "[ERROR] " << buildErr << "\n";
+            return 1;
+        }
+
+        rsw::UniversalPackageOutputs univOut{};
+        if (!rsw::PackageUniversalInstallers(
+                doc, x64Sum, x64Setup, arm64Sum, arm64Setup, compilerExeDir, univOut, buildErr)) {
+            std::cerr << "[ERROR] " << buildErr << "\n";
+            return 1;
+        }
+
+        std::cout << "[OK] Compiled Multi-Arch & Universal Installers (" << x64Sum.productName << " v" << x64Sum.productVersion << "):\n"
+                  << "     X64 MSI         : " << rsw::WideToUtf8(x64Sum.msiPath.wstring()) << "\n"
+                  << "     X64 SETUP       : " << rsw::WideToUtf8(x64Setup.wstring()) << " (SHA-256: " << univOut.sha256X64.substr(0, 16) << "...)\n"
+                  << "     ARM64 MSI       : " << rsw::WideToUtf8(arm64Sum.msiPath.wstring()) << "\n"
+                  << "     ARM64 SETUP     : " << rsw::WideToUtf8(arm64Setup.wstring()) << " (SHA-256: " << univOut.sha256Arm64.substr(0, 16) << "...)\n"
+                  << "     OFFLINE UNIV EXE: " << rsw::WideToUtf8(univOut.offlineSetupExePath.wstring()) << " (x64 + ARM64 combined)\n";
+        if (!univOut.webStubExePath.empty()) {
+            std::cout << "     SMART WEB STUB  : " << rsw::WideToUtf8(univOut.webStubExePath.wstring()) << " (Auto-detects CPU via WinHTTP)\n";
+        }
+        if (emitVpatAlongside) {
+            std::filesystem::path vpatHtml;
+            if (rsw::EmitProjectInstallerVpatHtml(doc, x64Sum.msiPath.parent_path(), vpatHtml, buildErr)) {
+                std::cout << "     VPAT            : " << rsw::WideToUtf8(vpatHtml.wstring()) << "\n";
+            }
+        }
+        return 0;
     }
 
     const auto report = rsw::ValidateManifestDocument(doc, archOverride);
@@ -174,6 +226,7 @@ int wmain(int argc, wchar_t* argv[]) {
     bool validateOnly = false;
     bool jsonDiagnostics = false;
     bool emitVpatFlag = false;
+    bool universalFlag = false;
     std::string archOverride;
     std::string categoryFilter;
     std::string projectFilter;
@@ -306,6 +359,7 @@ int wmain(int argc, wchar_t* argv[]) {
         if (a == "--validate") { validateOnly = true; continue; }
         if (a == "--diagnostics=json") { jsonDiagnostics = true; continue; }
         if (a == "--with-vpat") { emitVpatFlag = true; continue; }
+        if (a == "--universal") { universalFlag = true; continue; }
         if (a.rfind("--arch=", 0) == 0) { archOverride = a.substr(7); continue; }
         if (a.rfind("--category=", 0) == 0) { categoryFilter = a.substr(11); continue; }
         if (a.rfind("--project=", 0) == 0) { projectFilter = a.substr(10); continue; }
@@ -356,12 +410,27 @@ int wmain(int argc, wchar_t* argv[]) {
                 !rsw::EqualsIgnoreCase(proj.resolvedPath.stem().string(), projectFilter)) continue;
 
             ++matchedCount;
-            for (const auto& arch : archList) {
+            rsw::RswManifestDocument pRaw, pDoc;
+            const bool projWantsUniv =
+                !validateOnly && archOverride.empty() &&
+                rsw::LoadManifestFile(proj.resolvedPath, pRaw, err) &&
+                rsw::ResolveManifestIncludesAndVars(pRaw, suite.variables, pDoc, err) &&
+                !rsw::EqualsIgnoreCase(pDoc.GetString("Package", "", "PackageKind", "msi"), "msm") &&
+                (universalFlag || pDoc.GetBool("Package", "", "BuildUniversal", false));
+
+            if (projWantsUniv) {
                 const int rc = ProcessSingleProject(
-                    proj.resolvedPath, suite.variables, arch,
-                    validateOnly, false, emitVpatFlag, compilerExeDir);
-                if (rc != 0) {
-                    return rc;
+                    proj.resolvedPath, suite.variables, "", true,
+                    false, false, emitVpatFlag, compilerExeDir);
+                if (rc != 0) return rc;
+            } else {
+                for (const auto& arch : archList) {
+                    const int rc = ProcessSingleProject(
+                        proj.resolvedPath, suite.variables, arch, false,
+                        validateOnly, false, emitVpatFlag, compilerExeDir);
+                    if (rc != 0) {
+                        return rc;
+                    }
                 }
             }
         }
@@ -379,6 +448,6 @@ int wmain(int argc, wchar_t* argv[]) {
     }
 
     return ProcessSingleProject(
-        inputPath, cliVariables, archOverride,
+        inputPath, cliVariables, archOverride, universalFlag,
         validateOnly, jsonDiagnostics, emitVpatFlag, compilerExeDir);
 }
