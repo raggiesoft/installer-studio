@@ -7,7 +7,30 @@
 **Current Milestone:** `v0.4.1` Open Technical Preview (`x64` & `ARM64`)  
 **License:** MIT License (Core Toolchain Source)
 
+<p align="center">
+  <a href="https://raggiesoftstudio.com">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://assets.raggiesoft.com/desktop-apps/windows/apps/installer-studio/screenshots/setupwizard-setup-type.png">
+      <source media="(prefers-color-scheme: light)" srcset="https://assets.raggiesoft.com/desktop-apps/windows/apps/installer-studio/screenshots/setupwizard-setup-type-light.png">
+      <img alt="RaggieSoft Installer Studio SetupWizard.exe running natively on Windows 11 with automatic Dark and Light Mode support" src="https://assets.raggiesoft.com/desktop-apps/windows/apps/installer-studio/screenshots/setupwizard-setup-type.png" width="640">
+    </picture>
+  </a>
+</p>
+
 **RaggieSoft Installer Studio** is a 100% first-party, zero-dependency native Win32 C++20 Windows packaging suite compiled directly with `cl.exe` and the stock Windows 11 SDK (`/MT` static binaries across `x64` and `ARM64`—zero `.NET`, zero WebView2, zero Electron, zero third-party runtimes, zero telemetry, and zero crypto/blockchain bloat).
+
+---
+
+## Why RaggieSoft Installer Studio Exists (28 Years in the Making, 1998–2026)
+
+Since writing my first Visual Basic 6.0 application in 1998, I spent 28 years searching for the right Windows installation tool—shipping software across more than a dozen packaging engines spanning every era of Windows deployment:
+
+- **Late-1990s Bundled IDE Wizards**: Starting with the limited-edition setup wizard bundled inside the Visual Studio 6.0 box and classic 1990s procedural script installers.
+- **3D-Beveled Suites & CD-ROM Multimedia Builders**: Commercial rapid-packaging suites and interactive CD-ROM autorun studios *(yes, at one point I even tried bending an interactive multimedia autorun menu builder into an application installer!)*.
+- **Scriptable Open-Source Packagers**: Lightweight text-scriptable installers that nailed small binary size and version control, yet lacked native relational Windows Installer (`.msi`) databases.
+- **Enterprise Relational MSI & XML Suites**: Heavyweight commercial workstations and verbose XML toolchains that exposed `msi.dll` power at the cost of multi-gigabyte installs, 32-bit legacy debt, opaque binary forms, or broken Windows 11 Dark Mode and screen-reader accessibility.
+
+**RaggieSoft Installer Studio** takes everything those eras got right—plain-text diffable manifests, authentic relational `.msi` compliance, single-file `LZMS` solid compression, pre-MSI runtime chaining, and classic-to-modern wizard ergonomics—and rebuilds it from first principles in static `/MT` Win32 C++20 for native `x64` and `ARM64` Windows 11.
 
 ---
 

@@ -206,11 +206,9 @@ public:
         }
         if (hStatusEdit) ::SendMessageW(hStatusEdit, WM_SETFONT, reinterpret_cast<WPARAM>(hFontMono), TRUE);
 
-        if (!theme.isHighContrast) {
-            ListView_SetBkColor(hRowGrid, theme.cardBg);
-            ListView_SetTextBkColor(hRowGrid, theme.cardBg);
-            ListView_SetTextColor(hRowGrid, theme.textPrimary);
-        }
+        ListView_SetBkColor(hRowGrid, theme.cardBg);
+        ListView_SetTextBkColor(hRowGrid, theme.cardBg);
+        ListView_SetTextColor(hRowGrid, theme.textPrimary);
 
         RECT rc{};
         ::GetClientRect(hWnd, &rc);
@@ -610,10 +608,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
             ::SendMessageW(prism.hTableList, LB_SETCURSEL, static_cast<WPARAM>(featIdx), 0);
             prism.PopulateSelectedTable();
         }
-        const bool ok = rsw::ui::CaptureWindowToPngFile(hWnd, exportShotDir / L"msiprism-sql-inspector.png");
+        const bool okDark = rsw::ui::CaptureWindowToPngFile(hWnd, exportShotDir / L"msiprism-sql-inspector.png");
+
+        // Torture-test live `WM_SETTINGCHANGE(L"ImmersiveColorSet")` hot-swapping on a dense 31-row SQL table (`Component`)!
+        const LRESULT compIdx = ::SendMessageW(prism.hTableList, LB_FINDSTRINGEXACT, static_cast<WPARAM>(-1), reinterpret_cast<LPARAM>(L"Component"));
+        if (compIdx != LB_ERR) {
+            ::SendMessageW(prism.hTableList, LB_SETCURSEL, static_cast<WPARAM>(compIdx), 0);
+            prism.PopulateSelectedTable();
+        }
+        rsw::ui::ForcedThemeOverride() = 0;
+        ::SendMessageW(hWnd, WM_SETTINGCHANGE, 0, reinterpret_cast<LPARAM>(L"ImmersiveColorSet"));
+        const bool okLight = rsw::ui::CaptureWindowToPngFile(hWnd, exportShotDir / L"msiprism-sql-inspector-light.png");
+
         ::DestroyWindow(hWnd);
         ::CoUninitialize();
-        return ok ? 0 : 2;
+        return (okDark && okLight) ? 0 : 2;
     }
 
     MSG msg{};

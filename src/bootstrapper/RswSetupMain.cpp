@@ -724,10 +724,8 @@ public:
             if (hFeatStateIml) ::ImageList_Destroy(hFeatStateIml);
             hFeatStateIml = hNew;
         }
-        if (!theme.isHighContrast) {
-            TreeView_SetBkColor(hFeatTree, theme.cardBg);
-            TreeView_SetTextColor(hFeatTree, theme.textPrimary);
-        }
+        TreeView_SetBkColor(hFeatTree, theme.cardBg);
+        TreeView_SetTextColor(hFeatTree, theme.textPrimary);
         TreeView_SetItemHeight(hFeatTree, static_cast<SHORT>(rsw::ui::ScalePx(26, dpi, theme.textScalePercent)));
     }
 
@@ -3531,16 +3529,25 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         app.UpdateControlVisibilityForPage();
         const bool okTree = rsw::ui::CaptureWindowToPngFile(hWnd, exportShotDir / L"setupwizard-selection-tree.png");
 
-        // Live-test `WM_SETTINGCHANGE(L"ImmersiveColorSet")` hot-swapping from Dark -> Light without restarting!
-        app.currentPage = WizardPage::SetupType;
+        // Torture-test `BCM_SETSHIELD` 32-bit ARGB UAC elevation shield on Primary Royal Cobalt button (Dark Mode)!
+        app.currentPage = WizardPage::ReadyToInstall;
         app.UpdateControlVisibilityForPage();
+        ::SendMessageW(app.hBtnPrimary, BCM_SETSHIELD, 0, TRUE);
+        const bool okUacDark = rsw::ui::CaptureWindowToPngFile(hWnd, exportShotDir / L"setupwizard-ready-uac.png");
+
+        // Live-test `WM_SETTINGCHANGE(L"ImmersiveColorSet")` hot-swapping from Dark -> Light without restarting!
         rsw::ui::ForcedThemeOverride() = 0;
         ::SendMessageW(hWnd, WM_SETTINGCHANGE, 0, reinterpret_cast<LPARAM>(L"ImmersiveColorSet"));
+        ::SendMessageW(app.hBtnPrimary, BCM_SETSHIELD, 0, TRUE);
+        const bool okUacLight = rsw::ui::CaptureWindowToPngFile(hWnd, exportShotDir / L"setupwizard-ready-uac-light.png");
+
+        app.currentPage = WizardPage::SetupType;
+        app.UpdateControlVisibilityForPage();
         const bool okLight = rsw::ui::CaptureWindowToPngFile(hWnd, exportShotDir / L"setupwizard-setup-type-light.png");
 
         ::DestroyWindow(hWnd);
         ::CoUninitialize();
-        return (okType && okTree && okLight) ? 0 : 2;
+        return (okType && okTree && okUacDark && okUacLight && okLight) ? 0 : 2;
     }
 
     // 5. Accessible keyboard-aware Win32 message loop (`IsDialogMessageW` powers `Tab`, `Shift+Tab`,

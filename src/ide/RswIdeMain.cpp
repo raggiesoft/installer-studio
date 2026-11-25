@@ -819,16 +819,14 @@ public:
         for (HWND h : {hSourceEdit, hConsoleEdit}) {
             if (h) ::SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(hFontMono), TRUE);
         }
-        if (!theme.isHighContrast) {
-            for (HWND g : {hPayGrid, hPrGrid, hFaGrid, hScGrid}) {
-                ListView_SetBkColor(g, theme.cardBg);
-                ListView_SetTextBkColor(g, theme.cardBg);
-                ListView_SetTextColor(g, theme.textPrimary);
-            }
-            for (HWND tv : {hDestTree, hDesignTree}) {
-                TreeView_SetBkColor(tv, theme.cardBg);
-                TreeView_SetTextColor(tv, theme.textPrimary);
-            }
+        for (HWND g : {hPayGrid, hPrGrid, hFaGrid, hScGrid}) {
+            ListView_SetBkColor(g, theme.cardBg);
+            ListView_SetTextBkColor(g, theme.cardBg);
+            ListView_SetTextColor(g, theme.textPrimary);
+        }
+        for (HWND tv : {hDestTree, hDesignTree}) {
+            TreeView_SetBkColor(tv, theme.cardBg);
+            TreeView_SetTextColor(tv, theme.textPrimary);
         }
 
         RECT rc{};
