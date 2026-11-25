@@ -6,33 +6,38 @@
 //
 // PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
 //   What is `InstallerStudio.exe` ("RaggieSoft Installer Studio")?
-//     `InstallerStudio.exe` is our **10-View Enterprise Win32 C++20 Visual IDE**
+//     `InstallerStudio.exe` is our **12-View Tree-First Win32 C++20 Visual IDE**
 //     and **5-Wizard AeroWizard Suite** for authoring standalone `.rsip` projects,
 //     `@include` `.rsii` dialog/component presets, and multi-project `.rsis` suites!
 //     Compiled directly with `cl.exe` + the stock Windows 11 SDK (`/MT` static
-//     binary, zero .NET, zero Electron, zero Delphi VCL bloat), it provides:
-//       1. **Package & Identity**          : Product metadata, GUIDs, & scope.
-//       2. **Destination Files & Folders** : Hierarchical `SysTreeView32`
-//          Destination Computer folder tree (`INSTALLDIR`, `CommonFiles64`,
-//          `ProgramData`, `AppData`, `LocalAppData`, `StartMenu`, `Desktop`,
-//          `System64`, `Fonts` + custom `CreateFolder` subfolders) paired with a
-//          filtered File / Component / KeyPath `SysListView32`!
-//       3. **Setup Design (Components)**   : Hierarchical `Features -> Sub-Features
-//          -> Components -> KeyPaths` (`File`, `Registry` per ICE38, or `Folder`
-//          per ICE18) enforcing Microsoft's Official Component Rules!
-//       4. **Runtimes & Merge Modules**    : Pre-MSI `[Prerequisite.*]` catalog &
-//          native 64-bit `[MergeModule.*]` (`.msm`) consumption!
-//       5. **File Associations & Verbs**   : Visual `[FileAssociation.*]` table &
-//          editor (`HKMU\Software\Classes` clean mode + Advertised MSI SQL tables).
-//       6. **Shortcuts & Registry**        : Visual `[Shortcut.*]` & `[Registry.*]`.
-//       7. **C++ Wizard Designer**         : Live GDI+ Designer for `SetupWizard.exe`
-//          (`standard` Glass, `aerowizard` AeroWizard, & `autorun16x9`).
-//       8. **MSI.DLL Dialog Designer**     : Dedicated `370x270` DLU visual form
-//          designer for Windows Installer `Dialog` & `Control` SQL tables (`Express
-//          vs. Custom` workflow + custom `[MsiDialog.*]` & `[MsiControl.*]`)!
-//       9. **Signing, .MST & .MSP**        : Dual-layer Authenticode + GPO `.mst`
-//          transforms & `.msp` patches.
-//      10. **.RSIP Source (Lossless AST)** : 100% comment- & `@include`-preserving
+//     binary, zero .NET, zero Electron, zero WebView2 bloat), every navigation and
+//     architecture view uses genuine Win32 `SysTreeView32` hierarchies with 32-bit
+//     premultiplied ARGB vector icons (`StudioTreeIcon`) and `DarkMode_Explorer`
+//     theming:
+//       - **Left Category Tree (`hNavTree`)**:
+//         Groups all 12 views under `Application Information`, `Setup Architecture`,
+//         `User Interface`, and `Deployment & Source`.
+//       1. **Package & Identity**            : Product metadata, GUIDs, & scope.
+//       2. **Application Runtimes & .MSM**   : Hierarchical `SysTreeView32` of
+//          Pre-MSI `[Prerequisite.*]` runtimes and 64-bit `[MergeModule.*]` modules.
+//       3. **Features (`All Features` Tree)** : Dedicated feature hierarchy editor
+//          with `Move Up` / `Move Down` `SelectionTree` ordering, `New Feature`,
+//          `Sub-Feature`, `DisallowAbsent` locks, & live Feature Description editor!
+//       4. **Files & Folders (Dual Trees)**  : Left `Destination Computer` folder
+//          tree (`INSTALLDIR`, `ProgramData`, `AppData`, `StartMenu`, `Desktop`,
+//          `System64`, `Fonts` + custom subfolders) + Right `Folder Contents` tree!
+//       5. **Components & KeyPaths**         : `Features -> Components -> KeyPaths`
+//          tree enforcing `ICE18`/`ICE38`/`ICE64`/`ICE80` with live click-to-inspect!
+//       6. **Registry (`RegEdit` Tree)**     : Left `HKEY_CLASSES_ROOT`,
+//          `HKEY_CURRENT_USER`, `HKEY_LOCAL_MACHINE\Software\...`, `HKEY_USERS`, &
+//          `HKEY_USER_MACHINE_DEFAULT (HKMU)` key tree + Right Values tree +
+//          `Filter by Feature` + `.REG` file importer!
+//       7. **File Associations**             : `.ext -> ProgId -> Shell Verbs` tree!
+//       8. **Shortcuts**                     : `Start Menu` & `Desktop` shortcut tree!
+//       9. **C++ Wizard Designer**           : Live GDI+ Designer (`SetupWizard.exe`).
+//      10. **MSI.DLL Dialog Designer**       : `370x270` DLU Windows Installer canvas.
+//      11. **Signing, .MST & .MSP**          : Dual-Layer Authenticode + `.mst`/`.msp`.
+//      12. **.RSIP Source (Lossless AST)**   : 100% comment- & `@include`-preserving
 //          monospace manifest editor + `F1` native C++ `RaggieSoftHelp.exe`!
 // ================================================================================
 
@@ -55,7 +60,10 @@
 #include <shellapi.h>
 #include <shobjidl.h>
 
+#include <algorithm>
+#include <array>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <set>
 #include <sstream>
@@ -69,15 +77,18 @@ namespace {
 
 enum StudioView : int {
     VIEW_PACKAGE      = 0,
-    VIEW_DEST_FOLDERS = 1,
-    VIEW_SETUP_DESIGN = 2,
-    VIEW_PREREQS      = 3,
-    VIEW_FILE_ASSOC   = 4,
-    VIEW_SHORTCUTS    = 5,
-    VIEW_CPP_WIZARD   = 6,
-    VIEW_MSI_DIALOGS  = 7,
-    VIEW_SIGN_REL     = 8,
-    VIEW_SOURCE       = 9
+    VIEW_PREREQS      = 1,
+    VIEW_FEATURES     = 2,
+    VIEW_DEST_FOLDERS = 3,
+    VIEW_SETUP_DESIGN = 4,
+    VIEW_REGISTRY     = 5,
+    VIEW_FILE_ASSOC   = 6,
+    VIEW_SHORTCUTS    = 7,
+    VIEW_CPP_WIZARD   = 8,
+    VIEW_MSI_DIALOGS  = 9,
+    VIEW_SIGN_REL     = 10,
+    VIEW_SOURCE       = 11,
+    VIEW_COUNT        = 12
 };
 
 enum IdeId : int {
@@ -110,7 +121,7 @@ enum IdeId : int {
     IDM_HELP_ABOUT           = 2024,
     IDM_HELP_TOPICS          = 2025,
 
-    // Persistent Toolbar & Navigation
+    // Persistent Toolbar & Category Navigation Tree
     IDC_TB_WIZARD            = 2100,
     IDC_TB_NEW               = 2101,
     IDC_TB_OPEN              = 2102,
@@ -122,7 +133,7 @@ enum IdeId : int {
     IDC_TB_MSIPRISM          = 2108,
     IDC_ARCH_COMBO           = 2109,
     IDC_SUITE_COMBO          = 2110,
-    IDC_NAV_VIEWS            = 2200,
+    IDC_NAV_TREE             = 2200,
 
     // View 0: Package & Identity
     IDC_PKG_NAME             = 2210,
@@ -137,16 +148,43 @@ enum IdeId : int {
     IDC_PKG_SCOPE            = 2219,
     IDC_PKG_APPLY            = 2220,
 
-    // View 1: Destination Computer (`SysTreeView32` + `SysListView32`)
+    // View 1: Application Runtimes (`[Prerequisite.*]`) & Merge Modules (`[MergeModule.*]`) Tree
+    IDC_PR_TREE              = 2370,
+    IDC_PR_PRESET_COMBO      = 2371,
+    IDC_PR_DIST_COMBO        = 2372,
+    IDC_PR_SOURCE_EDIT       = 2373,
+    IDC_PR_BROWSE_BTN        = 2374,
+    IDC_PR_REBOOT_CODES      = 2375,
+    IDC_PR_ADD_BTN           = 2376,
+    IDC_PR_ADD_MSM_BTN       = 2377,
+    IDC_PR_REMOVE_BTN        = 2378,
+    IDC_PR_WIZ_BTN           = 2379,
+
+    // View 2: Dedicated Features Hierarchy (`All Features` Tree + Ordering + Description)
+    IDC_FT_TREE              = 2400,
+    IDC_FT_UP_BTN            = 2401,
+    IDC_FT_DOWN_BTN          = 2402,
+    IDC_FT_NEW_ROOT_BTN      = 2403,
+    IDC_FT_NEW_SUB_BTN       = 2404,
+    IDC_FT_SAVE_BTN          = 2405,
+    IDC_FT_DELETE_BTN        = 2406,
+    IDC_FT_REQUIRED_CHK      = 2407,
+    IDC_FT_ID                = 2408,
+    IDC_FT_TITLE             = 2409,
+    IDC_FT_LEVEL             = 2410,
+    IDC_FT_PARENT            = 2411,
+    IDC_FT_DESC              = 2412,
+
+    // View 3: Files & Folders (`Destination Computer` Tree + `Folder Contents` Tree)
     IDC_DEST_TREE            = 2225,
-    IDC_PAY_GRID             = 2230,
+    IDC_PAY_TREE             = 2230,
     IDC_PAY_ADD_FILE         = 2231,
     IDC_PAY_ADD_FOLDER       = 2232,
     IDC_DEST_NEW_SUBDIR      = 2233,
     IDC_PAY_REMOVE           = 2234,
     IDC_DEST_SUBDIR_EDIT     = 2235,
 
-    // View 2: Setup Design (Features -> Components -> KeyPaths)
+    // View 4: Components & KeyPaths (`Features -> Components -> KeyPaths` Tree)
     IDC_DESIGN_TREE          = 2310,
     IDC_FEAT_ID              = 2311,
     IDC_FEAT_TITLE           = 2312,
@@ -161,21 +199,28 @@ enum IdeId : int {
     IDC_COMP_KP_TARGET       = 2321,
     IDC_COMP_SAVE_BTN        = 2322,
     IDC_COMP_WIZ_BTN         = 2323,
+    IDC_COMP_DEL_BTN         = 2324,
 
-    // View 3: Runtime Prerequisites (`[Prerequisite.*]`) & Merge Modules (`[MergeModule.*]`)
-    IDC_PR_GRID              = 2370,
-    IDC_PR_PRESET_COMBO      = 2371,
-    IDC_PR_DIST_COMBO        = 2372,
-    IDC_PR_SOURCE_EDIT       = 2373,
-    IDC_PR_BROWSE_BTN        = 2374,
-    IDC_PR_REBOOT_CODES      = 2375,
-    IDC_PR_ADD_BTN           = 2376,
-    IDC_PR_ADD_MSM_BTN       = 2377,
-    IDC_PR_REMOVE_BTN        = 2378,
-    IDC_PR_WIZ_BTN           = 2379,
+    // View 5: `RegEdit`-Style Registry Editor (Hives/Keys Tree + Values Tree + `.REG` Importer)
+    IDC_REG_FEAT_FILTER      = 2420,
+    IDC_REG_IMPORT_BTN       = 2421,
+    IDC_REG_KEY_TREE         = 2422,
+    IDC_REG_VAL_TREE         = 2423,
+    IDC_REG_SUBKEY_EDIT      = 2424,
+    IDC_REG_ADD_KEY_BTN      = 2425,
+    IDC_REG_DEL_KEY_BTN      = 2426,
+    IDC_REG_ROOT_COMBO       = 2427,
+    IDC_REG_KEY              = 2428,
+    IDC_REG_NAME             = 2429,
+    IDC_REG_TYPE_COMBO       = 2430,
+    IDC_REG_VALUE            = 2431,
+    IDC_REG_FEAT_EDIT        = 2432,
+    IDC_REG_COMP             = 2433,
+    IDC_REG_SET_VAL_BTN      = 2434,
+    IDC_REG_DEL_VAL_BTN      = 2435,
 
-    // View 4: File Associations & Shell Verbs
-    IDC_FA_GRID              = 2330,
+    // View 6: File Associations & Shell Verbs Tree
+    IDC_FA_TREE              = 2330,
     IDC_FA_EXT               = 2331,
     IDC_FA_PROGID            = 2332,
     IDC_FA_DESC              = 2333,
@@ -186,18 +231,18 @@ enum IdeId : int {
     IDC_FA_REMOVE_BTN        = 2338,
     IDC_FA_WIZ_BTN           = 2339,
 
-    // View 4: Shortcuts & Registry
-    IDC_SC_GRID              = 2240,
-    IDC_SC_NAME              = 2241,
-    IDC_SC_TARGET            = 2242,
-    IDC_SC_ADD_BTN           = 2243,
-    IDC_REG_KEY              = 2244,
-    IDC_REG_NAME             = 2245,
-    IDC_REG_VALUE            = 2246,
-    IDC_REG_COMP             = 2247,
-    IDC_REG_ADD_BTN          = 2248,
+    // View 7: Application Shortcuts Tree (`Start Menu` & `Desktop`)
+    IDC_SC_TREE              = 2240,
+    IDC_SC_ID_EDIT           = 2241,
+    IDC_SC_NAME              = 2242,
+    IDC_SC_TARGET            = 2243,
+    IDC_SC_LOC_COMBO         = 2244,
+    IDC_SC_ARGS              = 2245,
+    IDC_SC_FEAT              = 2246,
+    IDC_SC_SAVE_BTN          = 2247,
+    IDC_SC_DEL_BTN           = 2248,
 
-    // View 5: C++ Wizard Designer (`SetupWizard.exe` Glass / AeroWizard / Autorun)
+    // View 8: C++ Wizard Designer (`SetupWizard.exe`)
     IDC_UI_LAYOUT            = 2250,
     IDC_UI_PRIMARY_HEX       = 2251,
     IDC_UI_SECONDARY_HEX     = 2252,
@@ -209,7 +254,7 @@ enum IdeId : int {
     IDC_UI_APPLY             = 2258,
     IDC_UI_PREVIEW_STEP      = 2259,
 
-    // View 6: Traditional `MSI.DLL` `Dialog` Table Designer (`370 x 270` DLU)
+    // View 9: Traditional `MSI.DLL` `Dialog` Table Designer (`370 x 270` DLU)
     IDC_MSI_PRESET_COMBO     = 2350,
     IDC_MSI_DLG_SELECT       = 2351,
     IDC_MSI_NEW_DLG_ID       = 2352,
@@ -224,7 +269,7 @@ enum IdeId : int {
     IDC_MSI_ADD_CTRL_BTN     = 2361,
     IDC_MSI_INCLUDE_BTN      = 2362,
 
-    // View 7: Authenticode Signing, .MST & .MSP
+    // View 10: Authenticode Signing, .MST & .MSP
     IDC_SIG_ENABLED          = 2260,
     IDC_SIG_THUMBPRINT       = 2261,
     IDC_SIG_TIMESTAMP        = 2262,
@@ -239,10 +284,209 @@ enum IdeId : int {
     IDC_ENT_GEN_MSP          = 2275,
     IDC_ENT_REL_WIZ_BTN      = 2276,
 
-    // View 8: Lossless `.rsip` Source & Bottom Console
+    // View 11: Lossless `.rsip` Source & Bottom Console
     IDC_SOURCE_EDIT          = 2301,
     IDC_CONSOLE_EDIT         = 2302
 };
+
+// ================================================================================
+// LOSSLESS `.RSIP` AST MUTATION, FEATURE ORDERING & `.REG` IMPORT HELPERS
+// ================================================================================
+void RemoveAstSection(rsw::RswManifestDocument& doc, std::string_view prefix, std::string_view itemId) {
+    std::vector<rsw::RswAstLine> kept;
+    kept.reserve(doc.lines.size());
+    for (const auto& ln : doc.lines) {
+        if ((ln.kind == rsw::AstLineKind::SectionHeader || ln.kind == rsw::AstLineKind::KeyValue) &&
+            rsw::EqualsIgnoreCase(ln.sectionPrefix, prefix) &&
+            rsw::EqualsIgnoreCase(ln.sectionItemId, itemId)) {
+            continue;
+        }
+        kept.push_back(ln);
+    }
+    doc.lines = std::move(kept);
+}
+
+void RemoveAstKey(rsw::RswManifestDocument& doc, std::string_view prefix, std::string_view itemId, std::string_view key) {
+    std::vector<rsw::RswAstLine> kept;
+    kept.reserve(doc.lines.size());
+    for (const auto& ln : doc.lines) {
+        if (ln.kind == rsw::AstLineKind::KeyValue &&
+            rsw::EqualsIgnoreCase(ln.sectionPrefix, prefix) &&
+            rsw::EqualsIgnoreCase(ln.sectionItemId, itemId) &&
+            rsw::EqualsIgnoreCase(ln.key, key)) {
+            continue;
+        }
+        kept.push_back(ln);
+    }
+    doc.lines = std::move(kept);
+}
+
+/// Reorders `[Feature.<featId>]` up (`delta = -1`) or down (`delta = +1`) among its sibling features
+/// inside the lossless `.rsip` AST so `SelectionTree` (`Feature.Display`) updates cleanly!
+bool SwapFeatureSectionOrder(rsw::RswManifestDocument& doc, const std::string& featId, int delta) {
+    struct Span {
+        std::string id;
+        std::string parent;
+        std::size_t startIdx = 0;
+        std::size_t endIdx   = 0; // inclusive
+    };
+    std::vector<Span> spans;
+    for (std::size_t i = 0; i < doc.lines.size(); ++i) {
+        const auto& ln = doc.lines[i];
+        if (ln.kind == rsw::AstLineKind::SectionHeader &&
+            rsw::EqualsIgnoreCase(ln.sectionPrefix, "Feature") &&
+            !ln.sectionItemId.empty()) {
+            std::size_t end = i;
+            while (end + 1 < doc.lines.size() &&
+                   doc.lines[end + 1].kind == rsw::AstLineKind::KeyValue &&
+                   rsw::EqualsIgnoreCase(doc.lines[end + 1].sectionPrefix, "Feature") &&
+                   rsw::EqualsIgnoreCase(doc.lines[end + 1].sectionItemId, ln.sectionItemId)) {
+                ++end;
+            }
+            spans.push_back({ln.sectionItemId, rsw::TrimAscii(doc.GetString("Feature", ln.sectionItemId, "Parent")), i, end});
+            i = end;
+        }
+    }
+
+    int curIdx = -1;
+    for (int s = 0; s < static_cast<int>(spans.size()); ++s) {
+        if (rsw::EqualsIgnoreCase(spans[s].id, featId)) { curIdx = s; break; }
+    }
+    if (curIdx < 0) return false;
+
+    int partnerIdx = -1;
+    for (int step = curIdx + (delta < 0 ? -1 : 1);
+         step >= 0 && step < static_cast<int>(spans.size());
+         step += (delta < 0 ? -1 : 1)) {
+        if (rsw::EqualsIgnoreCase(spans[step].parent, spans[curIdx].parent)) {
+            partnerIdx = step;
+            break;
+        }
+    }
+    if (partnerIdx < 0) return false;
+
+    const int firstS  = std::min(curIdx, partnerIdx);
+    const int secondS = std::max(curIdx, partnerIdx);
+    const auto& a = spans[firstS];
+    const auto& b = spans[secondS];
+
+    std::vector<rsw::RswAstLine> rebuilt;
+    rebuilt.reserve(doc.lines.size());
+    rebuilt.insert(rebuilt.end(), doc.lines.begin(), doc.lines.begin() + static_cast<std::ptrdiff_t>(a.startIdx));
+    rebuilt.insert(rebuilt.end(), doc.lines.begin() + static_cast<std::ptrdiff_t>(b.startIdx), doc.lines.begin() + static_cast<std::ptrdiff_t>(b.endIdx + 1));
+    rebuilt.insert(rebuilt.end(), doc.lines.begin() + static_cast<std::ptrdiff_t>(a.endIdx + 1), doc.lines.begin() + static_cast<std::ptrdiff_t>(b.startIdx));
+    rebuilt.insert(rebuilt.end(), doc.lines.begin() + static_cast<std::ptrdiff_t>(a.startIdx), doc.lines.begin() + static_cast<std::ptrdiff_t>(a.endIdx + 1));
+    rebuilt.insert(rebuilt.end(), doc.lines.begin() + static_cast<std::ptrdiff_t>(b.endIdx + 1), doc.lines.end());
+    doc.lines = std::move(rebuilt);
+    return true;
+}
+
+/// Parses standard Windows `.reg` exports (UTF-16LE BOM or UTF-8, `Windows Registry Editor Version 5.00` / `REGEDIT4`)
+/// and appends clean `[Registry.*]` sections into the `.rsip` AST!
+bool ImportRegFileIntoAst(
+    const std::filesystem::path& regPath,
+    rsw::RswManifestDocument& doc,
+    const std::string& targetFeature,
+    int& outImportedCount)
+{
+    outImportedCount = 0;
+    std::vector<std::uint8_t> raw;
+    std::string err;
+    if (!rsw::ReadBinaryFileBytes(regPath, raw, err) || raw.empty()) return false;
+
+    std::string utf8Text;
+    if (raw.size() >= 2 && raw[0] == 0xFF && raw[1] == 0xFE) {
+        const std::size_t wcCount = (raw.size() - 2) / 2;
+        std::wstring ws(wcCount, L'\0');
+        std::memcpy(ws.data(), raw.data() + 2, wcCount * 2);
+        utf8Text = rsw::WideToUtf8(ws);
+    } else {
+        std::size_t off = (raw.size() >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF) ? 3 : 0;
+        utf8Text.assign(reinterpret_cast<const char*>(raw.data() + off), raw.size() - off);
+    }
+
+    auto unescapeReg = [](std::string_view s) {
+        std::string out;
+        for (std::size_t i = 0; i < s.size(); ++i) {
+            if (s[i] == '\\' && i + 1 < s.size()) {
+                ++i;
+                out.push_back(s[i]);
+            } else {
+                out.push_back(s[i]);
+            }
+        }
+        return out;
+    };
+
+    std::string activeHive;
+    std::string activeSubkey;
+    int nextNum = static_cast<int>(doc.GetNamedSectionIds("Registry").size() + 1);
+
+    std::istringstream iss(utf8Text);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        std::string t = rsw::TrimAscii(line);
+        if (t.empty() || t.front() == ';') continue;
+        if (rsw::EqualsIgnoreCase(t, "REGEDIT4") || t.rfind("Windows Registry Editor", 0) == 0) continue;
+
+        if (t.front() == '[' && t.back() == ']') {
+            std::string fullKey = rsw::TrimAscii(t.substr(1, t.size() - 2));
+            if (!fullKey.empty() && fullKey.front() == '-') {
+                activeHive.clear();
+                continue;
+            }
+            auto slash = fullKey.find('\\');
+            std::string hiveRaw = (slash == std::string::npos) ? fullKey : fullKey.substr(0, slash);
+            activeSubkey = (slash == std::string::npos) ? "" : fullKey.substr(slash + 1);
+            if (rsw::EqualsIgnoreCase(hiveRaw, "HKEY_LOCAL_MACHINE") || rsw::EqualsIgnoreCase(hiveRaw, "HKLM")) activeHive = "HKLM";
+            else if (rsw::EqualsIgnoreCase(hiveRaw, "HKEY_CURRENT_USER") || rsw::EqualsIgnoreCase(hiveRaw, "HKCU")) activeHive = "HKCU";
+            else if (rsw::EqualsIgnoreCase(hiveRaw, "HKEY_CLASSES_ROOT") || rsw::EqualsIgnoreCase(hiveRaw, "HKCR")) activeHive = "HKCR";
+            else if (rsw::EqualsIgnoreCase(hiveRaw, "HKEY_USERS") || rsw::EqualsIgnoreCase(hiveRaw, "HKU")) activeHive = "HKU";
+            else activeHive.clear();
+            continue;
+        }
+
+        if (activeHive.empty() || activeSubkey.empty()) continue;
+        auto eq = t.find('=');
+        if (eq == std::string::npos) continue;
+
+        std::string lhs = rsw::TrimAscii(t.substr(0, eq));
+        std::string rhs = rsw::TrimAscii(t.substr(eq + 1));
+        if (rhs == "-") continue;
+
+        std::string valName = "@";
+        if (lhs != "@") {
+            if (lhs.size() >= 2 && lhs.front() == '"' && lhs.back() == '"') {
+                valName = unescapeReg(std::string_view(lhs).substr(1, lhs.size() - 2));
+            } else {
+                valName = lhs;
+            }
+        }
+
+        std::string valType = "string";
+        std::string valData;
+        if (rhs.size() >= 2 && rhs.front() == '"' && rhs.back() == '"') {
+            valData = unescapeReg(std::string_view(rhs).substr(1, rhs.size() - 2));
+        } else if (rhs.size() > 6 && rsw::EqualsIgnoreCase(rhs.substr(0, 6), "dword:")) {
+            valType = "dword";
+            unsigned long dv = std::strtoul(rhs.substr(6).c_str(), nullptr, 16);
+            valData = std::to_string(dv);
+        } else {
+            continue;
+        }
+
+        const std::string rid = "RegImport" + std::to_string(nextNum++);
+        doc.SetString("Registry", rid, "Root",    activeHive);
+        doc.SetString("Registry", rid, "Key",     activeSubkey);
+        doc.SetString("Registry", rid, "Name",    valName);
+        doc.SetString("Registry", rid, "Type",    valType);
+        doc.SetString("Registry", rid, "Value",   valData);
+        doc.SetString("Registry", rid, "Feature", targetFeature.empty() ? "Main" : targetFeature);
+        ++outImportedCount;
+    }
+    return outImportedCount > 0;
+}
 
 std::string BuildStarterRsipTemplate() {
     const std::string guid = rsw::GenerateRandomMsiGuid();
@@ -274,11 +518,21 @@ std::string BuildStarterRsipTemplate() {
       << "[Feature.Main]\r\n"
       << "Title             = Core Application Files\r\n"
       << "Description       = Essential program executables and libraries.\r\n"
-      << "Level             = 1\r\n\r\n"
+      << "Level             = 1\r\n"
+      << "DisallowAbsent    = true\r\n\r\n"
       << "[Payload.App]\r\n"
       << "Source            = ..\\..\\bin\\$(ARCH)\\HelloRaggieSoft.exe\r\n"
       << "TargetRoot        = INSTALLDIR\r\n"
-      << "Feature           = Main\r\n";
+      << "Feature           = Main\r\n\r\n"
+      << "[Shortcut.AppMenu]\r\n"
+      << "Name              = My Native Application\r\n"
+      << "TargetFile        = HelloRaggieSoft.exe\r\n"
+      << "Location          = StartMenu\r\n\r\n"
+      << "[Registry.InstallPath]\r\n"
+      << "Root              = HKLM\r\n"
+      << "Key               = Software\\Sample Studio\\My Native App\r\n"
+      << "Name              = InstallPath\r\n"
+      << "Value             = [INSTALLDIR]\r\n";
     return s.str();
 }
 
@@ -330,8 +584,18 @@ struct TaggedControl {
 };
 
 struct DestTreeNodeMeta {
-    std::string targetRoot;   // `""` = `[Target Computer]` (All folders)
+    std::string targetRoot;   // `""` = `Destination Computer` (All folders)
     std::string targetSubdir; // e.g. `"Plugins"`
+};
+
+struct SectionTreeRef {
+    std::string prefix; // e.g. `"Prerequisite"`, `"MergeModule"`, `"Payload"`, `"Folder"`, `"Feature"`, `"Component"`
+    std::string id;     // e.g. `"DotNet10"`, `"Main"`, `"CoreExe"`
+};
+
+struct RegKeyNodeMeta {
+    std::string hiveCode; // `"HKCR"`, `"HKCU"`, `"HKLM"`, `"HKU"`, `"HKMU"`, or `""` for root
+    std::string keyPath;  // e.g. `"Software\\RaggieSoft\\Installer Studio"`
 };
 
 class InstallerStudioIde {
@@ -343,6 +607,7 @@ public:
     HFONT                      hFontUi     = nullptr;
     HFONT                      hFontBold   = nullptr;
     HFONT                      hFontMono   = nullptr;
+    HIMAGELIST                 hTreeIcons  = nullptr;
 
     std::filesystem::path      ideExeDir;
     std::filesystem::path      currentFilePath;
@@ -351,50 +616,92 @@ public:
     rsw::RswManifestDocument   astDoc{};
     rsw::RswIdeEdition         activeEdition = rsw::RswIdeEdition::Community;
     int                        activeView = VIEW_PACKAGE;
+    bool                       suppressNavEvent = false;
     std::vector<TaggedControl> taggedControls;
     RECT                       previewCanvasRc{};
     RECT                       msiCanvasRc{};
 
-    // Destination Tree selection state (`""` = show all folders)
-    std::vector<DestTreeNodeMeta> destNodeMetas;
-    std::string                   selectedDestRoot;
-    std::string                   selectedDestSubdir;
+    // Tree selection metadata tables across all 9 `SysTreeView32` controls
+    std::vector<int>                           navNodeViews;
+    std::array<HTREEITEM, VIEW_COUNT>          viewNavItems{};
 
-    // Persistent Toolbar, Sidebar, & Console
+    std::vector<SectionTreeRef>                prNodeRefs;
+    SectionTreeRef                             selectedPrRef{};
+
+    std::vector<std::string>                   ftNodeIds;
+    std::map<std::string, HTREEITEM>           ftItemMap;
+    std::string                                selectedFtId;
+
+    std::vector<DestTreeNodeMeta>              destNodeMetas;
+    std::string                                selectedDestRoot;
+    std::string                                selectedDestSubdir;
+    std::vector<SectionTreeRef>                payNodeRefs;
+    SectionTreeRef                             selectedPayRef{};
+
+    std::vector<SectionTreeRef>                designNodeRefs;
+
+    std::vector<RegKeyNodeMeta>                regKeyMetas;
+    std::map<std::string, HTREEITEM>           regPathItemMap;
+    std::vector<std::pair<std::string, std::string>> extraSessionRegKeys;
+    std::string                                selectedRegHive = "HKLM";
+    std::string                                selectedRegKeyPath;
+    std::string                                activeRegFeatureFilter;
+    std::vector<std::string>                   regValSectionIds;
+    std::string                                selectedRegSectionId;
+
+    std::vector<std::string>                   faNodeIds;
+    std::string                                selectedFaId;
+
+    std::vector<SectionTreeRef>                scNodeRefs;
+    std::string                                selectedScId;
+
+    // Persistent Toolbar, Category Sidebar Tree, & Console
     HWND hBtnWizard = nullptr, hBtnNew = nullptr, hBtnOpen = nullptr, hBtnSave = nullptr, hBtnValidate = nullptr;
     HWND hBtnBuildMsi = nullptr, hBtnBuildMsm = nullptr, hBtnExportVpat = nullptr, hBtnMsiPrism = nullptr;
     HWND hArchCombo = nullptr, hSuiteCombo = nullptr;
-    HWND hNavViews = nullptr, hConsoleEdit = nullptr;
+    HWND hNavTree = nullptr, hConsoleEdit = nullptr;
 
     // View 0: Package & Identity
     HWND hPkgName = nullptr, hPkgTag = nullptr, hPkgWeb = nullptr, hPkgVer = nullptr, hPkgPub = nullptr;
     HWND hPkgGuid = nullptr, hPkgBtnGuid = nullptr, hPkgSub = nullptr, hPkgExe = nullptr, hPkgScope = nullptr, hPkgApply = nullptr;
 
-    // View 1: Destination Computer (`SysTreeView32` + `SysListView32`)
-    HWND hDestTree = nullptr, hPayGrid = nullptr;
-    HWND hPayAddFile = nullptr, hPayAddDir = nullptr, hDestSubEdit = nullptr, hDestNewSubBtn = nullptr, hPayRemove = nullptr;
-
-    // View 2: Setup Design (`Features -> Components -> KeyPaths`)
-    HWND hDesignTree = nullptr;
-    HWND hFeatId = nullptr, hFeatTitle = nullptr, hFeatLevel = nullptr, hFeatParent = nullptr, hFeatSaveBtn = nullptr;
-    HWND hCompId = nullptr, hCompFeat = nullptr, hCompRoot = nullptr, hCompSubdir = nullptr;
-    HWND hCompKpKind = nullptr, hCompKpTarget = nullptr, hCompSaveBtn = nullptr, hCompWizBtn = nullptr;
-
-    // View 3: Runtimes (`[Prerequisite.*]`) & Merge Modules (`[MergeModule.*]`)
-    HWND hPrGrid = nullptr, hPrPreset = nullptr, hPrDist = nullptr, hPrSource = nullptr;
+    // View 1: Application Runtimes (`[Prerequisite.*]`) & Merge Modules (`[MergeModule.*]`) Tree
+    HWND hPrTree = nullptr, hPrPreset = nullptr, hPrDist = nullptr, hPrSource = nullptr;
     HWND hPrBrowseBtn = nullptr, hPrRebootCodes = nullptr, hPrAddBtn = nullptr;
     HWND hPrAddMsmBtn = nullptr, hPrRemBtn = nullptr, hPrWizBtn = nullptr;
 
-    // View 4: File Associations & Verbs
-    HWND hFaGrid = nullptr, hFaExt = nullptr, hFaProgId = nullptr, hFaDesc = nullptr;
+    // View 2: Dedicated Features Hierarchy (`All Features` Tree + Ordering + Inspector)
+    HWND hFtBannerLbl = nullptr, hFtTree = nullptr, hFtUpBtn = nullptr, hFtDownBtn = nullptr;
+    HWND hFtNewRootBtn = nullptr, hFtNewSubBtn = nullptr, hFtSaveBtn = nullptr, hFtDelBtn = nullptr, hFtReqChk = nullptr;
+    HWND hFtId = nullptr, hFtTitle = nullptr, hFtLevel = nullptr, hFtParent = nullptr, hFtDesc = nullptr;
+
+    // View 3: Files & Folders (`Destination Computer` Tree + `Folder Contents` Tree)
+    HWND hDestTree = nullptr, hPayTree = nullptr;
+    HWND hPayAddFile = nullptr, hPayAddDir = nullptr, hDestSubEdit = nullptr, hDestNewSubBtn = nullptr, hPayRemove = nullptr;
+
+    // View 4: Components & KeyPaths (`Features -> Components -> KeyPaths` Tree)
+    HWND hDesignTree = nullptr;
+    HWND hFeatId = nullptr, hFeatTitle = nullptr, hFeatLevel = nullptr, hFeatParent = nullptr, hFeatSaveBtn = nullptr;
+    HWND hCompId = nullptr, hCompFeat = nullptr, hCompRoot = nullptr, hCompSubdir = nullptr;
+    HWND hCompKpKind = nullptr, hCompKpTarget = nullptr, hCompSaveBtn = nullptr, hCompDelBtn = nullptr, hCompWizBtn = nullptr;
+
+    // View 5: `RegEdit`-Style Registry Editor (Hives/Keys Tree + Values Tree + `.REG` Importer)
+    HWND hRegFilterLbl = nullptr, hRegFeatFilter = nullptr, hRegImportBtn = nullptr;
+    HWND hRegKeyTree = nullptr, hRegValTree = nullptr;
+    HWND hRegSubEdit = nullptr, hRegAddKeyBtn = nullptr, hRegDelKeyBtn = nullptr;
+    HWND hRegRootCombo = nullptr, hRegKey = nullptr, hRegName = nullptr, hRegTypeCombo = nullptr;
+    HWND hRegVal = nullptr, hRegFeatEdit = nullptr, hRegComp = nullptr, hRegSetValBtn = nullptr, hRegDelValBtn = nullptr;
+
+    // View 6: File Associations & Shell Verbs Tree
+    HWND hFaTree = nullptr, hFaExt = nullptr, hFaProgId = nullptr, hFaDesc = nullptr;
     HWND hFaTarget = nullptr, hFaVerbs = nullptr, hFaAdvChk = nullptr;
     HWND hFaAddBtn = nullptr, hFaRemBtn = nullptr, hFaWizBtn = nullptr;
 
-    // View 4: Shortcuts & Registry
-    HWND hScGrid = nullptr, hScName = nullptr, hScTarget = nullptr, hScAddBtn = nullptr;
-    HWND hRegKey = nullptr, hRegName = nullptr, hRegVal = nullptr, hRegComp = nullptr, hRegAddBtn = nullptr;
+    // View 7: Application Shortcuts Tree (`Start Menu` & `Desktop`)
+    HWND hScTree = nullptr, hScIdEdit = nullptr, hScName = nullptr, hScTarget = nullptr;
+    HWND hScLocCombo = nullptr, hScArgs = nullptr, hScFeat = nullptr, hScSaveBtn = nullptr, hScDelBtn = nullptr;
 
-    // View 5: C++ Wizard Designer (`SetupWizard.exe`)
+    // View 8: C++ Wizard Designer (`SetupWizard.exe`)
     HWND hUiLayout = nullptr, hUiPreviewStep = nullptr, hUiPrim = nullptr, hUiSec = nullptr, hUiInstBtn = nullptr;
     HWND hUiIcon = nullptr, hUiIconBtn = nullptr, hUiArt = nullptr, hUiArtBtn = nullptr, hUiApply = nullptr;
     HICON   hPreviewIcon = nullptr;
@@ -402,23 +709,27 @@ public:
     int     previewArtW  = 0;
     int     previewArtH  = 0;
 
-    // View 6: Traditional `MSI.DLL` `Dialog` Table Designer
+    // View 9: Traditional `MSI.DLL` `Dialog` Table Designer
     HWND hMsiPreset = nullptr, hMsiDlgSelect = nullptr;
     HWND hMsiNewId = nullptr, hMsiNewTitle = nullptr, hMsiNewAfter = nullptr, hMsiAddDlgBtn = nullptr;
     HWND hMsiCtrlId = nullptr, hMsiCtrlType = nullptr, hMsiCtrlXywh = nullptr;
     HWND hMsiCtrlProp = nullptr, hMsiCtrlText = nullptr, hMsiAddCtrlBtn = nullptr, hMsiIncludeBtn = nullptr;
 
-    // View 7: Signing, .MST & .MSP
+    // View 10: Signing, .MST & .MSP
     HWND hSigEnable = nullptr, hSigThumb = nullptr, hSigTs = nullptr, hSigDlib = nullptr, hSigMeta = nullptr, hSigApply = nullptr;
     HWND hEntBase = nullptr, hEntBaseBtn = nullptr, hEntTarg = nullptr, hEntTargBtn = nullptr;
     HWND hEntGenMst = nullptr, hEntGenMsp = nullptr, hEntRelWizBtn = nullptr;
 
-    // View 8: Full Monospace `.rsip` Source
+    // View 11: Full Monospace `.rsip` Source
     HWND hSourceEdit = nullptr;
 
     ~InstallerStudioIde() {
         DestroyFonts();
         ReleasePreviewAssets();
+        if (hTreeIcons) {
+            ::ImageList_Destroy(hTreeIcons);
+            hTreeIcons = nullptr;
+        }
     }
 
     void DestroyFonts() noexcept {
@@ -432,6 +743,25 @@ public:
         if (hPreviewArt)  { ::DeleteObject(hPreviewArt); hPreviewArt  = nullptr; }
         previewArtW = 0;
         previewArtH = 0;
+    }
+
+    std::array<HWND, 9> AllTreeControls() const noexcept {
+        return {hNavTree, hPrTree, hFtTree, hDestTree, hPayTree, hDesignTree, hRegKeyTree, hRegValTree, hFaTree};
+    }
+
+    void RefreshAllTreesThemeAndIcons() {
+        const UINT dpi = ::GetDpiForWindow(hWnd);
+        HIMAGELIST newIml = rsw::ui::CreateStudioTreeImageList(dpi, theme);
+        for (HWND tv : {hNavTree, hPrTree, hFtTree, hDestTree, hPayTree, hDesignTree, hRegKeyTree, hRegValTree, hFaTree, hScTree}) {
+            if (!tv) continue;
+            TreeView_SetImageList(tv, newIml, TVSIL_NORMAL);
+            rsw::ui::ApplyDarkTreeViewTheme(tv, theme, dpi);
+            rsw::ui::ApplyDarkScrollbarTheme(tv, theme);
+        }
+        if (hTreeIcons) {
+            ::ImageList_Destroy(hTreeIcons);
+        }
+        hTreeIcons = newIml;
     }
 
     HMENU BuildMenuBar() {
@@ -485,6 +815,87 @@ public:
         return h;
     }
 
+    static HTREEITEM InsertIconTreeItem(
+        HWND hTree,
+        HTREEITEM hParent,
+        const std::wstring& text,
+        rsw::ui::StudioTreeIcon icon,
+        LPARAM lParam = 0,
+        bool boldRoot = false)
+    {
+        TVINSERTSTRUCTW tvi{};
+        tvi.hParent             = hParent;
+        tvi.hInsertAfter        = TVI_LAST;
+        tvi.item.mask           = TVIF_TEXT | TVIF_IMAGE | TVIF_SELECTEDIMAGE | TVIF_PARAM | (boldRoot ? TVIF_STATE : 0);
+        tvi.item.pszText        = const_cast<LPWSTR>(text.c_str());
+        tvi.item.iImage         = static_cast<int>(icon);
+        tvi.item.iSelectedImage = static_cast<int>(icon);
+        tvi.item.lParam         = lParam;
+        if (boldRoot) {
+            tvi.item.stateMask = TVIS_BOLD;
+            tvi.item.state     = TVIS_BOLD;
+        }
+        return TreeView_InsertItem(hTree, &tvi);
+    }
+
+    void PopulateCategorySidebarTree() {
+        TreeView_DeleteAllItems(hNavTree);
+        navNodeViews.clear();
+        viewNavItems.fill(nullptr);
+
+        auto addCat = [&](const wchar_t* label) {
+            const std::size_t idx = navNodeViews.size();
+            navNodeViews.push_back(-1);
+            return InsertIconTreeItem(hNavTree, TVI_ROOT, label, rsw::ui::StudioTreeIcon::CategoryFolder, static_cast<LPARAM>(idx), true);
+        };
+        auto addView = [&](HTREEITEM hCat, int viewIdx, const wchar_t* label, rsw::ui::StudioTreeIcon icon) {
+            const std::size_t idx = navNodeViews.size();
+            navNodeViews.push_back(viewIdx);
+            HTREEITEM hItem = InsertIconTreeItem(hNavTree, hCat, label, icon, static_cast<LPARAM>(idx), false);
+            if (viewIdx >= 0 && viewIdx < VIEW_COUNT) {
+                viewNavItems[static_cast<std::size_t>(viewIdx)] = hItem;
+            }
+            return hItem;
+        };
+
+        HTREEITEM hAppInfo = addCat(L"Application Information");
+        addView(hAppInfo, VIEW_PACKAGE, L"Package & Identity",         rsw::ui::StudioTreeIcon::PackageCube);
+        addView(hAppInfo, VIEW_PREREQS, L"Application Runtimes & .MSM",rsw::ui::StudioTreeIcon::VerbBolt);
+
+        HTREEITEM hArch = addCat(L"Setup Architecture");
+        addView(hArch, VIEW_FEATURES,     L"Features",               rsw::ui::StudioTreeIcon::FeatureBox);
+        addView(hArch, VIEW_DEST_FOLDERS, L"Files & Folders",        rsw::ui::StudioTreeIcon::SubFolder);
+        addView(hArch, VIEW_SETUP_DESIGN, L"Components & KeyPaths",  rsw::ui::StudioTreeIcon::ComponentGear);
+        addView(hArch, VIEW_REGISTRY,     L"Registry",               rsw::ui::StudioTreeIcon::RegistryHive);
+        addView(hArch, VIEW_FILE_ASSOC,   L"File Associations",      rsw::ui::StudioTreeIcon::FileExtDoc);
+
+        HTREEITEM hUi = addCat(L"User Interface");
+        addView(hUi, VIEW_SHORTCUTS,   L"Shortcuts",               rsw::ui::StudioTreeIcon::ShortcutLink);
+        addView(hUi, VIEW_CPP_WIZARD,  L"C++ Wizard Designer",     rsw::ui::StudioTreeIcon::WizardWindow);
+        addView(hUi, VIEW_MSI_DIALOGS, L"MSI.DLL Dialog Designer", rsw::ui::StudioTreeIcon::MsiDialogSql);
+
+        HTREEITEM hDep = addCat(L"Deployment & Source");
+        addView(hDep, VIEW_SIGN_REL, L"Signing, .MST & .MSP", rsw::ui::StudioTreeIcon::CertShield);
+        addView(hDep, VIEW_SOURCE,   L".RSIP Source (AST)",   rsw::ui::StudioTreeIcon::SourceCode);
+
+        for (HTREEITEM c : {hAppInfo, hArch, hUi, hDep}) {
+            TreeView_Expand(hNavTree, c, TVE_EXPAND);
+        }
+        SelectIdeView(VIEW_PACKAGE);
+    }
+
+    void SelectIdeView(int viewIdx) {
+        if (viewIdx < 0 || viewIdx >= VIEW_COUNT) return;
+        activeView = viewIdx;
+        if (viewNavItems[static_cast<std::size_t>(viewIdx)]) {
+            suppressNavEvent = true;
+            TreeView_SelectItem(hNavTree, viewNavItems[static_cast<std::size_t>(viewIdx)]);
+            suppressNavEvent = false;
+        }
+        UpdateActiveViewVisibility();
+        ::InvalidateRect(hWnd, nullptr, TRUE);
+    }
+
     void CreateControls() {
         HINSTANCE hInst = ::GetModuleHandleW(nullptr);
         auto mkBtn = [&](int view, const wchar_t* txt, int id, DWORD style = BS_PUSHBUTTON) {
@@ -494,6 +905,7 @@ public:
             const DWORD lowType = style & 0x0Fu;
             if (lowType == BS_PUSHBUTTON || lowType == BS_DEFPUSHBUTTON) {
                 const bool primary = (id == IDC_TB_BUILD_MSI || id == IDC_PKG_APPLY ||
+                                      id == IDC_FT_SAVE_BTN  || id == IDC_REG_SET_VAL_BTN ||
                                       id == IDC_UI_APPLY     || id == IDC_SIG_APPLY);
                 rsw::ui::AttachAccessiblePushButtonSubclass(h, &theme, primary, false);
             }
@@ -508,10 +920,16 @@ public:
                 WS_EX_CLIENTEDGE, L"EDIT", initText, WS_CHILD | WS_TABSTOP | ES_AUTOHSCROLL,
                 0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), hInst, nullptr));
         };
+        auto mkTree = [&](int view, int id, const wchar_t* a11yName) {
+            return RegisterViewCtrl(view, ::CreateWindowExW(
+                WS_EX_CLIENTEDGE, WC_TREEVIEWW, a11yName,
+                WS_CHILD | WS_TABSTOP | TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS | TVS_SHAREIMAGELISTS,
+                0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), hInst, nullptr));
+        };
         auto mkCombo = [&](int view, int id, std::initializer_list<const wchar_t*> items, int defSel = 0) {
             HWND cb = RegisterViewCtrl(view, ::CreateWindowExW(
                 0, L"COMBOBOX", nullptr, WS_CHILD | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
-                0, 0, 160, 180, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), hInst, nullptr));
+                0, 0, 160, 200, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), hInst, nullptr));
             for (const wchar_t* s : items) {
                 ::SendMessageW(cb, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(s));
             }
@@ -535,26 +953,8 @@ public:
         hArchCombo  = mkCombo(-1, IDC_ARCH_COMBO, {L"arm64", L"x64"}, (hp.NativeArchSlug() == "x64") ? 1 : 0);
         hSuiteCombo = mkCombo(-1, IDC_SUITE_COMBO, {L"[Standalone .rsip Mode]"}, 0);
 
-        // Left 9-View Navigation Sidebar (`view = -1`)
-        hNavViews = RegisterViewCtrl(-1, ::CreateWindowExW(
-            WS_EX_CLIENTEDGE, L"LISTBOX", nullptr, WS_CHILD | WS_TABSTOP | LBS_NOTIFY,
-            0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_NAV_VIEWS)), hInst, nullptr));
-        const wchar_t* viewLabels[] = {
-            L"1. Package & Identity",
-            L"2. Destination Files & Folders",
-            L"3. Setup Design (Components)",
-            L"4. Runtimes & Merge Modules",
-            L"5. File Associations & Verbs",
-            L"6. Shortcuts & Registry",
-            L"7. C++ Wizard Designer",
-            L"8. MSI.DLL Dialog Designer",
-            L"9. Signing, .MST & .MSP",
-            L"10. .RSIP Source (AST)"
-        };
-        for (const wchar_t* vl : viewLabels) {
-            ::SendMessageW(hNavViews, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(vl));
-        }
-        ::SendMessageW(hNavViews, LB_SETCURSEL, 0, 0);
+        // Left Category Navigation Tree (`view = -1`)
+        hNavTree = mkTree(-1, IDC_NAV_TREE, L"Installer Studio Project Views");
 
         // --- VIEW 0: Package & Identity ---
         mkLbl(VIEW_PACKAGE, L"&Product Name:");       hPkgName = mkEd(VIEW_PACKAGE, IDC_PKG_NAME);
@@ -569,53 +969,8 @@ public:
         mkLbl(VIEW_PACKAGE, L"Install S&cope:");      hPkgScope= mkCombo(VIEW_PACKAGE, IDC_PKG_SCOPE, {L"machine", L"user"}, 0);
         hPkgApply = mkBtn(VIEW_PACKAGE, L"&Apply Package Identity to .rsip AST (Preserves Comments)", IDC_PKG_APPLY);
 
-        // --- VIEW 1: Destination Computer (`SysTreeView32` + `SysListView32`) ---
-        hDestTree = RegisterViewCtrl(VIEW_DEST_FOLDERS, ::CreateWindowExW(
-            WS_EX_CLIENTEDGE, WC_TREEVIEWW, nullptr,
-            WS_CHILD | WS_TABSTOP | TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS,
-            0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_DEST_TREE)), hInst, nullptr));
-        hPayGrid = RegisterViewCtrl(VIEW_DEST_FOLDERS, ::CreateWindowExW(
-            WS_EX_CLIENTEDGE, WC_LISTVIEWW, nullptr,
-            WS_CHILD | WS_TABSTOP | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
-            0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PAY_GRID)), hInst, nullptr));
-        ListView_SetExtendedListViewStyle(hPayGrid, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
-        hPayAddFile    = mkBtn(VIEW_DEST_FOLDERS, L"&Add File Here...",   IDC_PAY_ADD_FILE);
-        hPayAddDir     = mkBtn(VIEW_DEST_FOLDERS, L"Add &Folder Here...", IDC_PAY_ADD_FOLDER);
-        hDestSubEdit   = mkEd(VIEW_DEST_FOLDERS,  IDC_DEST_SUBDIR_EDIT, L"Plugins");
-        hDestNewSubBtn = mkBtn(VIEW_DEST_FOLDERS, L"+ &CreateFolder",     IDC_DEST_NEW_SUBDIR);
-        hPayRemove     = mkBtn(VIEW_DEST_FOLDERS, L"&Remove Selected",    IDC_PAY_REMOVE);
-
-        // --- VIEW 2: Setup Design (`Features -> Components -> KeyPaths`) ---
-        hDesignTree = RegisterViewCtrl(VIEW_SETUP_DESIGN, ::CreateWindowExW(
-            WS_EX_CLIENTEDGE, WC_TREEVIEWW, nullptr,
-            WS_CHILD | WS_TABSTOP | TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS,
-            0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_DESIGN_TREE)), hInst, nullptr));
-        mkLbl(VIEW_SETUP_DESIGN, L"Feature ID:");     hFeatId     = mkEd(VIEW_SETUP_DESIGN, IDC_FEAT_ID, L"Main");
-        mkLbl(VIEW_SETUP_DESIGN, L"Feature Title:");  hFeatTitle  = mkEd(VIEW_SETUP_DESIGN, IDC_FEAT_TITLE, L"Core Application");
-        mkLbl(VIEW_SETUP_DESIGN, L"Install Level:");  hFeatLevel  = mkEd(VIEW_SETUP_DESIGN, IDC_FEAT_LEVEL, L"1");
-        mkLbl(VIEW_SETUP_DESIGN, L"Parent Feature:"); hFeatParent = mkEd(VIEW_SETUP_DESIGN, IDC_FEAT_PARENT, L"");
-        hFeatSaveBtn = mkBtn(VIEW_SETUP_DESIGN, L"Save &Feature", IDC_FEAT_SAVE_BTN);
-
-        mkLbl(VIEW_SETUP_DESIGN, L"Component ID:");   hCompId     = mkEd(VIEW_SETUP_DESIGN, IDC_COMP_ID, L"CoreExe");
-        mkLbl(VIEW_SETUP_DESIGN, L"Owning Feature:"); hCompFeat   = mkEd(VIEW_SETUP_DESIGN, IDC_COMP_FEAT, L"Main");
-        mkLbl(VIEW_SETUP_DESIGN, L"Target Root:");
-        hCompRoot = mkCombo(VIEW_SETUP_DESIGN, IDC_COMP_ROOT, {
-            L"INSTALLDIR", L"CommonFiles64Folder", L"CommonAppDataFolder", L"AppDataFolder",
-            L"LocalAppDataFolder", L"ApplicationProgramsFolder", L"DesktopFolder", L"System64Folder", L"FontsFolder"
-        }, 0);
-        mkLbl(VIEW_SETUP_DESIGN, L"Target Subdir:");  hCompSubdir = mkEd(VIEW_SETUP_DESIGN, IDC_COMP_SUBDIR, L"");
-        mkLbl(VIEW_SETUP_DESIGN, L"KeyPath Kind:");
-        hCompKpKind = mkCombo(VIEW_SETUP_DESIGN, IDC_COMP_KP_KIND, {L"auto", L"file", L"registry", L"folder"}, 0);
-        mkLbl(VIEW_SETUP_DESIGN, L"KeyPath Target:"); hCompKpTarget = mkEd(VIEW_SETUP_DESIGN, IDC_COMP_KP_TARGET, L"");
-        hCompSaveBtn = mkBtn(VIEW_SETUP_DESIGN, L"Save &Component", IDC_COMP_SAVE_BTN);
-        hCompWizBtn  = mkBtn(VIEW_SETUP_DESIGN, L"&Component & KeyPath AeroWizard...", IDC_COMP_WIZ_BTN);
-
-        // --- VIEW 3: Runtime Prerequisites (`[Prerequisite.*]`) & Merge Modules (`[MergeModule.*]`) ---
-        hPrGrid = RegisterViewCtrl(VIEW_PREREQS, ::CreateWindowExW(
-            WS_EX_CLIENTEDGE, WC_LISTVIEWW, nullptr,
-            WS_CHILD | WS_TABSTOP | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
-            0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PR_GRID)), hInst, nullptr));
-        ListView_SetExtendedListViewStyle(hPrGrid, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+        // --- VIEW 1: Application Runtimes (`[Prerequisite.*]`) & Merge Modules (`[MergeModule.*]`) Tree ---
+        hPrTree = mkTree(VIEW_PREREQS, IDC_PR_TREE, L"Application Runtimes and Merge Modules Tree");
         mkLbl(VIEW_PREREQS, L"Runtime Preset:");
         hPrPreset = mkCombo(VIEW_PREREQS, IDC_PR_PRESET_COMBO, {
             L"DotNet10Desktop (.NET 10 Desktop)",
@@ -638,38 +993,99 @@ public:
         hPrRemBtn      = mkBtn(VIEW_PREREQS, L"&Remove Selected",            IDC_PR_REMOVE_BTN);
         hPrWizBtn      = mkBtn(VIEW_PREREQS, L"Runtime && .MSM &AeroWizard...", IDC_PR_WIZ_BTN);
 
-        // --- VIEW 4: File Associations & Shell Verbs ---
-        hFaGrid = RegisterViewCtrl(VIEW_FILE_ASSOC, ::CreateWindowExW(
-            WS_EX_CLIENTEDGE, WC_LISTVIEWW, nullptr,
-            WS_CHILD | WS_TABSTOP | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
-            0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_FA_GRID)), hInst, nullptr));
-        ListView_SetExtendedListViewStyle(hFaGrid, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+        // --- VIEW 2: Dedicated Features Hierarchy (`All Features` Tree + Up/Down + Description) ---
+        hFtBannerLbl = mkLbl(VIEW_FEATURES, L"Specify the logical features of your application. Create features or sub-features, sort display order with Move Up / Down, and edit descriptions below.");
+        hFtTree       = mkTree(VIEW_FEATURES, IDC_FT_TREE, L"All Application Features Tree");
+        hFtUpBtn      = mkBtn(VIEW_FEATURES, L"\x25B2 &Up",            IDC_FT_UP_BTN);
+        hFtDownBtn    = mkBtn(VIEW_FEATURES, L"\x25BC &Down",          IDC_FT_DOWN_BTN);
+        hFtNewRootBtn = mkBtn(VIEW_FEATURES, L"+ &New Feature",        IDC_FT_NEW_ROOT_BTN);
+        hFtNewSubBtn  = mkBtn(VIEW_FEATURES, L"+ &Sub-Feature",        IDC_FT_NEW_SUB_BTN);
+        hFtSaveBtn    = mkBtn(VIEW_FEATURES, L"&Save Feature",         IDC_FT_SAVE_BTN);
+        hFtDelBtn     = mkBtn(VIEW_FEATURES, L"&Delete Feature",       IDC_FT_DELETE_BTN);
+        hFtReqChk     = mkBtn(VIEW_FEATURES, L"Core &Required (DisallowAbsent)", IDC_FT_REQUIRED_CHK, BS_AUTOCHECKBOX);
+        mkLbl(VIEW_FEATURES, L"Feature ID:");          hFtId     = mkEd(VIEW_FEATURES, IDC_FT_ID, L"Main");
+        mkLbl(VIEW_FEATURES, L"Display Title:");       hFtTitle  = mkEd(VIEW_FEATURES, IDC_FT_TITLE, L"Core Application");
+        mkLbl(VIEW_FEATURES, L"Install Level:");       hFtLevel  = mkEd(VIEW_FEATURES, IDC_FT_LEVEL, L"1");
+        mkLbl(VIEW_FEATURES, L"Parent Feature:");      hFtParent = mkEd(VIEW_FEATURES, IDC_FT_PARENT, L"");
+        mkLbl(VIEW_FEATURES, L"Feature Description:"); hFtDesc   = mkEd(VIEW_FEATURES, IDC_FT_DESC, L"Essential application executables and support libraries.");
+
+        // --- VIEW 3: Files & Folders (`Destination Computer` Tree + `Folder Contents` Tree) ---
+        hDestTree      = mkTree(VIEW_DEST_FOLDERS, IDC_DEST_TREE, L"Destination Computer Folders Tree");
+        hPayTree       = mkTree(VIEW_DEST_FOLDERS, IDC_PAY_TREE,  L"Selected Destination Folder Contents Tree");
+        hPayAddFile    = mkBtn(VIEW_DEST_FOLDERS, L"&Add File Here...",   IDC_PAY_ADD_FILE);
+        hPayAddDir     = mkBtn(VIEW_DEST_FOLDERS, L"Add &Folder Here...", IDC_PAY_ADD_FOLDER);
+        hDestSubEdit   = mkEd(VIEW_DEST_FOLDERS,  IDC_DEST_SUBDIR_EDIT, L"Plugins");
+        hDestNewSubBtn = mkBtn(VIEW_DEST_FOLDERS, L"+ &CreateFolder",     IDC_DEST_NEW_SUBDIR);
+        hPayRemove     = mkBtn(VIEW_DEST_FOLDERS, L"&Remove Selected",    IDC_PAY_REMOVE);
+
+        // --- VIEW 4: Components & KeyPaths (`Features -> Components -> KeyPaths` Tree) ---
+        hDesignTree = mkTree(VIEW_SETUP_DESIGN, IDC_DESIGN_TREE, L"Components and KeyPaths Tree");
+        mkLbl(VIEW_SETUP_DESIGN, L"Feature ID:");     hFeatId     = mkEd(VIEW_SETUP_DESIGN, IDC_FEAT_ID, L"Main");
+        mkLbl(VIEW_SETUP_DESIGN, L"Feature Title:");  hFeatTitle  = mkEd(VIEW_SETUP_DESIGN, IDC_FEAT_TITLE, L"Core Application");
+        mkLbl(VIEW_SETUP_DESIGN, L"Install Level:");  hFeatLevel  = mkEd(VIEW_SETUP_DESIGN, IDC_FEAT_LEVEL, L"1");
+        mkLbl(VIEW_SETUP_DESIGN, L"Parent Feature:"); hFeatParent = mkEd(VIEW_SETUP_DESIGN, IDC_FEAT_PARENT, L"");
+        hFeatSaveBtn = mkBtn(VIEW_SETUP_DESIGN, L"Save &Feature", IDC_FEAT_SAVE_BTN);
+
+        mkLbl(VIEW_SETUP_DESIGN, L"Component ID:");   hCompId     = mkEd(VIEW_SETUP_DESIGN, IDC_COMP_ID, L"CoreExe");
+        mkLbl(VIEW_SETUP_DESIGN, L"Owning Feature:"); hCompFeat   = mkEd(VIEW_SETUP_DESIGN, IDC_COMP_FEAT, L"Main");
+        mkLbl(VIEW_SETUP_DESIGN, L"Target Root:");
+        hCompRoot = mkCombo(VIEW_SETUP_DESIGN, IDC_COMP_ROOT, {
+            L"INSTALLDIR", L"CommonFiles64Folder", L"CommonAppDataFolder", L"AppDataFolder",
+            L"LocalAppDataFolder", L"ApplicationProgramsFolder", L"DesktopFolder", L"System64Folder", L"FontsFolder"
+        }, 0);
+        mkLbl(VIEW_SETUP_DESIGN, L"Target Subdir:");  hCompSubdir = mkEd(VIEW_SETUP_DESIGN, IDC_COMP_SUBDIR, L"");
+        mkLbl(VIEW_SETUP_DESIGN, L"KeyPath Kind:");
+        hCompKpKind = mkCombo(VIEW_SETUP_DESIGN, IDC_COMP_KP_KIND, {L"auto", L"file", L"registry", L"folder"}, 0);
+        mkLbl(VIEW_SETUP_DESIGN, L"KeyPath Target:"); hCompKpTarget = mkEd(VIEW_SETUP_DESIGN, IDC_COMP_KP_TARGET, L"");
+        hCompSaveBtn = mkBtn(VIEW_SETUP_DESIGN, L"Save &Component", IDC_COMP_SAVE_BTN);
+        hCompDelBtn  = mkBtn(VIEW_SETUP_DESIGN, L"&Delete Component", IDC_COMP_DEL_BTN);
+        hCompWizBtn  = mkBtn(VIEW_SETUP_DESIGN, L"&Component & KeyPath AeroWizard...", IDC_COMP_WIZ_BTN);
+
+        // --- VIEW 5: `RegEdit`-Style Registry View (Hives/Keys Tree + Values Tree + `.REG` Importer) ---
+        hRegFilterLbl  = mkLbl(VIEW_REGISTRY, L"Filter Keys by &Feature:");
+        hRegFeatFilter = mkCombo(VIEW_REGISTRY, IDC_REG_FEAT_FILTER, {L"[All Features]"}, 0);
+        hRegImportBtn  = mkBtn(VIEW_REGISTRY, L"&Import .REG File...", IDC_REG_IMPORT_BTN);
+        hRegKeyTree    = mkTree(VIEW_REGISTRY, IDC_REG_KEY_TREE, L"Target Computer Registry Hives and Keys");
+        hRegValTree    = mkTree(VIEW_REGISTRY, IDC_REG_VAL_TREE, L"Selected Registry Key Values");
+        hRegSubEdit    = mkEd(VIEW_REGISTRY, IDC_REG_SUBKEY_EDIT, L"Settings");
+        hRegAddKeyBtn  = mkBtn(VIEW_REGISTRY, L"+ Add Sub&key", IDC_REG_ADD_KEY_BTN);
+        hRegDelKeyBtn  = mkBtn(VIEW_REGISTRY, L"Delete &Key",   IDC_REG_DEL_KEY_BTN);
+
+        mkLbl(VIEW_REGISTRY, L"Hive:");
+        hRegRootCombo = mkCombo(VIEW_REGISTRY, IDC_REG_ROOT_COMBO, {L"HKLM", L"HKCU", L"HKCR", L"HKU", L"HKMU"}, 0);
+        mkLbl(VIEW_REGISTRY, L"Key Path:");    hRegKey       = mkEd(VIEW_REGISTRY, IDC_REG_KEY, L"Software\\Sample Studio\\My Native App");
+        mkLbl(VIEW_REGISTRY, L"Value Name:");  hRegName      = mkEd(VIEW_REGISTRY, IDC_REG_NAME, L"InstallPath");
+        mkLbl(VIEW_REGISTRY, L"Type:");        hRegTypeCombo = mkCombo(VIEW_REGISTRY, IDC_REG_TYPE_COMBO, {L"string", L"expand_string", L"dword"}, 0);
+        mkLbl(VIEW_REGISTRY, L"Value Data:");  hRegVal       = mkEd(VIEW_REGISTRY, IDC_REG_VALUE, L"[INSTALLDIR]");
+        mkLbl(VIEW_REGISTRY, L"Feature:");     hRegFeatEdit  = mkEd(VIEW_REGISTRY, IDC_REG_FEAT_EDIT, L"Main");
+        mkLbl(VIEW_REGISTRY, L"Component:");   hRegComp      = mkEd(VIEW_REGISTRY, IDC_REG_COMP, L"");
+        hRegSetValBtn = mkBtn(VIEW_REGISTRY, L"&Set Registry Value", IDC_REG_SET_VAL_BTN);
+        hRegDelValBtn = mkBtn(VIEW_REGISTRY, L"&Delete Value",       IDC_REG_DEL_VAL_BTN);
+
+        // --- VIEW 6: File Associations & Shell Verbs Tree ---
+        hFaTree = mkTree(VIEW_FILE_ASSOC, IDC_FA_TREE, L"File Associations and Shell Verbs Tree");
         mkLbl(VIEW_FILE_ASSOC, L".Ext:");        hFaExt    = mkEd(VIEW_FILE_ASSOC, IDC_FA_EXT, L".rsdoc");
         mkLbl(VIEW_FILE_ASSOC, L"ProgId:");      hFaProgId = mkEd(VIEW_FILE_ASSOC, IDC_FA_PROGID, L"MyStudio.MyApp.Doc");
         mkLbl(VIEW_FILE_ASSOC, L"Description:"); hFaDesc   = mkEd(VIEW_FILE_ASSOC, IDC_FA_DESC, L"Application Document");
         mkLbl(VIEW_FILE_ASSOC, L"Target Exe:");  hFaTarget = mkEd(VIEW_FILE_ASSOC, IDC_FA_TARGET, L"HelloRaggieSoft.exe");
         mkLbl(VIEW_FILE_ASSOC, L"Verbs:");       hFaVerbs  = mkEd(VIEW_FILE_ASSOC, IDC_FA_VERBS, L"open:&Open:\"%1\"");
         hFaAdvChk = mkBtn(VIEW_FILE_ASSOC, L"&Advertise (ProgId/Verb Tables)", IDC_FA_ADVERTISE, BS_AUTOCHECKBOX);
-        hFaAddBtn = mkBtn(VIEW_FILE_ASSOC, L"&Add Association", IDC_FA_ADD_BTN);
-        hFaRemBtn = mkBtn(VIEW_FILE_ASSOC, L"&Remove Selected", IDC_FA_REMOVE_BTN);
+        hFaAddBtn = mkBtn(VIEW_FILE_ASSOC, L"&Save / Add Association", IDC_FA_ADD_BTN);
+        hFaRemBtn = mkBtn(VIEW_FILE_ASSOC, L"&Remove Selected",        IDC_FA_REMOVE_BTN);
         hFaWizBtn = mkBtn(VIEW_FILE_ASSOC, L"File Association &AeroWizard...", IDC_FA_WIZ_BTN);
 
-        // --- VIEW 4: Shortcuts & Registry ---
-        hScGrid = RegisterViewCtrl(VIEW_SHORTCUTS, ::CreateWindowExW(
-            WS_EX_CLIENTEDGE, WC_LISTVIEWW, nullptr,
-            WS_CHILD | WS_TABSTOP | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
-            0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SC_GRID)), hInst, nullptr));
-        ListView_SetExtendedListViewStyle(hScGrid, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
-        mkLbl(VIEW_SHORTCUTS, L"Shortcut Name:"); hScName   = mkEd(VIEW_SHORTCUTS, IDC_SC_NAME);
-        mkLbl(VIEW_SHORTCUTS, L"Target Exe:");    hScTarget = mkEd(VIEW_SHORTCUTS, IDC_SC_TARGET);
-        hScAddBtn  = mkBtn(VIEW_SHORTCUTS, L"Add &Shortcut", IDC_SC_ADD_BTN);
-        mkLbl(VIEW_SHORTCUTS, L"Reg Key:");       hRegKey   = mkEd(VIEW_SHORTCUTS, IDC_REG_KEY);
-        mkLbl(VIEW_SHORTCUTS, L"Name:");          hRegName  = mkEd(VIEW_SHORTCUTS, IDC_REG_NAME);
-        mkLbl(VIEW_SHORTCUTS, L"Value:");         hRegVal   = mkEd(VIEW_SHORTCUTS, IDC_REG_VALUE);
-        mkLbl(VIEW_SHORTCUTS, L"Comp:");          hRegComp  = mkEd(VIEW_SHORTCUTS, IDC_REG_COMP);
-        hRegAddBtn = mkBtn(VIEW_SHORTCUTS, L"Add &Registry", IDC_REG_ADD_BTN);
+        // --- VIEW 7: Application Shortcuts Tree (`Start Menu` & `Desktop`) ---
+        hScTree = mkTree(VIEW_SHORTCUTS, IDC_SC_TREE, L"Application Shortcuts Tree");
+        mkLbl(VIEW_SHORTCUTS, L"Shortcut ID:");   hScIdEdit   = mkEd(VIEW_SHORTCUTS, IDC_SC_ID_EDIT, L"AppMenu");
+        mkLbl(VIEW_SHORTCUTS, L"Display Name:");  hScName     = mkEd(VIEW_SHORTCUTS, IDC_SC_NAME,    L"My Native Application");
+        mkLbl(VIEW_SHORTCUTS, L"Target Exe:");    hScTarget   = mkEd(VIEW_SHORTCUTS, IDC_SC_TARGET,  L"HelloRaggieSoft.exe");
+        mkLbl(VIEW_SHORTCUTS, L"Location:");      hScLocCombo = mkCombo(VIEW_SHORTCUTS, IDC_SC_LOC_COMBO, {L"StartMenu", L"Desktop"}, 0);
+        mkLbl(VIEW_SHORTCUTS, L"Arguments:");     hScArgs     = mkEd(VIEW_SHORTCUTS, IDC_SC_ARGS,    L"");
+        mkLbl(VIEW_SHORTCUTS, L"Feature:");       hScFeat     = mkEd(VIEW_SHORTCUTS, IDC_SC_FEAT,    L"Main");
+        hScSaveBtn = mkBtn(VIEW_SHORTCUTS, L"&Save Shortcut",   IDC_SC_SAVE_BTN);
+        hScDelBtn  = mkBtn(VIEW_SHORTCUTS, L"&Delete Shortcut", IDC_SC_DEL_BTN);
 
-        // --- VIEW 5: C++ Wizard Designer (`SetupWizard.exe`) ---
+        // --- VIEW 8: C++ Wizard Designer (`SetupWizard.exe`) ---
         mkLbl(VIEW_CPP_WIZARD, L"Setup.exe Style:");
         hUiLayout = mkCombo(VIEW_CPP_WIZARD, IDC_UI_LAYOUT, {L"standard", L"aerowizard", L"autorun16x9"}, 1);
         mkLbl(VIEW_CPP_WIZARD, L"Preview Step:");
@@ -690,7 +1106,7 @@ public:
         hUiArtBtn  = mkBtn(VIEW_CPP_WIZARD, L"Pick &Art...", IDC_UI_ART_BROWSE);
         hUiApply   = mkBtn(VIEW_CPP_WIZARD, L"&Apply C++ Wizard Branding && Refresh Canvas", IDC_UI_APPLY);
 
-        // --- VIEW 6: Traditional `MSI.DLL` `Dialog` Table Designer (`370 x 270` DLU) ---
+        // --- VIEW 9: Traditional `MSI.DLL` `Dialog` Table Designer (`370 x 270` DLU) ---
         mkLbl(VIEW_MSI_DIALOGS, L"MSI Workflow:");
         hMsiPreset = mkCombo(VIEW_MSI_DIALOGS, IDC_MSI_PRESET_COMBO, {
             L"express_custom (Express / Compact / Custom)",
@@ -718,7 +1134,7 @@ public:
         hMsiAddCtrlBtn = mkBtn(VIEW_MSI_DIALOGS, L"+ Place [Msi&Control]", IDC_MSI_ADD_CTRL_BTN);
         hMsiIncludeBtn = mkBtn(VIEW_MSI_DIALOGS, L"@&include Sample Preset...", IDC_MSI_INCLUDE_BTN);
 
-        // --- VIEW 7: Authenticode Signing, .MST & .MSP ---
+        // --- VIEW 10: Authenticode Signing, .MST & .MSP ---
         hSigEnable = mkBtn(VIEW_SIGN_REL, L"&Enable Dual-Layer Authenticode Signing (Product.msi + Setup.exe)", IDC_SIG_ENABLED, BS_AUTOCHECKBOX);
         mkLbl(VIEW_SIGN_REL, L"Cert SHA-1 Thumbprint:"); hSigThumb = mkEd(VIEW_SIGN_REL, IDC_SIG_THUMBPRINT);
         mkLbl(VIEW_SIGN_REL, L"Timestamp Server URL:");  hSigTs    = mkEd(VIEW_SIGN_REL, IDC_SIG_TIMESTAMP);
@@ -734,7 +1150,7 @@ public:
         hEntGenMsp    = mkBtn(VIEW_SIGN_REL, L"Emit .MS&P Patch",     IDC_ENT_GEN_MSP);
         hEntRelWizBtn = mkBtn(VIEW_SIGN_REL, L"&Release / .MST / .MSP AeroWizard...", IDC_ENT_REL_WIZ_BTN);
 
-        // --- VIEW 8: Lossless `.rsip` Source ---
+        // --- VIEW 11: Lossless `.rsip` Source ---
         hSourceEdit = RegisterViewCtrl(VIEW_SOURCE, ::CreateWindowExW(
             WS_EX_CLIENTEDGE, L"EDIT", L"",
             WS_CHILD | WS_TABSTOP | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_WANTRETURN,
@@ -748,56 +1164,15 @@ public:
             0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CONSOLE_EDIT)), hInst, nullptr));
         ::SendMessageW(hConsoleEdit, EM_SETLIMITTEXT, 0, 0);
 
-        InitListViewColumns();
-
-        // Enforce Windows 11 Dark Mode contrast on all checkboxes, ListView column headers, & scrollbars!
+        rsw::ui::AttachAccessibleCheckboxSubclass(hFtReqChk,  &theme, false);
         rsw::ui::AttachAccessibleCheckboxSubclass(hFaAdvChk,  &theme, false);
         rsw::ui::AttachAccessibleCheckboxSubclass(hSigEnable, &theme, false);
-        for (HWND lv : {hPayGrid, hPrGrid, hFaGrid, hScGrid}) {
-            rsw::ui::AttachDarkAwareListViewSubclass(lv, &theme);
-        }
-        for (HWND sc : {hNavViews, hDestTree, hDesignTree, hSourceEdit, hConsoleEdit}) {
+        for (HWND sc : {hSourceEdit, hConsoleEdit}) {
             rsw::ui::ApplyDarkScrollbarTheme(sc, theme);
         }
-    }
 
-    void InitListViewColumns() {
-        const UINT dpi = ::GetDpiForWindow(hWnd);
-        auto S = [&](int px) { return rsw::ui::ScalePx(px, dpi, theme.textScalePercent); };
-        auto addCol = [&](HWND grid, int idx, const wchar_t* text, int w) {
-            LVCOLUMNW col{};
-            col.mask     = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
-            col.pszText  = const_cast<LPWSTR>(text);
-            col.cx       = S(w);
-            col.iSubItem = idx;
-            ListView_InsertColumn(grid, idx, &col);
-        };
-        addCol(hPayGrid, 0, L"Item / ID",    120);
-        addCol(hPayGrid, 1, L"Destination",  165);
-        addCol(hPayGrid, 2, L"Component",    120);
-        addCol(hPayGrid, 3, L"Feature",       85);
-        addCol(hPayGrid, 4, L"KeyPath",      110);
-        addCol(hPayGrid, 5, L"Source / Info",230);
-
-        addCol(hPrGrid,  0, L"Kind",         105);
-        addCol(hPrGrid,  1, L"Section ID",   135);
-        addCol(hPrGrid,  2, L"Preset / Target", 180);
-        addCol(hPrGrid,  3, L"Delivery",     105);
-        addCol(hPrGrid,  4, L"URL / Source", 240);
-        addCol(hPrGrid,  5, L"Reboot / Feature", 130);
-
-        addCol(hFaGrid,  0, L"Extension",     90);
-        addCol(hFaGrid,  1, L"ProgId",       220);
-        addCol(hFaGrid,  2, L"Description",  200);
-        addCol(hFaGrid,  3, L"Target Exe",   150);
-        addCol(hFaGrid,  4, L"Verbs",        150);
-        addCol(hFaGrid,  5, L"MSI Mode",     130);
-
-        addCol(hScGrid,  0, L"Kind",          95);
-        addCol(hScGrid,  1, L"Section ID",   135);
-        addCol(hScGrid,  2, L"Name / Key",   260);
-        addCol(hScGrid,  3, L"Target / Value",240);
-        addCol(hScGrid,  4, L"Component",    120);
+        RefreshAllTreesThemeAndIcons();
+        PopulateCategorySidebarTree();
     }
 
     void LayoutChildren() {
@@ -813,26 +1188,19 @@ public:
         for (const auto& tc : taggedControls) {
             ::SendMessageW(tc.hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(hFontUi), TRUE);
         }
-        for (HWND h : {hBtnWizard, hBtnBuildMsi, hPkgApply, hUiApply, hCompWizBtn, hPrWizBtn, hFaWizBtn, hEntRelWizBtn}) {
+        for (HWND h : {hBtnWizard, hBtnBuildMsi, hPkgApply, hFtSaveBtn, hRegSetValBtn, hUiApply, hCompWizBtn, hPrWizBtn, hFaWizBtn, hEntRelWizBtn}) {
             if (h) ::SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(hFontBold), TRUE);
         }
         for (HWND h : {hSourceEdit, hConsoleEdit}) {
             if (h) ::SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(hFontMono), TRUE);
         }
-        for (HWND g : {hPayGrid, hPrGrid, hFaGrid, hScGrid}) {
-            ListView_SetBkColor(g, theme.cardBg);
-            ListView_SetTextBkColor(g, theme.cardBg);
-            ListView_SetTextColor(g, theme.textPrimary);
-        }
-        for (HWND tv : {hDestTree, hDesignTree}) {
-            TreeView_SetBkColor(tv, theme.cardBg);
-            TreeView_SetTextColor(tv, theme.textPrimary);
-        }
+
+        RefreshAllTreesThemeAndIcons();
 
         RECT rc{};
         ::GetClientRect(hWnd, &rc);
-        const int W = std::max<int>(760, rc.right - rc.left);
-        const int H = std::max<int>(540, rc.bottom - rc.top);
+        const int W = std::max<int>(780, rc.right - rc.left);
+        const int H = std::max<int>(560, rc.bottom - rc.top);
         auto S = [&](int px) { return rsw::ui::ScalePx(px, dpi, ts); };
 
         const int tbY = S(60);
@@ -852,16 +1220,16 @@ public:
         ::MoveWindow(hSuiteCombo, tx, tbY + S(2), std::max(S(140), W - tx - S(12)), S(280), TRUE);
 
         const int contentTop = S(98);
-        const int consoleH   = S(118);
+        const int consoleH   = S(112);
         const int consoleY   = H - consoleH - S(10);
         const int mainH      = std::max(S(260), consoleY - contentTop - S(8));
-        const int navW       = S(224);
+        const int navW       = S(236);
 
-        ::MoveWindow(hNavViews,    S(12), contentTop, navW, mainH, TRUE);
+        ::MoveWindow(hNavTree,     S(12), contentTop, navW, mainH, TRUE);
         ::MoveWindow(hConsoleEdit, S(12), consoleY,   W - S(24), consoleH, TRUE);
 
         const int paneX = S(24) + navW;
-        const int paneW = std::max(S(440), W - paneX - S(12));
+        const int paneW = std::max(S(460), W - paneX - S(12));
 
         auto viewCtrls = [&](int viewIdx) {
             std::vector<HWND> vh;
@@ -893,62 +1261,13 @@ public:
             }
         }
 
-        // View 1: Destination Files & Folders (`SysTreeView32` left + `SysListView32` right!)
-        {
-            const int treeW = S(248);
-            const int listX = paneX + treeW + S(8);
-            const int listW = std::max(S(240), paneW - treeW - S(8));
-            const int barY  = contentTop + mainH - S(34);
-            ::MoveWindow(hDestTree, paneX, contentTop, treeW, mainH - S(42), TRUE);
-            ::MoveWindow(hPayGrid,  listX, contentTop, listW, mainH - S(42), TRUE);
-
-            ::MoveWindow(hDestSubEdit,   paneX,            barY + S(2), S(124), S(28), TRUE);
-            ::MoveWindow(hDestNewSubBtn, paneX + S(128),   barY,        S(120), S(32), TRUE);
-            ::MoveWindow(hPayAddFile,    listX,            barY,        S(136), S(32), TRUE);
-            ::MoveWindow(hPayAddDir,     listX + S(142),   barY,        S(146), S(32), TRUE);
-            ::MoveWindow(hPayRemove,     listX + S(294),   barY,        S(140), S(32), TRUE);
-        }
-
-        // View 2: Setup Design (`Features -> Components -> KeyPaths` tree + right inspector!)
-        {
-            auto v = viewCtrls(VIEW_SETUP_DESIGN);
-            const int treeW = std::max(S(320), paneW - S(396));
-            const int formX = paneX + treeW + S(12);
-            const int formW = paneW - treeW - S(12);
-            ::MoveWindow(hDesignTree, paneX, contentTop, treeW, mainH, TRUE);
-            if (v.size() >= 22) {
-                int y = contentTop + S(2);
-                const int lw = S(116), fw = std::max(S(140), formW - lw);
-                auto row = [&](HWND lbl, HWND ctl, int h = 24) {
-                    ::MoveWindow(lbl, formX, y + S(3), lw, S(20), TRUE);
-                    ::MoveWindow(ctl, formX + lw, y, fw, S(h), TRUE);
-                    y += S(27);
-                };
-                row(v[1], hFeatId);
-                row(v[3], hFeatTitle);
-                row(v[5], hFeatLevel);
-                row(v[7], hFeatParent);
-                ::MoveWindow(hFeatSaveBtn, formX, y, formW, S(28), TRUE);
-                y += S(38);
-
-                row(v[10], hCompId);
-                row(v[12], hCompFeat);
-                row(v[14], hCompRoot, 160);
-                row(v[16], hCompSubdir);
-                row(v[18], hCompKpKind, 140);
-                row(v[20], hCompKpTarget);
-                ::MoveWindow(hCompSaveBtn, formX, y + S(2), (formW - S(8)) / 2, S(30), TRUE);
-                ::MoveWindow(hCompWizBtn,  formX + (formW + S(8)) / 2, y + S(2), (formW - S(8)) / 2, S(30), TRUE);
-            }
-        }
-
-        // View 3: Runtime Prerequisites (`[Prerequisite.*]`) & Merge Modules (`[MergeModule.*]`)
+        // View 1: Application Runtimes & Merge Modules Tree
         {
             auto v = viewCtrls(VIEW_PREREQS);
-            const int gridH = mainH - S(116);
-            ::MoveWindow(hPrGrid, paneX, contentTop, paneW, gridH, TRUE);
+            const int treeH = mainH - S(116);
+            ::MoveWindow(hPrTree, paneX, contentTop, paneW, treeH, TRUE);
             if (v.size() >= 14) {
-                const int y1 = contentTop + gridH + S(8);
+                const int y1 = contentTop + treeH + S(8);
                 ::MoveWindow(v[1], paneX,            y1 + S(4), S(104), S(22), TRUE);
                 ::MoveWindow(hPrPreset, paneX + S(106), y1,     S(220), S(180), TRUE);
                 ::MoveWindow(v[3], paneX + S(336),   y1 + S(4), S(60),  S(22), TRUE);
@@ -969,13 +1288,146 @@ public:
             }
         }
 
-        // View 4: File Associations & Shell Verbs
+        // View 2: Dedicated Features Hierarchy (`All Features` Tree + Up/Down + Inspector)
+        {
+            auto v = viewCtrls(VIEW_FEATURES);
+            ::MoveWindow(hFtBannerLbl, paneX, contentTop, paneW, S(22), TRUE);
+            const int treeTop = contentTop + S(26);
+            const int treeH   = std::max(S(140), mainH - S(142));
+            const int ordW    = S(82);
+            const int treeW   = paneW - ordW - S(8);
+            ::MoveWindow(hFtTree,    paneX,                  treeTop,           treeW, treeH, TRUE);
+            ::MoveWindow(hFtUpBtn,   paneX + treeW + S(8),   treeTop,           ordW,  S(30), TRUE);
+            ::MoveWindow(hFtDownBtn, paneX + treeW + S(8),   treeTop + S(36),   ordW,  S(30), TRUE);
+
+            const int actY = treeTop + treeH + S(8);
+            ::MoveWindow(hFtNewRootBtn, paneX,          actY, S(126), S(28), TRUE);
+            ::MoveWindow(hFtNewSubBtn,  paneX + S(132), actY, S(124), S(28), TRUE);
+            ::MoveWindow(hFtSaveBtn,    paneX + S(262), actY, S(122), S(28), TRUE);
+            ::MoveWindow(hFtDelBtn,     paneX + S(390), actY, S(126), S(28), TRUE);
+            ::MoveWindow(hFtReqChk,     paneX + S(526), actY + S(1), std::max(S(210), paneW - S(526)), S(26), TRUE);
+
+            if (v.size() >= 19) {
+                const int r1Y = actY + S(36);
+                ::MoveWindow(v[9],  paneX,          r1Y + S(4), S(74),  S(22), TRUE);
+                ::MoveWindow(hFtId, paneX + S(76),  r1Y,        S(116), S(26), TRUE);
+                ::MoveWindow(v[11], paneX + S(200), r1Y + S(4), S(86),  S(22), TRUE);
+                ::MoveWindow(hFtTitle, paneX + S(288), r1Y,     S(250), S(26), TRUE);
+                ::MoveWindow(v[13], paneX + S(546), r1Y + S(4), S(80),  S(22), TRUE);
+                ::MoveWindow(hFtLevel, paneX + S(628), r1Y,     S(54),  S(26), TRUE);
+                ::MoveWindow(v[15], paneX + S(690), r1Y + S(4), S(98),  S(22), TRUE);
+                ::MoveWindow(hFtParent, paneX + S(790), r1Y,    std::max(S(90), paneW - S(790)), S(26), TRUE);
+
+                const int r2Y = r1Y + S(34);
+                ::MoveWindow(v[17],  paneX,          r2Y + S(4), S(128), S(22), TRUE);
+                ::MoveWindow(hFtDesc,paneX + S(130), r2Y,        paneW - S(130), S(26), TRUE);
+            }
+        }
+
+        // View 3: Files & Folders (Dual-Tree: `Destination Computer` left + `Folder Contents` right!)
+        {
+            const int treeW = S(276);
+            const int listX = paneX + treeW + S(8);
+            const int listW = std::max(S(240), paneW - treeW - S(8));
+            const int barY  = contentTop + mainH - S(34);
+            ::MoveWindow(hDestTree, paneX, contentTop, treeW, mainH - S(42), TRUE);
+            ::MoveWindow(hPayTree,  listX, contentTop, listW, mainH - S(42), TRUE);
+
+            ::MoveWindow(hDestSubEdit,   paneX,            barY + S(2), S(140), S(28), TRUE);
+            ::MoveWindow(hDestNewSubBtn, paneX + S(146),   barY,        S(130), S(32), TRUE);
+            ::MoveWindow(hPayAddFile,    listX,            barY,        S(136), S(32), TRUE);
+            ::MoveWindow(hPayAddDir,     listX + S(142),   barY,        S(146), S(32), TRUE);
+            ::MoveWindow(hPayRemove,     listX + S(294),   barY,        S(146), S(32), TRUE);
+        }
+
+        // View 4: Components & KeyPaths (`Features -> Components -> KeyPaths` tree + live inspector!)
+        {
+            auto v = viewCtrls(VIEW_SETUP_DESIGN);
+            const int treeW = std::max(S(320), paneW - S(400));
+            const int formX = paneX + treeW + S(12);
+            const int formW = paneW - treeW - S(12);
+            ::MoveWindow(hDesignTree, paneX, contentTop, treeW, mainH, TRUE);
+            if (v.size() >= 23) {
+                int y = contentTop + S(2);
+                const int lw = S(116), fw = std::max(S(140), formW - lw);
+                auto row = [&](HWND lbl, HWND ctl, int h = 24) {
+                    ::MoveWindow(lbl, formX, y + S(3), lw, S(20), TRUE);
+                    ::MoveWindow(ctl, formX + lw, y, fw, S(h), TRUE);
+                    y += S(27);
+                };
+                row(v[1], hFeatId);
+                row(v[3], hFeatTitle);
+                row(v[5], hFeatLevel);
+                row(v[7], hFeatParent);
+                ::MoveWindow(hFeatSaveBtn, formX, y, formW, S(28), TRUE);
+                y += S(36);
+
+                row(v[10], hCompId);
+                row(v[12], hCompFeat);
+                row(v[14], hCompRoot, 160);
+                row(v[16], hCompSubdir);
+                row(v[18], hCompKpKind, 140);
+                row(v[20], hCompKpTarget);
+                const int halfW = (formW - S(8)) / 2;
+                ::MoveWindow(hCompSaveBtn, formX,             y + S(2), halfW, S(28), TRUE);
+                ::MoveWindow(hCompDelBtn,  formX + halfW + S(8), y + S(2), halfW, S(28), TRUE);
+                y += S(34);
+                ::MoveWindow(hCompWizBtn,  formX, y, formW, S(28), TRUE);
+            }
+        }
+
+        // View 5: `RegEdit`-Style Registry View (Left Hives/Keys Tree + Right Values Tree + `.REG` Importer)
+        {
+            auto v = viewCtrls(VIEW_REGISTRY);
+            ::MoveWindow(hRegFilterLbl,  paneX,          contentTop + S(4), S(148), S(22), TRUE);
+            ::MoveWindow(hRegFeatFilter, paneX + S(152), contentTop + S(1), S(210), S(180), TRUE);
+            ::MoveWindow(hRegImportBtn,  paneX + paneW - S(168), contentTop, S(168), S(28), TRUE);
+
+            const int treesTop = contentTop + S(34);
+            const int treesH   = std::max(S(130), mainH - S(144));
+            const int keyTreeW = (paneW * 44) / 100;
+            const int valTreeX = paneX + keyTreeW + S(8);
+            const int valTreeW = paneW - keyTreeW - S(8);
+            ::MoveWindow(hRegKeyTree, paneX,    treesTop, keyTreeW, treesH, TRUE);
+            ::MoveWindow(hRegValTree, valTreeX, treesTop, valTreeW, treesH, TRUE);
+
+            const int kBarY = treesTop + treesH + S(6);
+            ::MoveWindow(hRegSubEdit,   paneX,                     kBarY + S(1), std::max(S(96), keyTreeW - S(224)), S(26), TRUE);
+            ::MoveWindow(hRegAddKeyBtn, paneX + keyTreeW - S(218), kBarY,        S(110), S(28), TRUE);
+            ::MoveWindow(hRegDelKeyBtn, paneX + keyTreeW - S(102), kBarY,        S(102), S(28), TRUE);
+
+            if (v.size() >= 22) {
+                // Value editor rows
+                ::MoveWindow(v[8],          valTreeX,          kBarY + S(4), S(38),  S(22), TRUE);
+                ::MoveWindow(hRegRootCombo, valTreeX + S(40),  kBarY + S(1), S(82),  S(160), TRUE);
+                ::MoveWindow(v[10],         valTreeX + S(128), kBarY + S(4), S(62),  S(22), TRUE);
+                ::MoveWindow(hRegKey,       valTreeX + S(192), kBarY + S(1), std::max(S(120), valTreeW - S(192)), S(26), TRUE);
+
+                const int r1Y = kBarY + S(34);
+                ::MoveWindow(v[12],         paneX,          r1Y + S(4), S(80),  S(22), TRUE);
+                ::MoveWindow(hRegName,      paneX + S(82),  r1Y,        S(150), S(26), TRUE);
+                ::MoveWindow(v[14],         paneX + S(240), r1Y + S(4), S(38),  S(22), TRUE);
+                ::MoveWindow(hRegTypeCombo, paneX + S(280), r1Y,        S(118), S(140), TRUE);
+                ::MoveWindow(v[16],         paneX + S(406), r1Y + S(4), S(74),  S(22), TRUE);
+                ::MoveWindow(hRegVal,       paneX + S(482), r1Y,        std::max(S(140), paneW - S(482)), S(26), TRUE);
+
+                const int r2Y = r1Y + S(34);
+                ::MoveWindow(v[18],         paneX,          r2Y + S(4), S(56),  S(22), TRUE);
+                ::MoveWindow(hRegFeatEdit,  paneX + S(58),  r2Y,        S(116), S(26), TRUE);
+                ::MoveWindow(v[20],         paneX + S(182), r2Y + S(4), S(78),  S(22), TRUE);
+                ::MoveWindow(hRegComp,      paneX + S(262), r2Y,        S(136), S(26), TRUE);
+                ::MoveWindow(hRegSetValBtn, paneX + S(408), r2Y - S(1), S(162), S(28), TRUE);
+                ::MoveWindow(hRegDelValBtn, paneX + S(578), r2Y - S(1), S(124), S(28), TRUE);
+            }
+        }
+
+        // View 6: File Associations & Shell Verbs Tree
         {
             auto v = viewCtrls(VIEW_FILE_ASSOC);
-            const int gridH = mainH - S(116);
-            ::MoveWindow(hFaGrid, paneX, contentTop, paneW, gridH, TRUE);
+            const int treeH = mainH - S(116);
+            ::MoveWindow(hFaTree, paneX, contentTop, paneW, treeH, TRUE);
             if (v.size() >= 15) {
-                const int y1 = contentTop + gridH + S(8);
+                const int y1 = contentTop + treeH + S(8);
                 ::MoveWindow(v[1], paneX,          y1 + S(4), S(38),  S(22), TRUE);
                 ::MoveWindow(hFaExt, paneX + S(40), y1,        S(72),  S(26), TRUE);
                 ::MoveWindow(v[3], paneX + S(120), y1 + S(4), S(50),  S(22), TRUE);
@@ -991,39 +1443,39 @@ public:
                 ::MoveWindow(hFaAdvChk, paneX + S(512), y2,    std::max(S(180), paneW - S(512)), S(26), TRUE);
 
                 const int y3 = y2 + S(34);
-                ::MoveWindow(hFaAddBtn, paneX,          y3, S(148), S(30), TRUE);
-                ::MoveWindow(hFaRemBtn, paneX + S(156), y3, S(148), S(30), TRUE);
-                ::MoveWindow(hFaWizBtn, paneX + S(312), y3, S(248), S(30), TRUE);
+                ::MoveWindow(hFaAddBtn, paneX,          y3, S(172), S(30), TRUE);
+                ::MoveWindow(hFaRemBtn, paneX + S(180), y3, S(148), S(30), TRUE);
+                ::MoveWindow(hFaWizBtn, paneX + S(336), y3, S(248), S(30), TRUE);
             }
         }
 
-        // View 4: Shortcuts & Registry
+        // View 7: Application Shortcuts Tree (`Start Menu` & `Desktop`)
         {
             auto v = viewCtrls(VIEW_SHORTCUTS);
-            const int gridH = mainH - S(112);
-            ::MoveWindow(hScGrid, paneX, contentTop, paneW, gridH, TRUE);
+            const int treeH = mainH - S(82);
+            ::MoveWindow(hScTree, paneX, contentTop, paneW, treeH, TRUE);
             if (v.size() >= 15) {
-                const int y1 = contentTop + gridH + S(8);
-                ::MoveWindow(v[1], paneX,          y1 + S(4), S(98),  S(22), TRUE);
-                ::MoveWindow(hScName, paneX + S(102), y1,      S(160), S(26), TRUE);
-                ::MoveWindow(v[3], paneX + S(270), y1 + S(4), S(74),  S(22), TRUE);
-                ::MoveWindow(hScTarget, paneX + S(346), y1,    S(180), S(26), TRUE);
-                ::MoveWindow(hScAddBtn, paneX + S(534), y1,    S(126), S(28), TRUE);
+                const int y1 = contentTop + treeH + S(8);
+                ::MoveWindow(v[1],        paneX,          y1 + S(4), S(78),  S(22), TRUE);
+                ::MoveWindow(hScIdEdit,   paneX + S(80),  y1,        S(110), S(26), TRUE);
+                ::MoveWindow(v[3],        paneX + S(198), y1 + S(4), S(90),  S(22), TRUE);
+                ::MoveWindow(hScName,     paneX + S(290), y1,        S(210), S(26), TRUE);
+                ::MoveWindow(v[5],        paneX + S(508), y1 + S(4), S(74),  S(22), TRUE);
+                ::MoveWindow(hScTarget,   paneX + S(584), y1,        std::max(S(140), paneW - S(584)), S(26), TRUE);
 
-                const int y2 = y1 + S(36);
-                ::MoveWindow(v[6],  paneX,          y2 + S(4), S(60),  S(22), TRUE);
-                ::MoveWindow(hRegKey, paneX + S(62), y2,        S(180), S(26), TRUE);
-                ::MoveWindow(v[8],  paneX + S(250), y2 + S(4), S(46),  S(22), TRUE);
-                ::MoveWindow(hRegName,paneX + S(298), y2,       S(96),  S(26), TRUE);
-                ::MoveWindow(v[10], paneX + S(402), y2 + S(4), S(44),  S(22), TRUE);
-                ::MoveWindow(hRegVal, paneX + S(448), y2,       S(110), S(26), TRUE);
-                ::MoveWindow(v[12], paneX + S(566), y2 + S(4), S(46),  S(22), TRUE);
-                ::MoveWindow(hRegComp,paneX + S(614), y2,       S(96),  S(26), TRUE);
-                ::MoveWindow(hRegAddBtn, paneX + S(718), y2,    S(118), S(28), TRUE);
+                const int y2 = y1 + S(34);
+                ::MoveWindow(v[7],        paneX,          y2 + S(4), S(62),  S(22), TRUE);
+                ::MoveWindow(hScLocCombo, paneX + S(64),  y2,        S(116), S(140), TRUE);
+                ::MoveWindow(v[9],        paneX + S(188), y2 + S(4), S(74),  S(22), TRUE);
+                ::MoveWindow(hScArgs,     paneX + S(264), y2,        S(150), S(26), TRUE);
+                ::MoveWindow(v[11],       paneX + S(422), y2 + S(4), S(54),  S(22), TRUE);
+                ::MoveWindow(hScFeat,     paneX + S(478), y2,        S(104), S(26), TRUE);
+                ::MoveWindow(hScSaveBtn,  paneX + S(592), y2 - S(1), S(128), S(28), TRUE);
+                ::MoveWindow(hScDelBtn,   paneX + S(728), y2 - S(1), S(132), S(28), TRUE);
             }
         }
 
-        // View 5: C++ Wizard Designer (`SetupWizard.exe`)
+        // View 8: C++ Wizard Designer (`SetupWizard.exe`)
         {
             auto v = viewCtrls(VIEW_CPP_WIZARD);
             const int formW = S(380);
@@ -1053,7 +1505,7 @@ public:
             previewCanvasRc = RECT{paneX + formW + S(18), contentTop, paneX + paneW, contentTop + std::min(mainH, S(430))};
         }
 
-        // View 6: Traditional `MSI.DLL` `Dialog` Table Designer (`370 x 270` DLU!)
+        // View 9: Traditional `MSI.DLL` `Dialog` Table Designer (`370 x 270` DLU!)
         {
             auto v = viewCtrls(VIEW_MSI_DIALOGS);
             const int formW = S(386);
@@ -1084,7 +1536,7 @@ public:
             msiCanvasRc = RECT{paneX + formW + S(18), contentTop, paneX + paneW, contentTop + std::min(mainH, S(430))};
         }
 
-        // View 7: Signing, .MST & .MSP
+        // View 10: Signing, .MST & .MSP
         {
             auto v = viewCtrls(VIEW_SIGN_REL);
             int y = contentTop + S(4);
@@ -1116,7 +1568,7 @@ public:
             }
         }
 
-        // View 8: Full Monospace `.rsip` Source
+        // View 11: Full Monospace `.rsip` Source
         ::MoveWindow(hSourceEdit, paneX, contentTop, paneW, mainH, TRUE);
 
         UpdateActiveViewVisibility();
@@ -1159,25 +1611,157 @@ public:
     }
 
     // ----------------------------------------------------------------------------
-    // POPULATE HIERARCHICAL DESTINATION COMPUTER TREE & SETUP DESIGN TREE
+    // POPULATE ALL HIERARCHICAL `SysTreeView32` TREES FROM EFFECTIVE AST
     // ----------------------------------------------------------------------------
-    void RebuildDestinationTreeAndPayloadGrid(const rsw::RswManifestDocument& doc) {
+    void RebuildPrerequisitesTree(const rsw::RswManifestDocument& doc) {
+        TreeView_DeleteAllItems(hPrTree);
+        prNodeRefs.clear();
+
+        auto addPrNode = [&](HTREEITEM hPar, const std::wstring& txt, rsw::ui::StudioTreeIcon ico, std::string pfx, std::string id, bool bold = false) {
+            const std::size_t idx = prNodeRefs.size();
+            prNodeRefs.push_back({std::move(pfx), std::move(id)});
+            return InsertIconTreeItem(hPrTree, hPar, txt, ico, static_cast<LPARAM>(idx), bold);
+        };
+
+        const auto resolvedPrereqs = rsw::ResolveManifestPrerequisites(doc, SelectedArch());
+        const auto msmIds          = doc.GetNamedSectionIds("MergeModule");
+
+        HTREEITEM hPrRoot = addPrNode(
+            TVI_ROOT,
+            L"Pre-MSI Runtime Prerequisites (" + std::to_wstring(resolvedPrereqs.size()) + L")",
+            rsw::ui::StudioTreeIcon::VerbBolt, "", "", true);
+        if (resolvedPrereqs.empty()) {
+            addPrNode(hPrRoot, L"(No pre-MSI runtimes configured — select a preset below to add .NET, WebView2, VC++, or Custom)",
+                      rsw::ui::StudioTreeIcon::FileLeaf, "", "");
+        } else {
+            for (const auto& pr : resolvedPrereqs) {
+                const std::wstring head = rsw::Utf8ToWide(pr.id + " — " + pr.displayName + "  [" + pr.distribution + "]");
+                HTREEITEM hItem = addPrNode(hPrRoot, head, rsw::ui::StudioTreeIcon::VerbBolt, "Prerequisite", pr.id);
+                const std::string srcTxt = !pr.buildSourcePath.empty() ? rsw::WideToUtf8(pr.buildSourcePath.wstring()) : pr.downloadUrl;
+                addPrNode(hItem, L"Source / URL: " + rsw::Utf8ToWide(srcTxt), rsw::ui::StudioTreeIcon::FileLeaf, "Prerequisite", pr.id);
+                addPrNode(hItem, L"Reboot Exit Codes: " + rsw::Utf8ToWide(rsw::FormatExitCodeList(pr.rebootCodes)),
+                          rsw::ui::StudioTreeIcon::CertShield, "Prerequisite", pr.id);
+                TreeView_Expand(hPrTree, hItem, TVE_EXPAND);
+            }
+        }
+        TreeView_Expand(hPrTree, hPrRoot, TVE_EXPAND);
+
+        HTREEITEM hMsmRoot = addPrNode(
+            TVI_ROOT,
+            L"Windows Installer Merge Modules (.MSM) (" + std::to_wstring(msmIds.size()) + L")",
+            rsw::ui::StudioTreeIcon::MergeModuleMsm, "", "", true);
+        if (msmIds.empty()) {
+            addPrNode(hMsmRoot, L"(No .MSM merge modules attached)", rsw::ui::StudioTreeIcon::FileLeaf, "", "");
+        } else {
+            for (const auto& mid : msmIds) {
+                const std::string rt   = doc.GetString("MergeModule", mid, "TargetRoot", "INSTALLDIR");
+                const std::string feat = doc.GetString("MergeModule", mid, "Feature", "Main");
+                const std::string src  = doc.GetString("MergeModule", mid, "Source");
+                HTREEITEM hM = addPrNode(
+                    hMsmRoot,
+                    rsw::Utf8ToWide(mid + " -> [" + rt + "]  (Feature: " + feat + ")"),
+                    rsw::ui::StudioTreeIcon::MergeModuleMsm, "MergeModule", mid);
+                addPrNode(hM, L"Module File: " + rsw::Utf8ToWide(src), rsw::ui::StudioTreeIcon::FileLeaf, "MergeModule", mid);
+                TreeView_Expand(hPrTree, hM, TVE_EXPAND);
+            }
+        }
+        TreeView_Expand(hPrTree, hMsmRoot, TVE_EXPAND);
+    }
+
+    void PopulateFeatureInspectorFields(const rsw::RswManifestDocument& doc, const std::string& fid) {
+        if (fid.empty()) return;
+        selectedFtId = fid;
+        const std::string title = doc.GetString("Feature", fid, "Title", fid);
+        const std::string level = doc.GetString("Feature", fid, "Level", "1");
+        const std::string par   = doc.GetString("Feature", fid, "Parent");
+        const std::string desc  = doc.GetString("Feature", fid, "Description");
+        const bool req          = doc.GetBool("Feature", fid, "DisallowAbsent", false);
+
+        ::SetWindowTextW(hFtId,     rsw::Utf8ToWide(fid).c_str());
+        ::SetWindowTextW(hFtTitle,  rsw::Utf8ToWide(title).c_str());
+        ::SetWindowTextW(hFtLevel,  rsw::Utf8ToWide(level).c_str());
+        ::SetWindowTextW(hFtParent, rsw::Utf8ToWide(par).c_str());
+        ::SetWindowTextW(hFtDesc,   rsw::Utf8ToWide(desc).c_str());
+        ::SendMessageW(hFtReqChk, BM_SETCHECK, req ? BST_CHECKED : BST_UNCHECKED, 0);
+        ::InvalidateRect(hFtReqChk, nullptr, FALSE);
+    }
+
+    void RebuildFeaturesTree(const rsw::RswManifestDocument& doc) {
+        TreeView_DeleteAllItems(hFtTree);
+        ftNodeIds.clear();
+        ftItemMap.clear();
+
+        auto addFtNode = [&](HTREEITEM hPar, const std::wstring& txt, rsw::ui::StudioTreeIcon ico, const std::string& fid, bool bold = false) {
+            const std::size_t idx = ftNodeIds.size();
+            ftNodeIds.push_back(fid);
+            HTREEITEM h = InsertIconTreeItem(hFtTree, hPar, txt, ico, static_cast<LPARAM>(idx), bold);
+            if (!fid.empty()) ftItemMap[rsw::AsciiLower(fid)] = h;
+            return h;
+        };
+
+        const std::string prodName = doc.GetString("Package", "", "Name", "Application");
+        HTREEITEM hAll = addFtNode(TVI_ROOT, L"All Features (" + rsw::Utf8ToWide(prodName) + L")",
+                                   rsw::ui::StudioTreeIcon::ComputerRoot, "", true);
+
+        auto featIds = doc.GetNamedSectionIds("Feature");
+        if (featIds.empty()) {
+            addFtNode(hAll, L"Main — Core Application Files  [Level 1]", rsw::ui::StudioTreeIcon::FeatureBox, "Main");
+        } else {
+            // Multi-pass insertion so child features attach cleanly under parents regardless of declaration order
+            std::set<std::string> inserted;
+            for (int pass = 0; pass < 6 && inserted.size() < featIds.size(); ++pass) {
+                for (const auto& fid : featIds) {
+                    const std::string low = rsw::AsciiLower(fid);
+                    if (inserted.count(low)) continue;
+                    const std::string par = rsw::TrimAscii(doc.GetString("Feature", fid, "Parent"));
+                    HTREEITEM hParent = hAll;
+                    if (!par.empty()) {
+                        auto pIt = ftItemMap.find(rsw::AsciiLower(par));
+                        if (pIt == ftItemMap.end() && pass < 5) continue;
+                        if (pIt != ftItemMap.end()) hParent = pIt->second;
+                    }
+                    const std::string title = doc.GetString("Feature", fid, "Title", fid);
+                    const std::string level = doc.GetString("Feature", fid, "Level", "1");
+                    const bool req          = doc.GetBool("Feature", fid, "DisallowAbsent", false);
+                    std::string label = fid + " — " + title + "  [Level " + level + (req ? " • Core Required]" : "]");
+                    addFtNode(hParent, rsw::Utf8ToWide(label),
+                              req ? rsw::ui::StudioTreeIcon::CertShield : rsw::ui::StudioTreeIcon::FeatureBox,
+                              fid);
+                    inserted.insert(low);
+                }
+            }
+        }
+
+        TreeView_Expand(hFtTree, hAll, TVE_EXPAND);
+        for (const auto& [k, hItem] : ftItemMap) {
+            (void)k;
+            TreeView_Expand(hFtTree, hItem, TVE_EXPAND);
+        }
+
+        if (selectedFtId.empty() && !featIds.empty()) {
+            selectedFtId = featIds.front();
+        }
+        auto selIt = ftItemMap.find(rsw::AsciiLower(selectedFtId));
+        if (selIt != ftItemMap.end()) {
+            TreeView_SelectItem(hFtTree, selIt->second);
+            PopulateFeatureInspectorFields(doc, selectedFtId);
+        } else if (!featIds.empty()) {
+            selectedFtId = featIds.front();
+            PopulateFeatureInspectorFields(doc, selectedFtId);
+        }
+    }
+
+    void RebuildDestinationTreeAndPayloadTree(const rsw::RswManifestDocument& doc) {
         TreeView_DeleteAllItems(hDestTree);
         destNodeMetas.clear();
 
-        auto insertNode = [&](HTREEITEM hParent, const std::wstring& label, std::string root, std::string sub) -> HTREEITEM {
+        auto insertNode = [&](HTREEITEM hParent, const std::wstring& label, rsw::ui::StudioTreeIcon ico, std::string root, std::string sub, bool bold = false) {
             const std::size_t idx = destNodeMetas.size();
             destNodeMetas.push_back({std::move(root), std::move(sub)});
-            TVINSERTSTRUCTW tvi{};
-            tvi.hParent      = hParent;
-            tvi.hInsertAfter = TVI_LAST;
-            tvi.item.mask    = TVIF_TEXT | TVIF_PARAM;
-            tvi.item.pszText = const_cast<LPWSTR>(label.c_str());
-            tvi.item.lParam  = static_cast<LPARAM>(idx);
-            return TreeView_InsertItem(hDestTree, &tvi);
+            return InsertIconTreeItem(hDestTree, hParent, label, ico, static_cast<LPARAM>(idx), bold);
         };
 
-        HTREEITEM hTargetPcRoot = insertNode(TVI_ROOT, L"Destination Computer (All Files)", "", "");
+        HTREEITEM hTargetPcRoot = insertNode(TVI_ROOT, L"Destination Computer (All Folders)", rsw::ui::StudioTreeIcon::ComputerRoot, "", "", true);
         struct StdRoot { const char* id; const wchar_t* label; };
         const StdRoot stdRoots[] = {
             {"INSTALLDIR",                L"[INSTALLDIR] Application Folder"},
@@ -1193,11 +1777,10 @@ public:
 
         std::map<std::string, HTREEITEM> rootMap;
         for (const auto& sr : stdRoots) {
-            HTREEITEM hR = insertNode(hTargetPcRoot, sr.label, sr.id, "");
+            HTREEITEM hR = insertNode(hTargetPcRoot, sr.label, rsw::ui::StudioTreeIcon::SubFolder, sr.id, "");
             rootMap[rsw::AsciiLower(sr.id)] = hR;
         }
 
-        // Add subfolders declared in `[Folder.*]`, `[Payload.*]`, and `[Component.*]`
         std::set<std::string> seenSubs;
         auto addSubItem = [&](const std::string& rt, const std::string& sb) {
             if (sb.empty()) return;
@@ -1205,7 +1788,7 @@ public:
             if (!seenSubs.insert(key).second) return;
             auto it = rootMap.find(rsw::AsciiLower(rt));
             HTREEITEM parentItem = (it != rootMap.end()) ? it->second : rootMap["installdir"];
-            insertNode(parentItem, rsw::Utf8ToWide(sb), rt, sb);
+            insertNode(parentItem, rsw::Utf8ToWide(sb), rsw::ui::StudioTreeIcon::CategoryFolder, rt, sb);
             TreeView_Expand(hDestTree, parentItem, TVE_EXPAND);
         };
         for (const auto& fid : doc.GetNamedSectionIds("Folder")) {
@@ -1219,12 +1802,25 @@ public:
         }
         TreeView_Expand(hDestTree, hTargetPcRoot, TVE_EXPAND);
 
-        RefreshPayloadListViewFilter(doc);
+        RefreshDestinationContentsTree(doc);
     }
 
-    void RefreshPayloadListViewFilter(const rsw::RswManifestDocument& doc) {
-        ListView_DeleteAllItems(hPayGrid);
-        int row = 0;
+    void RefreshDestinationContentsTree(const rsw::RswManifestDocument& doc) {
+        TreeView_DeleteAllItems(hPayTree);
+        payNodeRefs.clear();
+
+        auto addPayNode = [&](HTREEITEM hPar, const std::wstring& txt, rsw::ui::StudioTreeIcon ico, std::string pfx, std::string id, bool bold = false) {
+            const std::size_t idx = payNodeRefs.size();
+            payNodeRefs.push_back({std::move(pfx), std::move(id)});
+            return InsertIconTreeItem(hPayTree, hPar, txt, ico, static_cast<LPARAM>(idx), bold);
+        };
+
+        const std::string scopeLabel = selectedDestRoot.empty()
+            ? "All Destination Folders"
+            : (selectedDestSubdir.empty() ? ("[" + selectedDestRoot + "]") : ("[" + selectedDestRoot + "]\\" + selectedDestSubdir));
+        HTREEITEM hRoot = addPayNode(TVI_ROOT, rsw::Utf8ToWide("Staged Contents: " + scopeLabel),
+                                     rsw::ui::StudioTreeIcon::SubFolder, "", "", true);
+
         auto matchesFilter = [&](const std::string& rt, const std::string& sb) -> bool {
             if (selectedDestRoot.empty()) return true;
             if (!rsw::EqualsIgnoreCase(rt, selectedDestRoot)) return false;
@@ -1232,23 +1828,19 @@ public:
             return rsw::EqualsIgnoreCase(sb, selectedDestSubdir);
         };
 
-        auto addRow = [&](const std::string& id, const std::string& dest, const std::string& comp,
-                          const std::string& feat, const std::string& kp, const std::string& src) {
-            std::wstring w0 = rsw::Utf8ToWide(id),   w1 = rsw::Utf8ToWide(dest);
-            std::wstring w2 = rsw::Utf8ToWide(comp), w3 = rsw::Utf8ToWide(feat);
-            std::wstring w4 = rsw::Utf8ToWide(kp),   w5 = rsw::Utf8ToWide(src);
-            LVITEMW it{};
-            it.mask    = LVIF_TEXT;
-            it.iItem   = row;
-            it.pszText = w0.data();
-            ListView_InsertItem(hPayGrid, &it);
-            ListView_SetItemText(hPayGrid, row, 1, w1.data());
-            ListView_SetItemText(hPayGrid, row, 2, w2.data());
-            ListView_SetItemText(hPayGrid, row, 3, w3.data());
-            ListView_SetItemText(hPayGrid, row, 4, w4.data());
-            ListView_SetItemText(hPayGrid, row, 5, w5.data());
-            ++row;
-        };
+        for (const auto& fid : doc.GetNamedSectionIds("Folder")) {
+            const std::string rt = doc.GetString("Folder", fid, "TargetRoot", "INSTALLDIR");
+            const std::string sb = doc.GetString("Folder", fid, "TargetSubdir");
+            if (!matchesFilter(rt, sb)) continue;
+            const std::string feat = doc.GetString("Folder", fid, "Feature", "Main");
+            HTREEITEM hF = addPayNode(
+                hRoot,
+                rsw::Utf8ToWide("[Folder." + fid + "]  ->  [" + rt + "]\\" + sb),
+                rsw::ui::StudioTreeIcon::CategoryFolder, "Folder", fid);
+            addPayNode(hF, rsw::Utf8ToWide("Feature: " + feat + "  •  CreateFolder + ICE64 RemoveFolder"),
+                       rsw::ui::StudioTreeIcon::ComponentGear, "Folder", fid);
+            TreeView_Expand(hPayTree, hF, TVE_EXPAND);
+        }
 
         for (const auto& pid : doc.GetNamedSectionIds("Payload")) {
             const std::string comp = doc.GetString("Payload", pid, "Component");
@@ -1259,57 +1851,55 @@ public:
             if (!matchesFilter(rt, sb)) continue;
             const std::string dest = sb.empty() ? ("[" + rt + "]") : ("[" + rt + "]\\" + sb);
             const std::string feat = doc.GetString("Payload", pid, "Feature", "Main");
+            const std::string src  = doc.GetString("Payload", pid, "Source");
             const std::string kp   = comp.empty()
-                ? (rsw::IsPerUserProfileRootDir(rt) ? "HKCU Reg (ICE38)" : "File (UUIDv5)")
-                : ("[" + doc.GetString("Component", comp, "KeyPathKind", "auto") + "]");
-            addRow("[Payload." + pid + "]", dest, comp.empty() ? "(Auto UUIDv5)" : comp, feat, kp, doc.GetString("Payload", pid, "Source"));
+                ? (rsw::IsPerUserProfileRootDir(rt) ? "HKCU Registry KeyPath (ICE38)" : "Deterministic UUIDv5 File KeyPath")
+                : ("Explicit [" + comp + "] (" + doc.GetString("Component", comp, "KeyPathKind", "auto") + ")");
+
+            HTREEITEM hP = addPayNode(
+                hRoot,
+                rsw::Utf8ToWide("[Payload." + pid + "]  " + dest + "  <-  " + src),
+                rsw::ui::StudioTreeIcon::FileLeaf, "Payload", pid);
+            addPayNode(hP, rsw::Utf8ToWide("Feature: " + feat + "  •  " + kp),
+                       rsw::ui::StudioTreeIcon::ComponentGear, "Payload", pid);
+            TreeView_Expand(hPayTree, hP, TVE_EXPAND);
         }
 
-        for (const auto& fid : doc.GetNamedSectionIds("Folder")) {
-            const std::string rt = doc.GetString("Folder", fid, "TargetRoot", "INSTALLDIR");
-            const std::string sb = doc.GetString("Folder", fid, "TargetSubdir");
-            if (!matchesFilter(rt, sb)) continue;
-            const std::string comp = doc.GetString("Folder", fid, "Component");
-            addRow("[Folder." + fid + "]", "[" + rt + "]\\" + sb,
-                   comp.empty() ? "(Auto CreateFolder)" : comp,
-                   doc.GetString("Folder", fid, "Feature", "Main"),
-                   "Folder (ICE18)", "CreateFolder + RemoveFolder");
-        }
+        TreeView_Expand(hPayTree, hRoot, TVE_EXPAND);
     }
 
     void RebuildSetupDesignTree(const rsw::RswManifestDocument& doc) {
         TreeView_DeleteAllItems(hDesignTree);
-        auto addTv = [&](HTREEITEM hParent, const std::string& utf8Label) -> HTREEITEM {
-            std::wstring wl = rsw::Utf8ToWide(utf8Label);
-            TVINSERTSTRUCTW tvi{};
-            tvi.hParent      = hParent;
-            tvi.hInsertAfter = TVI_LAST;
-            tvi.item.mask    = TVIF_TEXT;
-            tvi.item.pszText = wl.data();
-            return TreeView_InsertItem(hDesignTree, &tvi);
+        designNodeRefs.clear();
+
+        auto addTv = [&](HTREEITEM hParent, const std::string& utf8Label, rsw::ui::StudioTreeIcon ico, std::string pfx, std::string id, bool bold = false) {
+            const std::size_t idx = designNodeRefs.size();
+            designNodeRefs.push_back({std::move(pfx), std::move(id)});
+            return InsertIconTreeItem(hDesignTree, hParent, rsw::Utf8ToWide(utf8Label), ico, static_cast<LPARAM>(idx), bold);
         };
 
+        HTREEITEM hTop = addTv(TVI_ROOT, "Setup Design (Features -> Components -> KeyPaths)", rsw::ui::StudioTreeIcon::ComputerRoot, "", "", true);
         std::map<std::string, HTREEITEM> featNodes;
         auto featIds = doc.GetNamedSectionIds("Feature");
         if (featIds.empty()) {
-            featNodes["main"] = addTv(TVI_ROOT, "Feature: Main (Level 1 — Default)");
+            featNodes["main"] = addTv(hTop, "Feature: Main (Level 1 — Default)", rsw::ui::StudioTreeIcon::FeatureBox, "Feature", "Main");
         } else {
             for (const auto& fid : featIds) {
                 const std::string par = doc.GetString("Feature", fid, "Parent");
-                HTREEITEM hPar = TVI_ROOT;
+                HTREEITEM hPar = hTop;
                 if (!par.empty() && featNodes.count(rsw::AsciiLower(par))) {
                     hPar = featNodes[rsw::AsciiLower(par)];
                 }
                 const std::string lbl = "Feature: " + fid + " — " + doc.GetString("Feature", fid, "Title", fid) +
                                         " (Level " + doc.GetString("Feature", fid, "Level", "1") + ")";
-                featNodes[rsw::AsciiLower(fid)] = addTv(hPar, lbl);
+                featNodes[rsw::AsciiLower(fid)] = addTv(hPar, lbl, rsw::ui::StudioTreeIcon::FeatureBox, "Feature", fid);
             }
         }
 
         auto getFeatNode = [&](const std::string& fid) -> HTREEITEM {
             auto it = featNodes.find(rsw::AsciiLower(fid));
             if (it != featNodes.end()) return it->second;
-            HTREEITEM hNew = addTv(TVI_ROOT, "Feature: " + fid);
+            HTREEITEM hNew = addTv(hTop, "Feature: " + fid, rsw::ui::StudioTreeIcon::FeatureBox, "Feature", fid);
             featNodes[rsw::AsciiLower(fid)] = hNew;
             return hNew;
         };
@@ -1322,7 +1912,7 @@ public:
             const std::string kpt  = doc.GetString("Component", cid, "KeyPathTarget");
             std::string lbl = "Component: " + cid + "  [" + rt + "]  •  KeyPath: " + kp;
             if (!kpt.empty()) lbl += " (" + kpt + ")";
-            HTREEITEM hC = addTv(getFeatNode(feat), lbl);
+            HTREEITEM hC = addTv(getFeatNode(feat), lbl, rsw::ui::StudioTreeIcon::ComponentGear, "Component", cid);
             compNodes[rsw::AsciiLower(cid)] = hC;
         }
 
@@ -1330,21 +1920,284 @@ public:
             const std::string comp = doc.GetString("Payload", pid, "Component");
             const std::string src  = doc.GetString("Payload", pid, "Source");
             if (!comp.empty() && compNodes.count(rsw::AsciiLower(comp))) {
-                addTv(compNodes[rsw::AsciiLower(comp)], "Payload." + pid + " -> " + src);
+                addTv(compNodes[rsw::AsciiLower(comp)], "Payload." + pid + " -> " + src, rsw::ui::StudioTreeIcon::FileLeaf, "Payload", pid);
             } else {
                 const std::string feat = doc.GetString("Payload", pid, "Feature", "Main");
-                addTv(getFeatNode(feat), "[Auto UUIDv5 Component] Payload." + pid + " (KeyFile) -> " + src);
+                addTv(getFeatNode(feat), "[Auto UUIDv5 Component] Payload." + pid + " -> " + src, rsw::ui::StudioTreeIcon::FileLeaf, "Payload", pid);
             }
         }
 
-        for (const auto& [k, hNode] : featNodes) {
-            (void)k;
-            TreeView_Expand(hDesignTree, hNode, TVE_EXPAND);
+        TreeView_Expand(hDesignTree, hTop, TVE_EXPAND);
+        for (const auto& [k, hNode] : featNodes) { (void)k; TreeView_Expand(hDesignTree, hNode, TVE_EXPAND); }
+        for (const auto& [k, hNode] : compNodes) { (void)k; TreeView_Expand(hDesignTree, hNode, TVE_EXPAND); }
+    }
+
+    void RefreshRegistryFeatureFilterCombo(const rsw::RswManifestDocument& doc) {
+        ::SendMessageW(hRegFeatFilter, CB_RESETCONTENT, 0, 0);
+        ::SendMessageW(hRegFeatFilter, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"[All Features]"));
+        int selIdx = 0;
+        int idx = 1;
+        for (const auto& fid : doc.GetNamedSectionIds("Feature")) {
+            std::wstring w = rsw::Utf8ToWide(fid);
+            ::SendMessageW(hRegFeatFilter, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(w.c_str()));
+            if (!activeRegFeatureFilter.empty() && rsw::EqualsIgnoreCase(fid, activeRegFeatureFilter)) {
+                selIdx = idx;
+            }
+            ++idx;
         }
-        for (const auto& [k, hNode] : compNodes) {
-            (void)k;
-            TreeView_Expand(hDesignTree, hNode, TVE_EXPAND);
+        if (selIdx == 0) activeRegFeatureFilter.clear();
+        ::SendMessageW(hRegFeatFilter, CB_SETCURSEL, selIdx, 0);
+    }
+
+    void RebuildRegistryTrees(const rsw::RswManifestDocument& doc) {
+        TreeView_DeleteAllItems(hRegKeyTree);
+        regKeyMetas.clear();
+        regPathItemMap.clear();
+
+        auto addKeyNode = [&](HTREEITEM hPar, const std::wstring& txt, rsw::ui::StudioTreeIcon ico, const std::string& hive, const std::string& path, bool bold = false) {
+            const std::size_t idx = regKeyMetas.size();
+            regKeyMetas.push_back({hive, path});
+            HTREEITEM h = InsertIconTreeItem(hRegKeyTree, hPar, txt, ico, static_cast<LPARAM>(idx), bold);
+            if (!hive.empty()) {
+                regPathItemMap[rsw::AsciiLower(hive + "::" + path)] = h;
+            }
+            return h;
+        };
+
+        HTREEITEM hComputer = addKeyNode(TVI_ROOT, L"Target Computer Registry", rsw::ui::StudioTreeIcon::ComputerRoot, "", "", true);
+        struct HiveDef { const char* code; const wchar_t* label; };
+        const HiveDef hives[] = {
+            {"HKCR", L"HKEY_CLASSES_ROOT"},
+            {"HKCU", L"HKEY_CURRENT_USER"},
+            {"HKLM", L"HKEY_LOCAL_MACHINE"},
+            {"HKU",  L"HKEY_USERS"},
+            {"HKMU", L"HKEY_USER_MACHINE_DEFAULT (HKMU)"}
+        };
+        std::map<std::string, HTREEITEM> hiveRoots;
+        for (const auto& hv : hives) {
+            hiveRoots[rsw::AsciiLower(hv.code)] = addKeyNode(hComputer, hv.label, rsw::ui::StudioTreeIcon::RegistryHive, hv.code, "");
         }
+
+        auto ensureKeyChain = [&](const std::string& rawHive, const std::string& fullKey) {
+            std::string hiveUpper = "HKLM";
+            for (const auto& hv : hives) {
+                if (rsw::EqualsIgnoreCase(rawHive, hv.code)) { hiveUpper = hv.code; break; }
+            }
+            HTREEITEM curParent = hiveRoots[rsw::AsciiLower(hiveUpper)];
+            std::string accum;
+            std::size_t pos = 0;
+            while (pos < fullKey.size()) {
+                auto slash = fullKey.find_first_of("\\/", pos);
+                std::string seg = (slash == std::string::npos) ? fullKey.substr(pos) : fullKey.substr(pos, slash - pos);
+                if (!seg.empty()) {
+                    accum = accum.empty() ? seg : (accum + "\\" + seg);
+                    const std::string mapKey = rsw::AsciiLower(hiveUpper + "::" + accum);
+                    auto it = regPathItemMap.find(mapKey);
+                    if (it == regPathItemMap.end()) {
+                        HTREEITEM hSub = addKeyNode(curParent, rsw::Utf8ToWide(seg), rsw::ui::StudioTreeIcon::RegistryKey, hiveUpper, accum);
+                        TreeView_Expand(hRegKeyTree, curParent, TVE_EXPAND);
+                        curParent = hSub;
+                    } else {
+                        TreeView_Expand(hRegKeyTree, curParent, TVE_EXPAND);
+                        curParent = it->second;
+                    }
+                }
+                if (slash == std::string::npos) break;
+                pos = slash + 1;
+            }
+        };
+
+        const bool defaultMachine = !rsw::EqualsIgnoreCase(doc.GetString("Package", "", "Scope", "machine"), "user");
+        const std::string defHive = defaultMachine ? "HKLM" : "HKCU";
+        std::string firstPopulatedHive;
+        std::string firstPopulatedKey;
+
+        for (const auto& rid : doc.GetNamedSectionIds("Registry")) {
+            const std::string feat = doc.GetString("Registry", rid, "Feature", "Main");
+            if (!activeRegFeatureFilter.empty() && !rsw::EqualsIgnoreCase(feat, activeRegFeatureFilter)) continue;
+            const std::string hv = doc.GetString("Registry", rid, "Root", defHive);
+            const std::string ky = doc.GetString("Registry", rid, "Key");
+            ensureKeyChain(hv, ky);
+            if (firstPopulatedKey.empty() && !ky.empty()) {
+                firstPopulatedHive = hv;
+                firstPopulatedKey  = ky;
+            }
+        }
+        for (const auto& [hv, ky] : extraSessionRegKeys) {
+            ensureKeyChain(hv, ky);
+        }
+
+        TreeView_Expand(hRegKeyTree, hComputer, TVE_EXPAND);
+
+        if (selectedRegKeyPath.empty() && !firstPopulatedKey.empty()) {
+            selectedRegHive    = firstPopulatedHive;
+            selectedRegKeyPath = firstPopulatedKey;
+        }
+        const std::string selLookup = rsw::AsciiLower(selectedRegHive + "::" + selectedRegKeyPath);
+        auto selIt = regPathItemMap.find(selLookup);
+        if (selIt != regPathItemMap.end()) {
+            TreeView_SelectItem(hRegKeyTree, selIt->second);
+        }
+        RefreshRegistryValuesTree(doc);
+    }
+
+    bool SelectRegistryKeyInTree(const std::string& hive, const std::string& keyPath) {
+        const std::string lookup = rsw::AsciiLower(hive + "::" + keyPath);
+        auto it = regPathItemMap.find(lookup);
+        if (it == regPathItemMap.end()) return false;
+        selectedRegHive    = hive;
+        selectedRegKeyPath = keyPath;
+        TreeView_SelectItem(hRegKeyTree, it->second);
+        TreeView_EnsureVisible(hRegKeyTree, it->second);
+        RefreshRegistryValuesTree(ResolvedEffectiveDoc());
+        return true;
+    }
+
+    void SyncRegRootComboSelection(const std::string& hive) {
+        const char* codes[] = {"HKLM", "HKCU", "HKCR", "HKU", "HKMU"};
+        for (int i = 0; i < 5; ++i) {
+            if (rsw::EqualsIgnoreCase(hive, codes[i])) {
+                ::SendMessageW(hRegRootCombo, CB_SETCURSEL, i, 0);
+                return;
+            }
+        }
+        ::SendMessageW(hRegRootCombo, CB_SETCURSEL, 0, 0);
+    }
+
+    void RefreshRegistryValuesTree(const rsw::RswManifestDocument& doc) {
+        TreeView_DeleteAllItems(hRegValTree);
+        regValSectionIds.clear();
+
+        auto addValNode = [&](HTREEITEM hPar, const std::wstring& txt, rsw::ui::StudioTreeIcon ico, std::string rid, bool bold = false) {
+            const std::size_t idx = regValSectionIds.size();
+            regValSectionIds.push_back(std::move(rid));
+            return InsertIconTreeItem(hRegValTree, hPar, txt, ico, static_cast<LPARAM>(idx), bold);
+        };
+
+        SyncRegRootComboSelection(selectedRegHive);
+        if (!selectedRegKeyPath.empty()) {
+            ::SetWindowTextW(hRegKey, rsw::Utf8ToWide(selectedRegKeyPath).c_str());
+        }
+
+        const std::string hdr = selectedRegKeyPath.empty()
+            ? (selectedRegHive + "  (Select a subkey folder on the left or click + Add Subkey)")
+            : (selectedRegHive + "\\" + selectedRegKeyPath);
+        HTREEITEM hRoot = addValNode(TVI_ROOT, rsw::Utf8ToWide(hdr), rsw::ui::StudioTreeIcon::RegistryKey, "", true);
+
+        const bool defaultMachine = !rsw::EqualsIgnoreCase(doc.GetString("Package", "", "Scope", "machine"), "user");
+        const std::string defHive = defaultMachine ? "HKLM" : "HKCU";
+
+        int count = 0;
+        for (const auto& rid : doc.GetNamedSectionIds("Registry")) {
+            const std::string feat = doc.GetString("Registry", rid, "Feature", "Main");
+            if (!activeRegFeatureFilter.empty() && !rsw::EqualsIgnoreCase(feat, activeRegFeatureFilter)) continue;
+            const std::string hv = doc.GetString("Registry", rid, "Root", defHive);
+            const std::string ky = doc.GetString("Registry", rid, "Key");
+            if (!rsw::EqualsIgnoreCase(hv, selectedRegHive)) continue;
+            if (!selectedRegKeyPath.empty() && !rsw::EqualsIgnoreCase(ky, selectedRegKeyPath)) continue;
+            if (selectedRegKeyPath.empty() && !ky.empty()) continue;
+
+            const std::string nm  = doc.GetString("Registry", rid, "Name", "@");
+            const std::string tp  = doc.GetString("Registry", rid, "Type", "string");
+            const std::string val = doc.GetString("Registry", rid, "Value");
+            const bool isNum      = rsw::EqualsIgnoreCase(tp, "dword");
+            const std::string dispName = (nm == "@" || nm.empty()) ? "(Default)" : nm;
+            const std::string typeTag  = isNum ? "REG_DWORD" : (rsw::EqualsIgnoreCase(tp, "expand_string") ? "REG_EXPAND_SZ" : "REG_SZ");
+            const std::string line     = dispName + "   (" + typeTag + ")   =   " + val + "   [Feature: " + feat + "]";
+
+            addValNode(hRoot, rsw::Utf8ToWide(line),
+                       isNum ? rsw::ui::StudioTreeIcon::RegistryValueNum : rsw::ui::StudioTreeIcon::RegistryValueSz,
+                       rid);
+            ++count;
+        }
+
+        if (count == 0) {
+            addValNode(hRoot, L"(No registry values in this key — enter Value Name & Value Data below and click Set Registry Value)",
+                       rsw::ui::StudioTreeIcon::FileLeaf, "");
+        }
+        TreeView_Expand(hRegValTree, hRoot, TVE_EXPAND);
+    }
+
+    void RebuildFileAssociationsTree(const rsw::RswManifestDocument& doc) {
+        TreeView_DeleteAllItems(hFaTree);
+        faNodeIds.clear();
+
+        auto addFaNode = [&](HTREEITEM hPar, const std::wstring& txt, rsw::ui::StudioTreeIcon ico, std::string aid, bool bold = false) {
+            const std::size_t idx = faNodeIds.size();
+            faNodeIds.push_back(std::move(aid));
+            return InsertIconTreeItem(hFaTree, hPar, txt, ico, static_cast<LPARAM>(idx), bold);
+        };
+
+        const auto ids = doc.GetNamedSectionIds("FileAssociation");
+        HTREEITEM hRoot = addFaNode(
+            TVI_ROOT,
+            L"Registered Document Extensions & Explorer Verbs (" + std::to_wstring(ids.size()) + L")",
+            rsw::ui::StudioTreeIcon::ComputerRoot, "", true);
+
+        if (ids.empty()) {
+            addFaNode(hRoot, L"(No document file associations configured)", rsw::ui::StudioTreeIcon::FileLeaf, "");
+        } else {
+            for (const auto& aid : ids) {
+                const std::string ext  = doc.GetString("FileAssociation", aid, "Extension");
+                const std::string prog = doc.GetString("FileAssociation", aid, "ProgId");
+                const std::string desc = doc.GetString("FileAssociation", aid, "Description");
+                const std::string exe  = doc.GetString("FileAssociation", aid, "TargetFile");
+                const std::string vrbs = doc.GetString("FileAssociation", aid, "Verbs", "open:&Open:\"%1\"");
+                const bool adv         = doc.GetBool("FileAssociation", aid, "Advertise", false);
+
+                HTREEITEM hExt = addFaNode(
+                    hRoot,
+                    rsw::Utf8ToWide(ext + " — " + desc + "  (" + prog + ")"),
+                    rsw::ui::StudioTreeIcon::FileExtDoc, aid);
+                addFaNode(hExt,
+                          rsw::Utf8ToWide("Handler: [INSTALLDIR]" + exe + "  •  " + (adv ? "Advertised MSI Tables" : "Clean HKMU\\Software\\Classes")),
+                          rsw::ui::StudioTreeIcon::ShortcutLink, aid);
+
+                HTREEITEM hVerbs = addFaNode(hExt, L"Shell Context-Menu Verbs", rsw::ui::StudioTreeIcon::CategoryFolder, aid);
+                std::size_t pos = 0;
+                while (pos <= vrbs.size()) {
+                    auto bar = vrbs.find('|', pos);
+                    std::string seg = rsw::TrimAscii(bar == std::string::npos ? vrbs.substr(pos) : vrbs.substr(pos, bar - pos));
+                    if (!seg.empty()) {
+                        addFaNode(hVerbs, rsw::Utf8ToWide(seg), rsw::ui::StudioTreeIcon::VerbBolt, aid);
+                    }
+                    if (bar == std::string::npos) break;
+                    pos = bar + 1;
+                }
+                TreeView_Expand(hFaTree, hVerbs, TVE_EXPAND);
+                TreeView_Expand(hFaTree, hExt, TVE_EXPAND);
+            }
+        }
+        TreeView_Expand(hFaTree, hRoot, TVE_EXPAND);
+    }
+
+    void RebuildShortcutsTree(const rsw::RswManifestDocument& doc) {
+        TreeView_DeleteAllItems(hScTree);
+        scNodeRefs.clear();
+
+        auto addScNode = [&](HTREEITEM hPar, const std::wstring& txt, rsw::ui::StudioTreeIcon ico, std::string locOrPfx, std::string id, bool bold = false) {
+            const std::size_t idx = scNodeRefs.size();
+            scNodeRefs.push_back({std::move(locOrPfx), std::move(id)});
+            return InsertIconTreeItem(hScTree, hPar, txt, ico, static_cast<LPARAM>(idx), bold);
+        };
+
+        HTREEITEM hRoot    = addScNode(TVI_ROOT, L"Application Shortcuts", rsw::ui::StudioTreeIcon::ComputerRoot, "", "", true);
+        HTREEITEM hStart   = addScNode(hRoot, L"Start Menu ([ApplicationProgramsFolder])", rsw::ui::StudioTreeIcon::SubFolder, "Location", "StartMenu", true);
+        HTREEITEM hDesktop = addScNode(hRoot, L"Desktop ([DesktopFolder])",                rsw::ui::StudioTreeIcon::SubFolder, "Location", "Desktop", true);
+
+        for (const auto& sid : doc.GetNamedSectionIds("Shortcut")) {
+            const std::string loc  = doc.GetString("Shortcut", sid, "Location", "StartMenu");
+            const std::string nm   = doc.GetString("Shortcut", sid, "Name", sid);
+            const std::string exe  = doc.GetString("Shortcut", sid, "TargetFile");
+            const std::string feat = doc.GetString("Shortcut", sid, "Feature", "Main");
+            const bool isDesk      = rsw::EqualsIgnoreCase(loc, "Desktop");
+            const std::string lbl  = nm + "  ->  [INSTALLDIR]" + exe + "   [Shortcut." + sid + " • Feature: " + feat + "]";
+            addScNode(isDesk ? hDesktop : hStart, rsw::Utf8ToWide(lbl), rsw::ui::StudioTreeIcon::ShortcutLink, "Shortcut", sid);
+        }
+
+        TreeView_Expand(hScTree, hRoot, TVE_EXPAND);
+        TreeView_Expand(hScTree, hStart, TVE_EXPAND);
+        TreeView_Expand(hScTree, hDesktop, TVE_EXPAND);
     }
 
     void SyncAllViewsFromAst() {
@@ -1361,106 +2214,21 @@ public:
         const bool isUser = rsw::EqualsIgnoreCase(effectiveDoc.GetString("Package", "", "Scope", "machine"), "user");
         ::SendMessageW(hPkgScope, CB_SETCURSEL, isUser ? 1 : 0, 0);
 
-        RebuildDestinationTreeAndPayloadGrid(effectiveDoc);
+        RebuildPrerequisitesTree(effectiveDoc);
+        RebuildFeaturesTree(effectiveDoc);
+        RebuildDestinationTreeAndPayloadTree(effectiveDoc);
         RebuildSetupDesignTree(effectiveDoc);
+        RefreshRegistryFeatureFilterCombo(effectiveDoc);
+        RebuildRegistryTrees(effectiveDoc);
+        RebuildFileAssociationsTree(effectiveDoc);
+        RebuildShortcutsTree(effectiveDoc);
 
-        // Populate View 3: Runtime Prerequisites (`[Prerequisite.*]`) & Merge Modules (`[MergeModule.*]`)
-        ListView_DeleteAllItems(hPrGrid);
-        int prRow = 0;
-        const auto resolvedPrereqs = rsw::ResolveManifestPrerequisites(effectiveDoc, SelectedArch());
-        for (const auto& pr : resolvedPrereqs) {
-            std::wstring w0 = L"Prerequisite";
-            std::wstring w1 = rsw::Utf8ToWide(pr.id);
-            std::wstring w2 = rsw::Utf8ToWide(pr.displayName);
-            std::wstring w3 = rsw::Utf8ToWide(pr.distribution);
-            std::wstring w4 = rsw::Utf8ToWide(!pr.buildSourcePath.empty() ? rsw::WideToUtf8(pr.buildSourcePath.wstring()) : pr.downloadUrl);
-            std::wstring w5 = L"Reboot: " + rsw::Utf8ToWide(rsw::FormatExitCodeList(pr.rebootCodes));
-            LVITEMW it{LVIF_TEXT, prRow, 0, 0, 0, w0.data(), 0, 0, 0, 0};
-            ListView_InsertItem(hPrGrid, &it);
-            ListView_SetItemText(hPrGrid, prRow, 1, w1.data());
-            ListView_SetItemText(hPrGrid, prRow, 2, w2.data());
-            ListView_SetItemText(hPrGrid, prRow, 3, w3.data());
-            ListView_SetItemText(hPrGrid, prRow, 4, w4.data());
-            ListView_SetItemText(hPrGrid, prRow, 5, w5.data());
-            ++prRow;
-        }
-        for (const auto& mid : effectiveDoc.GetNamedSectionIds("MergeModule")) {
-            std::wstring w0 = L"MergeModule";
-            std::wstring w1 = rsw::Utf8ToWide(mid);
-            std::wstring w2 = rsw::Utf8ToWide("[" + effectiveDoc.GetString("MergeModule", mid, "TargetRoot", "INSTALLDIR") + "]");
-            std::wstring w3 = L"merged (.msm)";
-            std::wstring w4 = rsw::Utf8ToWide(effectiveDoc.GetString("MergeModule", mid, "Source"));
-            std::wstring w5 = L"Feature: " + rsw::Utf8ToWide(effectiveDoc.GetString("MergeModule", mid, "Feature", "Main"));
-            LVITEMW it{LVIF_TEXT, prRow, 0, 0, 0, w0.data(), 0, 0, 0, 0};
-            ListView_InsertItem(hPrGrid, &it);
-            ListView_SetItemText(hPrGrid, prRow, 1, w1.data());
-            ListView_SetItemText(hPrGrid, prRow, 2, w2.data());
-            ListView_SetItemText(hPrGrid, prRow, 3, w3.data());
-            ListView_SetItemText(hPrGrid, prRow, 4, w4.data());
-            ListView_SetItemText(hPrGrid, prRow, 5, w5.data());
-            ++prRow;
-        }
-
-        // Populate View 4: File Associations
-        ListView_DeleteAllItems(hFaGrid);
-        int faRow = 0;
-        for (const auto& aid : effectiveDoc.GetNamedSectionIds("FileAssociation")) {
-            std::wstring w0 = rsw::Utf8ToWide(effectiveDoc.GetString("FileAssociation", aid, "Extension"));
-            std::wstring w1 = rsw::Utf8ToWide(effectiveDoc.GetString("FileAssociation", aid, "ProgId"));
-            std::wstring w2 = rsw::Utf8ToWide(effectiveDoc.GetString("FileAssociation", aid, "Description"));
-            std::wstring w3 = rsw::Utf8ToWide(effectiveDoc.GetString("FileAssociation", aid, "TargetFile"));
-            std::wstring w4 = rsw::Utf8ToWide(effectiveDoc.GetString("FileAssociation", aid, "Verbs", "open:&Open:\"%1\""));
-            std::wstring w5 = effectiveDoc.GetBool("FileAssociation", aid, "Advertise", false)
-                ? L"Advertised MSI Tables"
-                : L"Clean HKMU\\Classes";
-            LVITEMW it{LVIF_TEXT, faRow, 0, 0, 0, w0.data(), 0, 0, 0, 0};
-            ListView_InsertItem(hFaGrid, &it);
-            ListView_SetItemText(hFaGrid, faRow, 1, w1.data());
-            ListView_SetItemText(hFaGrid, faRow, 2, w2.data());
-            ListView_SetItemText(hFaGrid, faRow, 3, w3.data());
-            ListView_SetItemText(hFaGrid, faRow, 4, w4.data());
-            ListView_SetItemText(hFaGrid, faRow, 5, w5.data());
-            ++faRow;
-        }
         const std::string mainExe = effectiveDoc.GetString("Install", "", "MainExecutable");
         if (!mainExe.empty()) {
             ::SetWindowTextW(hFaTarget, rsw::Utf8ToWide(mainExe).c_str());
         }
 
-        // Populate View 4: Shortcuts & Registry
-        ListView_DeleteAllItems(hScGrid);
-        int sRow = 0;
-        for (const auto& sid : effectiveDoc.GetNamedSectionIds("Shortcut")) {
-            std::wstring k = L"Shortcut";
-            std::wstring wId = rsw::Utf8ToWide(sid);
-            std::wstring wNm = rsw::Utf8ToWide(effectiveDoc.GetString("Shortcut", sid, "Name"));
-            std::wstring wTg = rsw::Utf8ToWide(effectiveDoc.GetString("Shortcut", sid, "TargetFile"));
-            std::wstring wCp = L"(Auto ICE38 HKCU)";
-            LVITEMW it{LVIF_TEXT, sRow, 0, 0, 0, k.data(), 0, 0, 0, 0};
-            ListView_InsertItem(hScGrid, &it);
-            ListView_SetItemText(hScGrid, sRow, 1, wId.data());
-            ListView_SetItemText(hScGrid, sRow, 2, wNm.data());
-            ListView_SetItemText(hScGrid, sRow, 3, wTg.data());
-            ListView_SetItemText(hScGrid, sRow, 4, wCp.data());
-            ++sRow;
-        }
-        for (const auto& rid : effectiveDoc.GetNamedSectionIds("Registry")) {
-            std::wstring k = L"Registry";
-            std::wstring wId = rsw::Utf8ToWide(rid);
-            std::wstring wKy = rsw::Utf8ToWide(effectiveDoc.GetString("Registry", rid, "Key") + "\\" + effectiveDoc.GetString("Registry", rid, "Name"));
-            std::wstring wVl = rsw::Utf8ToWide(effectiveDoc.GetString("Registry", rid, "Value"));
-            std::string rcStr = effectiveDoc.GetString("Registry", rid, "Component");
-            std::wstring wCp = rcStr.empty() ? L"(Auto 64-bit)" : rsw::Utf8ToWide(rcStr);
-            LVITEMW it{LVIF_TEXT, sRow, 0, 0, 0, k.data(), 0, 0, 0, 0};
-            ListView_InsertItem(hScGrid, &it);
-            ListView_SetItemText(hScGrid, sRow, 1, wId.data());
-            ListView_SetItemText(hScGrid, sRow, 2, wKy.data());
-            ListView_SetItemText(hScGrid, sRow, 3, wVl.data());
-            ListView_SetItemText(hScGrid, sRow, 4, wCp.data());
-            ++sRow;
-        }
-
-        // Populate View 5: C++ Wizard Designer
+        // Populate View 8: C++ Wizard Designer
         const std::string layStr = rsw::AsciiLower(effectiveDoc.GetString("UI", "", "WizardLayout", "standard"));
         int laySel = 0;
         if (layStr == "aerowizard")  laySel = 1;
@@ -1478,7 +2246,7 @@ public:
         ::SetWindowTextW(hUiArt,     rsw::Utf8ToWide(effectiveDoc.GetString("UI", "", "ArtworkPng")).c_str());
         RefreshPreviewAssetsFromDoc(effectiveDoc);
 
-        // Populate View 6: MSI.DLL Dialog Designer
+        // Populate View 9: MSI.DLL Dialog Designer
         const bool msiMin = rsw::EqualsIgnoreCase(effectiveDoc.GetString("UI", "", "MsiDialogPreset", "express_custom"), "minimal");
         ::SendMessageW(hMsiPreset, CB_SETCURSEL, msiMin ? 1 : 0, 0);
 
@@ -1505,7 +2273,7 @@ public:
         }
         ::SendMessageW(hMsiDlgSelect, CB_SETCURSEL, selDlgIdx, 0);
 
-        // Populate View 7: Signing
+        // Populate View 10: Signing
         ::SendMessageW(hSigEnable, BM_SETCHECK, effectiveDoc.GetBool("Signing", "", "Enabled", false) ? BST_CHECKED : BST_UNCHECKED, 0);
         ::SetWindowTextW(hSigThumb, rsw::Utf8ToWide(effectiveDoc.GetString("Signing", "", "Thumbprint")).c_str());
         ::SetWindowTextW(hSigTs,    rsw::Utf8ToWide(effectiveDoc.GetString("Signing", "", "TimestampUrl", "http://timestamp.acs.microsoft.com")).c_str());
@@ -1553,6 +2321,13 @@ public:
         currentFilePath = path;
         selectedDestRoot.clear();
         selectedDestSubdir.clear();
+        selectedFtId.clear();
+        selectedRegHive = "HKLM";
+        selectedRegKeyPath.clear();
+        selectedRegSectionId.clear();
+        extraSessionRegKeys.clear();
+        activeRegFeatureFilter.clear();
+
         astDoc = rsw::ParseManifestText(utf8, path);
         SyncSourceEditorFromAst();
         SyncAllViewsFromAst();
@@ -1574,9 +2349,11 @@ public:
         const wchar_t* topicId = L"welcome-overview";
         switch (activeView) {
             case VIEW_PACKAGE:      topicId = L"welcome-overview";          break;
+            case VIEW_PREREQS:      topicId = L"runtimes-and-merge-modules";break;
+            case VIEW_FEATURES:     topicId = L"selection-tree-and-dialogs";break;
             case VIEW_DEST_FOLDERS: topicId = L"components-and-keypaths";   break;
             case VIEW_SETUP_DESIGN: topicId = L"components-and-keypaths";   break;
-            case VIEW_PREREQS:      topicId = L"runtimes-and-merge-modules";break;
+            case VIEW_REGISTRY:     topicId = L"ide-and-aerowizards";       break;
             case VIEW_FILE_ASSOC:   topicId = L"ide-and-aerowizards";       break;
             case VIEW_SHORTCUTS:    topicId = L"ide-and-aerowizards";       break;
             case VIEW_CPP_WIZARD:   topicId = L"selection-tree-and-dialogs";break;
@@ -1727,33 +2504,14 @@ public:
     }
 
     void RemoveSelectedDestItem() {
-        const int sel = ListView_GetNextItem(hPayGrid, -1, LVNI_SELECTED);
-        if (sel < 0) return;
-        wchar_t labelBuf[160]{};
-        ListView_GetItemText(hPayGrid, sel, 0, labelBuf, static_cast<int>(std::size(labelBuf)));
-        std::string raw = rsw::WideToUtf8(labelBuf); // `"[Payload.App]"` or `"[Folder.Dir1]"`
-        if (raw.size() > 2 && raw.front() == '[' && raw.back() == ']') {
-            raw = raw.substr(1, raw.size() - 2);
-        }
-        auto dot = raw.find('.');
-        if (dot == std::string::npos) return;
-        const std::string secPfx = raw.substr(0, dot);
-        const std::string secId  = raw.substr(dot + 1);
-
+        if (selectedPayRef.prefix.empty() || selectedPayRef.id.empty()) return;
         astDoc = rsw::ParseManifestText(ReadSourceEditorUtf8(), currentFilePath);
-        std::vector<rsw::RswAstLine> kept;
-        for (const auto& ln : astDoc.lines) {
-            if ((ln.kind == rsw::AstLineKind::SectionHeader || ln.kind == rsw::AstLineKind::KeyValue) &&
-                rsw::EqualsIgnoreCase(ln.sectionPrefix, secPfx) &&
-                rsw::EqualsIgnoreCase(ln.sectionItemId, secId)) {
-                continue;
-            }
-            kept.push_back(ln);
-        }
-        astDoc.lines = std::move(kept);
+        RemoveAstSection(astDoc, selectedPayRef.prefix, selectedPayRef.id);
+        const std::string msg = selectedPayRef.prefix + "." + selectedPayRef.id;
+        selectedPayRef = {};
         SyncSourceEditorFromAst();
         SyncAllViewsFromAst();
-        AppendConsole(L"[AST] Removed [" + rsw::Utf8ToWide(raw) + L"].\r\n");
+        AppendConsole(L"[AST] Removed [" + rsw::Utf8ToWide(msg) + L"].\r\n");
     }
 
     bool SaveCurrentProject() {
@@ -1878,7 +2636,7 @@ public:
     }
 
     // ----------------------------------------------------------------------------
-    // LIVE CANVASES: VIEW 5 (`SetupWizard.exe` C++20) & VIEW 6 (`MSI.DLL` 370x270)
+    // LIVE CANVASES: VIEW 8 (`SetupWizard.exe` C++20) & VIEW 9 (`MSI.DLL` 370x270)
     // ----------------------------------------------------------------------------
     void PaintLiveWizardPreview(HDC hdcOut, const RECT& destRc, UINT dpi) {
         const int pvW = destRc.right - destRc.left;
@@ -2002,7 +2760,6 @@ public:
                 rsw::ui::DrawAccessibleOptionCard(pvDc, pvG, r0, pvDpi, pvTheme, rsw::ui::GlassGlyph::ShieldCheck, rsw::ui::brand::kEmeraldOk,  rsw::ui::brand::kWarmGold, L"&Quick Check & Repair (Recommended)", L"Verifies installed files and restores only missing or damaged files.", true, true, false);
                 rsw::ui::DrawAccessibleOptionCard(pvDc, pvG, r1, pvDpi, pvTheme, rsw::ui::GlassGlyph::Reinstall,   rsw::ui::brand::kRaggieBlue, rsw::ui::brand::kSkyCyan,  L"&Full Reinstall (Refresh All Files)", L"Replaces every program file and shortcut from the setup package.", false, false, false);
             } else if (stepIdx == 5) {
-                // Live Preview of the MSI `SelectionTree` (`SysTreeView32` split icons + `Feature Details` Glass Card!)
                 const int treeW = (cw * 58) / 100;
                 const int paneH = footY - bTop - PS(14);
                 Gdiplus::SolidBrush boxBr(rsw::ui::ToGpColor(pvTheme.cardBg));
@@ -2076,7 +2833,6 @@ public:
         const int maxH = destRc.bottom - destRc.top;
         if (maxW < 200 || maxH < 160) return;
 
-        // Maintain exact `370 : 270` Windows Installer dialog-unit aspect ratio!
         int cw = maxW;
         int ch = cw * 270 / 370;
         if (ch > maxH) {
@@ -2090,7 +2846,6 @@ public:
         HBITMAP bmp    = ::CreateCompatibleBitmap(hdcOut, cw, ch);
         HGDIOBJ oldBmp = ::SelectObject(dc, bmp);
 
-        // Classic `msiexec.exe` Wizard 97 surface (`#F0F0F0` body + `#FFFFFF` top 44-DLU banner!)
         HBRUSH hGray  = ::CreateSolidBrush(RGB(240, 240, 240));
         HBRUSH hWhite = ::CreateSolidBrush(RGB(255, 255, 255));
         RECT fullRc{0, 0, cw, ch};
@@ -2143,7 +2898,6 @@ public:
             ::DrawTextW(dc, cap.c_str(), -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         };
 
-        // Footer Wizard 97 Buttons (`Back`, `Next`/`Install`, `Cancel`) + DLU Ruler Badge
         ::SelectObject(dc, fNorm);
         std::wstring badge = L"MSI.DLL Dialog: " + std::wstring(dlgNameBuf) + L" (370x270 DLU)";
         RECT bdgRc{DX(10), DY(238), DX(176), DY(264)};
@@ -2154,7 +2908,6 @@ public:
         drawBoxCtrl(238, 243, 54, 17, (dlgId == "VerifyReadyDlg") ? L"Install" : L"Next >", RGB(37, 99, 235), false);
         drawBoxCtrl(304, 243, 54, 17, L"Cancel",  RGB(148, 163, 184), false);
 
-        // Built-in or Custom Dialog Content Preview
         if (dlgId == "WelcomeDlg" || dlgId == "ExitDialog") {
             ::SelectObject(dc, fBold);
             RECT t{DX(135), DY(22), DX(355), DY(70)};
@@ -2201,7 +2954,6 @@ public:
             }
         }
 
-        // Overlay any author-placed `[MsiControl.<cid>]` targeting `dlgId`!
         for (const auto& cid : doc.GetNamedSectionIds("MsiControl")) {
             if (!rsw::EqualsIgnoreCase(doc.GetString("MsiControl", cid, "Dialog"), dlgId)) continue;
             const int x  = doc.GetInt("MsiControl", cid, "X", 20);
@@ -2262,10 +3014,9 @@ public:
         HGDIOBJ oldF = ::SelectObject(hdc, hFontBanner);
         ::SetTextColor(hdc, theme.bannerTitleText);
         RECT tRc{S(54), S(8), W - S(236), S(44)};
-        ::DrawTextW(hdc, L"RaggieSoft Installer Studio  •  Install Without Limits (AeroWizards • Runtimes & .MSM • MSI SelectionTree • Dual Designer)",
+        ::DrawTextW(hdc, L"RaggieSoft Installer Studio  •  Install Without Limits (Tree-First IDE • Features & Registry • AeroWizards • Dual Designer)",
                     -1, &tRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
-        // Edition Badge Pill on the right of the top banner (`COMMUNITY EDITION • PREMIER PARITY`!)
         const int pillW = S(214);
         RECT pillRc{W - pillW - S(14), S(11), W - S(14), S(39)};
         Gdiplus::SolidBrush pillBr(rsw::ui::ToGpColor(theme.accentPrimary, 215));
@@ -2291,6 +3042,160 @@ public:
         ::SelectObject(hdc, oldBmp);
         ::DeleteObject(memBmp);
         ::DeleteDC(hdc);
+    }
+
+    // ----------------------------------------------------------------------------
+    // `WM_NOTIFY` HANDLERS FOR ALL 10 `SysTreeView32` TREES!
+    // ----------------------------------------------------------------------------
+    void HandleTreeSelectionChanged(const NMTREEVIEWW* nmtv) {
+        if (!nmtv) return;
+        const UINT_PTR idFrom = nmtv->hdr.idFrom;
+        const std::size_t idx = static_cast<std::size_t>(nmtv->itemNew.lParam);
+
+        if (idFrom == IDC_NAV_TREE) {
+            if (suppressNavEvent || idx >= navNodeViews.size()) return;
+            const int targetView = navNodeViews[idx];
+            if (targetView >= 0 && targetView < VIEW_COUNT) {
+                activeView = targetView;
+                UpdateActiveViewVisibility();
+                ::InvalidateRect(hWnd, nullptr, TRUE);
+            } else {
+                // Category folder clicked — jump cleanly to its first child view!
+                HTREEITEM hChild = TreeView_GetChild(hNavTree, nmtv->itemNew.hItem);
+                if (hChild) TreeView_SelectItem(hNavTree, hChild);
+            }
+            return;
+        }
+
+        const auto doc = ResolvedEffectiveDoc();
+
+        if (idFrom == IDC_PR_TREE && idx < prNodeRefs.size()) {
+            selectedPrRef = prNodeRefs[idx];
+            if (selectedPrRef.prefix == "Prerequisite") {
+                const std::string src = doc.GetString("Prerequisite", selectedPrRef.id, "SourceFile",
+                                          doc.GetString("Prerequisite", selectedPrRef.id, "Url"));
+                const std::string reb = doc.GetString("Prerequisite", selectedPrRef.id, "RebootExitCodes", "3010, 1641, 23");
+                if (!src.empty()) ::SetWindowTextW(hPrSource, rsw::Utf8ToWide(src).c_str());
+                ::SetWindowTextW(hPrRebootCodes, rsw::Utf8ToWide(reb).c_str());
+            } else if (selectedPrRef.prefix == "MergeModule") {
+                ::SetWindowTextW(hPrSource, rsw::Utf8ToWide(doc.GetString("MergeModule", selectedPrRef.id, "Source")).c_str());
+            }
+            return;
+        }
+
+        if (idFrom == IDC_FT_TREE && idx < ftNodeIds.size()) {
+            if (!ftNodeIds[idx].empty()) {
+                PopulateFeatureInspectorFields(doc, ftNodeIds[idx]);
+            }
+            return;
+        }
+
+        if (idFrom == IDC_DEST_TREE && idx < destNodeMetas.size()) {
+            selectedDestRoot   = destNodeMetas[idx].targetRoot;
+            selectedDestSubdir = destNodeMetas[idx].targetSubdir;
+            astDoc = rsw::ParseManifestText(ReadSourceEditorUtf8(), currentFilePath);
+            RefreshDestinationContentsTree(ResolvedEffectiveDoc());
+            return;
+        }
+
+        if (idFrom == IDC_PAY_TREE && idx < payNodeRefs.size()) {
+            selectedPayRef = payNodeRefs[idx];
+            return;
+        }
+
+        if (idFrom == IDC_DESIGN_TREE && idx < designNodeRefs.size()) {
+            const auto& ref = designNodeRefs[idx];
+            if (ref.prefix == "Feature" && !ref.id.empty()) {
+                ::SetWindowTextW(hFeatId,     rsw::Utf8ToWide(ref.id).c_str());
+                ::SetWindowTextW(hFeatTitle,  rsw::Utf8ToWide(doc.GetString("Feature", ref.id, "Title", ref.id)).c_str());
+                ::SetWindowTextW(hFeatLevel,  rsw::Utf8ToWide(doc.GetString("Feature", ref.id, "Level", "1")).c_str());
+                ::SetWindowTextW(hFeatParent, rsw::Utf8ToWide(doc.GetString("Feature", ref.id, "Parent")).c_str());
+            } else if (ref.prefix == "Component" && !ref.id.empty()) {
+                ::SetWindowTextW(hCompId,       rsw::Utf8ToWide(ref.id).c_str());
+                ::SetWindowTextW(hCompFeat,     rsw::Utf8ToWide(doc.GetString("Component", ref.id, "Feature", "Main")).c_str());
+                ::SetWindowTextW(hCompSubdir,   rsw::Utf8ToWide(doc.GetString("Component", ref.id, "TargetSubdir")).c_str());
+                ::SetWindowTextW(hCompKpTarget, rsw::Utf8ToWide(doc.GetString("Component", ref.id, "KeyPathTarget")).c_str());
+                const std::string rt = doc.GetString("Component", ref.id, "TargetRoot", "INSTALLDIR");
+                for (int r = 0; r < 9; ++r) {
+                    if (rsw::EqualsIgnoreCase(rt, rsw::ide_wizards::kRootIds[r])) {
+                        ::SendMessageW(hCompRoot, CB_SETCURSEL, r, 0);
+                        break;
+                    }
+                }
+                const std::string kp = doc.GetString("Component", ref.id, "KeyPathKind", "auto");
+                const char* kpKinds[] = {"auto", "file", "registry", "folder"};
+                for (int k = 0; k < 4; ++k) {
+                    if (rsw::EqualsIgnoreCase(kp, kpKinds[k])) {
+                        ::SendMessageW(hCompKpKind, CB_SETCURSEL, k, 0);
+                        break;
+                    }
+                }
+            }
+            return;
+        }
+
+        if (idFrom == IDC_REG_KEY_TREE && idx < regKeyMetas.size()) {
+            const auto& meta = regKeyMetas[idx];
+            if (!meta.hiveCode.empty()) {
+                selectedRegHive    = meta.hiveCode;
+                selectedRegKeyPath = meta.keyPath;
+                selectedRegSectionId.clear();
+                RefreshRegistryValuesTree(doc);
+            }
+            return;
+        }
+
+        if (idFrom == IDC_REG_VAL_TREE && idx < regValSectionIds.size()) {
+            const std::string& rid = regValSectionIds[idx];
+            if (!rid.empty()) {
+                selectedRegSectionId = rid;
+                SyncRegRootComboSelection(doc.GetString("Registry", rid, "Root", selectedRegHive));
+                ::SetWindowTextW(hRegKey,      rsw::Utf8ToWide(doc.GetString("Registry", rid, "Key")).c_str());
+                ::SetWindowTextW(hRegName,     rsw::Utf8ToWide(doc.GetString("Registry", rid, "Name", "@")).c_str());
+                ::SetWindowTextW(hRegVal,      rsw::Utf8ToWide(doc.GetString("Registry", rid, "Value")).c_str());
+                ::SetWindowTextW(hRegFeatEdit, rsw::Utf8ToWide(doc.GetString("Registry", rid, "Feature", "Main")).c_str());
+                ::SetWindowTextW(hRegComp,     rsw::Utf8ToWide(doc.GetString("Registry", rid, "Component")).c_str());
+                const std::string tp = doc.GetString("Registry", rid, "Type", "string");
+                int tpIdx = 0;
+                if (rsw::EqualsIgnoreCase(tp, "expand_string")) tpIdx = 1;
+                else if (rsw::EqualsIgnoreCase(tp, "dword"))    tpIdx = 2;
+                ::SendMessageW(hRegTypeCombo, CB_SETCURSEL, tpIdx, 0);
+            }
+            return;
+        }
+
+        if (idFrom == IDC_FA_TREE && idx < faNodeIds.size()) {
+            const std::string& aid = faNodeIds[idx];
+            if (!aid.empty()) {
+                selectedFaId = aid;
+                ::SetWindowTextW(hFaExt,    rsw::Utf8ToWide(doc.GetString("FileAssociation", aid, "Extension")).c_str());
+                ::SetWindowTextW(hFaProgId, rsw::Utf8ToWide(doc.GetString("FileAssociation", aid, "ProgId")).c_str());
+                ::SetWindowTextW(hFaDesc,   rsw::Utf8ToWide(doc.GetString("FileAssociation", aid, "Description")).c_str());
+                ::SetWindowTextW(hFaTarget, rsw::Utf8ToWide(doc.GetString("FileAssociation", aid, "TargetFile")).c_str());
+                ::SetWindowTextW(hFaVerbs,  rsw::Utf8ToWide(doc.GetString("FileAssociation", aid, "Verbs", "open:&Open:\"%1\"")).c_str());
+                const bool adv = doc.GetBool("FileAssociation", aid, "Advertise", false);
+                ::SendMessageW(hFaAdvChk, BM_SETCHECK, adv ? BST_CHECKED : BST_UNCHECKED, 0);
+                ::InvalidateRect(hFaAdvChk, nullptr, FALSE);
+            }
+            return;
+        }
+
+        if (idFrom == IDC_SC_TREE && idx < scNodeRefs.size()) {
+            const auto& ref = scNodeRefs[idx];
+            if (ref.prefix == "Location") {
+                ::SendMessageW(hScLocCombo, CB_SETCURSEL, rsw::EqualsIgnoreCase(ref.id, "Desktop") ? 1 : 0, 0);
+            } else if (ref.prefix == "Shortcut" && !ref.id.empty()) {
+                selectedScId = ref.id;
+                ::SetWindowTextW(hScIdEdit, rsw::Utf8ToWide(ref.id).c_str());
+                ::SetWindowTextW(hScName,   rsw::Utf8ToWide(doc.GetString("Shortcut", ref.id, "Name")).c_str());
+                ::SetWindowTextW(hScTarget, rsw::Utf8ToWide(doc.GetString("Shortcut", ref.id, "TargetFile")).c_str());
+                ::SetWindowTextW(hScArgs,   rsw::Utf8ToWide(doc.GetString("Shortcut", ref.id, "Arguments")).c_str());
+                ::SetWindowTextW(hScFeat,   rsw::Utf8ToWide(doc.GetString("Shortcut", ref.id, "Feature", "Main")).c_str());
+                const bool isDesk = rsw::EqualsIgnoreCase(doc.GetString("Shortcut", ref.id, "Location", "StartMenu"), "Desktop");
+                ::SendMessageW(hScLocCombo, CB_SETCURSEL, isDesk ? 1 : 0, 0);
+            }
+            return;
+        }
     }
 
     // ----------------------------------------------------------------------------
@@ -2329,14 +3234,12 @@ public:
                 if (rsw::ui::IsLiveThemeBroadcast(msg, wParam, lParam)) {
                     self->theme.Refresh();
                     rsw::ui::ApplyWindowChromeAndA11y(hWnd, self->theme);
-                    for (HWND lv : {self->hPayGrid, self->hPrGrid, self->hFaGrid, self->hScGrid}) {
-                        rsw::ui::ApplyDarkScrollbarTheme(lv, self->theme);
-                    }
-                    for (HWND sc : {self->hNavViews, self->hDestTree, self->hDesignTree, self->hSourceEdit, self->hConsoleEdit}) {
+                    for (HWND sc : {self->hSourceEdit, self->hConsoleEdit}) {
                         rsw::ui::ApplyDarkScrollbarTheme(sc, self->theme);
                     }
                     for (HWND cb : {self->hArchCombo, self->hSuiteCombo, self->hPkgScope, self->hCompRoot, self->hCompKpKind,
-                                    self->hPrPreset, self->hPrDist, self->hUiLayout, self->hUiPreviewStep,
+                                    self->hPrPreset, self->hPrDist, self->hRegFeatFilter, self->hRegRootCombo, self->hRegTypeCombo,
+                                    self->hScLocCombo, self->hUiLayout, self->hUiPreviewStep,
                                     self->hMsiPreset, self->hMsiDlgSelect, self->hMsiCtrlType}) {
                         rsw::ui::ApplyDarkComboBoxTheme(cb, self->theme);
                     }
@@ -2371,15 +3274,8 @@ public:
             }
             case WM_NOTIFY: {
                 const auto* nm = reinterpret_cast<const NMHDR*>(lParam);
-                if (nm && nm->idFrom == IDC_DEST_TREE && nm->code == TVN_SELCHANGEDW) {
-                    const auto* nmtv = reinterpret_cast<const NMTREEVIEWW*>(lParam);
-                    const std::size_t idx = static_cast<std::size_t>(nmtv->itemNew.lParam);
-                    if (idx < self->destNodeMetas.size()) {
-                        self->selectedDestRoot   = self->destNodeMetas[idx].targetRoot;
-                        self->selectedDestSubdir = self->destNodeMetas[idx].targetSubdir;
-                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
-                        self->RefreshPayloadListViewFilter(self->ResolvedEffectiveDoc());
-                    }
+                if (nm && nm->code == TVN_SELCHANGEDW) {
+                    self->HandleTreeSelectionChanged(reinterpret_cast<const NMTREEVIEWW*>(lParam));
                     return 0;
                 }
                 break;
@@ -2387,17 +3283,21 @@ public:
             case WM_COMMAND: {
                 const int id   = LOWORD(wParam);
                 const int code = HIWORD(wParam);
-                if (id == IDC_NAV_VIEWS && code == LBN_SELCHANGE) {
-                    const LRESULT sel = ::SendMessageW(self->hNavViews, LB_GETCURSEL, 0, 0);
-                    if (sel != LB_ERR) {
-                        self->activeView = static_cast<int>(sel);
-                        self->UpdateActiveViewVisibility();
-                        ::InvalidateRect(hWnd, nullptr, TRUE);
-                    }
-                    return 0;
-                }
+
                 if ((id == IDC_UI_PREVIEW_STEP || id == IDC_MSI_DLG_SELECT) && code == CBN_SELCHANGE) {
                     ::InvalidateRect(hWnd, nullptr, FALSE);
+                    return 0;
+                }
+                if (id == IDC_REG_FEAT_FILTER && code == CBN_SELCHANGE) {
+                    const LRESULT sel = ::SendMessageW(self->hRegFeatFilter, CB_GETCURSEL, 0, 0);
+                    if (sel <= 0) {
+                        self->activeRegFeatureFilter.clear();
+                    } else {
+                        wchar_t fBuf[128]{};
+                        ::SendMessageW(self->hRegFeatFilter, CB_GETLBTEXT, static_cast<WPARAM>(sel), reinterpret_cast<LPARAM>(fBuf));
+                        self->activeRegFeatureFilter = rsw::WideToUtf8(fBuf);
+                    }
+                    self->RebuildRegistryTrees(self->ResolvedEffectiveDoc());
                     return 0;
                 }
                 if (id == IDC_MSI_PRESET_COMBO && code == CBN_SELCHANGE) {
@@ -2426,7 +3326,6 @@ public:
                     }
                     return 0;
                 }
-
                 if (id == IDC_PR_PRESET_COMBO && code == CBN_SELCHANGE) {
                     const LRESULT sel = ::SendMessageW(self->hPrPreset, CB_GETCURSEL, 0, 0);
                     if (sel >= 0 && sel < 6) {
@@ -2465,8 +3364,8 @@ public:
                         const std::wstring body =
                             std::wstring(rsw::EditionSummary(self->activeEdition)) +
                             L"\n\n• Zero-dependency static /MT Win32 C++20 suite (x64 & ARM64)"
+                            L"\n• 12-View Tree-First Visual IDE: Category Nav, Features Tree, RegEdit Registry Tree & Dual Folder Trees"
                             L"\n• Enterprise .MSI, .MSM Merge Modules, .MST Transforms, .MSP Patches & LZMS Setup.exe"
-                            L"\n• Pre-MSI Runtime Prerequisites (WinHTTP Download, Embedded LZMS, & Redist\\) + MSI SelectionTree"
                             L"\n\nFictitious Persons & Entities Disclaimer: All narrative characters, bands, universities, and corporations across RaggieSoft creative works are fictitious.";
                         ::TaskDialog(hWnd, ::GetModuleHandleW(nullptr), L"About RaggieSoft Installer Studio",
                                      head.c_str(), body.c_str(), TDCBF_OK_BUTTON, TD_INFORMATION_ICON, nullptr);
@@ -2578,56 +3477,7 @@ public:
                         self->ApplyPackageViewToAst();
                         return 0;
 
-                    // --- View 1: Destination Files & Folders ---
-                    case IDC_PAY_ADD_FILE:
-                        self->AddPayloadToSelectedDestFolder(false);
-                        return 0;
-                    case IDC_PAY_ADD_FOLDER:
-                        self->AddPayloadToSelectedDestFolder(true);
-                        return 0;
-                    case IDC_DEST_NEW_SUBDIR:
-                        self->CreateExplicitDestinationSubfolder();
-                        return 0;
-                    case IDC_PAY_REMOVE:
-                        self->RemoveSelectedDestItem();
-                        return 0;
-
-                    // --- View 2: Setup Design (Features & Components) ---
-                    case IDC_FEAT_SAVE_BTN: {
-                        const std::string fid = ReadCtlUtf8(self->hFeatId);
-                        if (fid.empty()) return 0;
-                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
-                        self->astDoc.SetString("Feature", fid, "Title", ReadCtlUtf8(self->hFeatTitle));
-                        self->astDoc.SetString("Feature", fid, "Level", ReadCtlUtf8(self->hFeatLevel));
-                        const std::string par = ReadCtlUtf8(self->hFeatParent);
-                        if (!par.empty()) self->astDoc.SetString("Feature", fid, "Parent", par);
-                        self->SyncSourceEditorFromAst();
-                        self->SyncAllViewsFromAst();
-                        self->AppendConsole(L"[AST] Saved [Feature." + rsw::Utf8ToWide(fid) + L"].\r\n");
-                        return 0;
-                    }
-                    case IDC_COMP_SAVE_BTN: {
-                        const std::string cid = ReadCtlUtf8(self->hCompId);
-                        if (cid.empty()) return 0;
-                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
-                        const int rtIdx = std::clamp(static_cast<int>(::SendMessageW(self->hCompRoot, CB_GETCURSEL, 0, 0)), 0, 8);
-                        const int kpIdx = std::clamp(static_cast<int>(::SendMessageW(self->hCompKpKind, CB_GETCURSEL, 0, 0)), 0, 3);
-                        const char* kpStrs[] = {"auto", "file", "registry", "folder"};
-                        self->astDoc.SetString("Component", cid, "Feature",     ReadCtlUtf8(self->hCompFeat));
-                        self->astDoc.SetString("Component", cid, "TargetRoot",  rsw::ide_wizards::kRootIds[rtIdx]);
-                        const std::string sub = ReadCtlUtf8(self->hCompSubdir);
-                        if (!sub.empty()) self->astDoc.SetString("Component", cid, "TargetSubdir", sub);
-                        self->astDoc.SetString("Component", cid, "Guid",        "*");
-                        self->astDoc.SetString("Component", cid, "KeyPathKind", kpStrs[kpIdx]);
-                        const std::string kpt = ReadCtlUtf8(self->hCompKpTarget);
-                        if (!kpt.empty()) self->astDoc.SetString("Component", cid, "KeyPathTarget", kpt);
-                        self->SyncSourceEditorFromAst();
-                        self->SyncAllViewsFromAst();
-                        self->AppendConsole(L"[AST] Saved [Component." + rsw::Utf8ToWide(cid) + L"].\r\n");
-                        return 0;
-                    }
-
-                    // --- View 3: Runtime Prerequisites & Merge Modules (.MSM) ---
+                    // --- View 1: Runtime Prerequisites & Merge Modules (.MSM) Tree ---
                     case IDC_PR_BROWSE_BTN: {
                         std::wstring p;
                         if (self->PickPathDialog(false, L"Runtimes & Merge Modules (*.exe;*.msi;*.msm)\0*.exe;*.msi;*.msm\0All Files (*.*)\0*.*\0", p)) {
@@ -2683,92 +3533,320 @@ public:
                         return 0;
                     }
                     case IDC_PR_REMOVE_BTN: {
-                        const int sel = ListView_GetNextItem(self->hPrGrid, -1, LVNI_SELECTED);
-                        if (sel < 0) return 0;
-                        wchar_t kindBuf[64]{}, idBuf[160]{};
-                        ListView_GetItemText(self->hPrGrid, sel, 0, kindBuf, 64);
-                        ListView_GetItemText(self->hPrGrid, sel, 1, idBuf, 160);
-                        const std::string secPfx = rsw::WideToUtf8(kindBuf);
-                        const std::string secId  = rsw::WideToUtf8(idBuf);
+                        if (self->selectedPrRef.prefix.empty() || self->selectedPrRef.id.empty()) return 0;
                         self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
-                        std::vector<rsw::RswAstLine> kept;
-                        for (const auto& ln : self->astDoc.lines) {
-                            if ((ln.kind == rsw::AstLineKind::SectionHeader || ln.kind == rsw::AstLineKind::KeyValue) &&
-                                rsw::EqualsIgnoreCase(ln.sectionPrefix, secPfx) &&
-                                rsw::EqualsIgnoreCase(ln.sectionItemId, secId)) {
-                                continue;
-                            }
-                            kept.push_back(ln);
-                        }
-                        self->astDoc.lines = std::move(kept);
+                        RemoveAstSection(self->astDoc, self->selectedPrRef.prefix, self->selectedPrRef.id);
+                        const std::string removed = self->selectedPrRef.prefix + "." + self->selectedPrRef.id;
+                        self->selectedPrRef = {};
                         self->SyncSourceEditorFromAst();
                         self->SyncAllViewsFromAst();
-                        self->AppendConsole(L"[AST] Removed [" + rsw::Utf8ToWide(secPfx + "." + secId) + L"].\r\n");
+                        self->AppendConsole(L"[AST] Removed [" + rsw::Utf8ToWide(removed) + L"].\r\n");
                         return 0;
                     }
 
-                    // --- View 4: File Associations ---
+                    // --- View 2: Dedicated Features Hierarchy (`All Features` Tree + Up/Down + Save/Delete) ---
+                    case IDC_FT_NEW_ROOT_BTN:
+                    case IDC_FT_NEW_SUB_BTN: {
+                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
+                        const std::string newId = "Feature" + std::to_string(self->astDoc.GetNamedSectionIds("Feature").size() + 1);
+                        self->astDoc.SetString("Feature", newId, "Title",       "Optional Program Feature");
+                        self->astDoc.SetString("Feature", newId, "Description", "Additional components installed when this feature is selected.");
+                        self->astDoc.SetString("Feature", newId, "Level",       "1");
+                        if (id == IDC_FT_NEW_SUB_BTN && !self->selectedFtId.empty()) {
+                            self->astDoc.SetString("Feature", newId, "Parent", self->selectedFtId);
+                        }
+                        self->selectedFtId = newId;
+                        self->SyncSourceEditorFromAst();
+                        self->SyncAllViewsFromAst();
+                        self->AppendConsole(L"[AST] Created [Feature." + rsw::Utf8ToWide(newId) + L"].\r\n");
+                        return 0;
+                    }
+                    case IDC_FT_SAVE_BTN: {
+                        const std::string fid = ReadCtlUtf8(self->hFtId);
+                        if (fid.empty()) return 0;
+                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
+                        self->astDoc.SetString("Feature", fid, "Title", ReadCtlUtf8(self->hFtTitle));
+                        self->astDoc.SetString("Feature", fid, "Level", ReadCtlUtf8(self->hFtLevel));
+                        const std::string desc = ReadCtlUtf8(self->hFtDesc);
+                        if (!desc.empty()) self->astDoc.SetString("Feature", fid, "Description", desc);
+                        else               RemoveAstKey(self->astDoc, "Feature", fid, "Description");
+
+                        const std::string par = ReadCtlUtf8(self->hFtParent);
+                        if (!par.empty() && !rsw::EqualsIgnoreCase(par, fid)) {
+                            self->astDoc.SetString("Feature", fid, "Parent", par);
+                        } else {
+                            RemoveAstKey(self->astDoc, "Feature", fid, "Parent");
+                        }
+
+                        const bool req = (::SendMessageW(self->hFtReqChk, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                        if (req) self->astDoc.SetString("Feature", fid, "DisallowAbsent", "true");
+                        else     RemoveAstKey(self->astDoc, "Feature", fid, "DisallowAbsent");
+
+                        self->selectedFtId = fid;
+                        self->SyncSourceEditorFromAst();
+                        self->SyncAllViewsFromAst();
+                        self->AppendConsole(L"[AST] Saved [Feature." + rsw::Utf8ToWide(fid) + L"] properties & description.\r\n");
+                        return 0;
+                    }
+                    case IDC_FT_DELETE_BTN: {
+                        const std::string fid = ReadCtlUtf8(self->hFtId);
+                        if (fid.empty()) return 0;
+                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
+                        RemoveAstSection(self->astDoc, "Feature", fid);
+                        self->selectedFtId.clear();
+                        self->SyncSourceEditorFromAst();
+                        self->SyncAllViewsFromAst();
+                        self->AppendConsole(L"[AST] Deleted [Feature." + rsw::Utf8ToWide(fid) + L"].\r\n");
+                        return 0;
+                    }
+                    case IDC_FT_UP_BTN:
+                    case IDC_FT_DOWN_BTN: {
+                        const std::string fid = self->selectedFtId.empty() ? ReadCtlUtf8(self->hFtId) : self->selectedFtId;
+                        if (fid.empty()) return 0;
+                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
+                        if (SwapFeatureSectionOrder(self->astDoc, fid, (id == IDC_FT_UP_BTN) ? -1 : 1)) {
+                            self->SyncSourceEditorFromAst();
+                            self->SyncAllViewsFromAst();
+                            self->AppendConsole(L"[AST] Reordered [Feature." + rsw::Utf8ToWide(fid) + L"] in SelectionTree sequence.\r\n");
+                        }
+                        return 0;
+                    }
+
+                    // --- View 3: Files & Folders (Dual Trees) ---
+                    case IDC_PAY_ADD_FILE:
+                        self->AddPayloadToSelectedDestFolder(false);
+                        return 0;
+                    case IDC_PAY_ADD_FOLDER:
+                        self->AddPayloadToSelectedDestFolder(true);
+                        return 0;
+                    case IDC_DEST_NEW_SUBDIR:
+                        self->CreateExplicitDestinationSubfolder();
+                        return 0;
+                    case IDC_PAY_REMOVE:
+                        self->RemoveSelectedDestItem();
+                        return 0;
+
+                    // --- View 4: Components & KeyPaths ---
+                    case IDC_FEAT_SAVE_BTN: {
+                        const std::string fid = ReadCtlUtf8(self->hFeatId);
+                        if (fid.empty()) return 0;
+                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
+                        self->astDoc.SetString("Feature", fid, "Title", ReadCtlUtf8(self->hFeatTitle));
+                        self->astDoc.SetString("Feature", fid, "Level", ReadCtlUtf8(self->hFeatLevel));
+                        const std::string par = ReadCtlUtf8(self->hFeatParent);
+                        if (!par.empty() && !rsw::EqualsIgnoreCase(par, fid)) {
+                            self->astDoc.SetString("Feature", fid, "Parent", par);
+                        } else {
+                            RemoveAstKey(self->astDoc, "Feature", fid, "Parent");
+                        }
+                        self->SyncSourceEditorFromAst();
+                        self->SyncAllViewsFromAst();
+                        self->AppendConsole(L"[AST] Saved [Feature." + rsw::Utf8ToWide(fid) + L"].\r\n");
+                        return 0;
+                    }
+                    case IDC_COMP_SAVE_BTN: {
+                        const std::string cid = ReadCtlUtf8(self->hCompId);
+                        if (cid.empty()) return 0;
+                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
+                        const int rtIdx = std::clamp(static_cast<int>(::SendMessageW(self->hCompRoot, CB_GETCURSEL, 0, 0)), 0, 8);
+                        const int kpIdx = std::clamp(static_cast<int>(::SendMessageW(self->hCompKpKind, CB_GETCURSEL, 0, 0)), 0, 3);
+                        const char* kpStrs[] = {"auto", "file", "registry", "folder"};
+                        self->astDoc.SetString("Component", cid, "Feature",     ReadCtlUtf8(self->hCompFeat));
+                        self->astDoc.SetString("Component", cid, "TargetRoot",  rsw::ide_wizards::kRootIds[rtIdx]);
+                        const std::string sub = ReadCtlUtf8(self->hCompSubdir);
+                        if (!sub.empty()) self->astDoc.SetString("Component", cid, "TargetSubdir", sub);
+                        else              RemoveAstKey(self->astDoc, "Component", cid, "TargetSubdir");
+                        self->astDoc.SetString("Component", cid, "Guid",        "*");
+                        self->astDoc.SetString("Component", cid, "KeyPathKind", kpStrs[kpIdx]);
+                        const std::string kpt = ReadCtlUtf8(self->hCompKpTarget);
+                        if (!kpt.empty()) self->astDoc.SetString("Component", cid, "KeyPathTarget", kpt);
+                        else              RemoveAstKey(self->astDoc, "Component", cid, "KeyPathTarget");
+                        self->SyncSourceEditorFromAst();
+                        self->SyncAllViewsFromAst();
+                        self->AppendConsole(L"[AST] Saved [Component." + rsw::Utf8ToWide(cid) + L"].\r\n");
+                        return 0;
+                    }
+                    case IDC_COMP_DEL_BTN: {
+                        const std::string cid = ReadCtlUtf8(self->hCompId);
+                        if (cid.empty()) return 0;
+                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
+                        RemoveAstSection(self->astDoc, "Component", cid);
+                        self->SyncSourceEditorFromAst();
+                        self->SyncAllViewsFromAst();
+                        self->AppendConsole(L"[AST] Deleted [Component." + rsw::Utf8ToWide(cid) + L"].\r\n");
+                        return 0;
+                    }
+
+                    // --- View 5: `RegEdit`-Style Registry Editor ---
+                    case IDC_REG_ADD_KEY_BTN: {
+                        const std::string sub = ReadCtlUtf8(self->hRegSubEdit);
+                        if (sub.empty()) return 0;
+                        const std::string fullKey = self->selectedRegKeyPath.empty() ? sub : (self->selectedRegKeyPath + "\\" + sub);
+                        self->extraSessionRegKeys.push_back({self->selectedRegHive, fullKey});
+                        self->selectedRegKeyPath = fullKey;
+                        ::SetWindowTextW(self->hRegKey, rsw::Utf8ToWide(fullKey).c_str());
+                        self->RebuildRegistryTrees(self->ResolvedEffectiveDoc());
+                        return 0;
+                    }
+                    case IDC_REG_DEL_KEY_BTN: {
+                        if (self->selectedRegKeyPath.empty()) return 0;
+                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
+                        const std::string pfx = self->selectedRegKeyPath + "\\";
+                        for (const auto& rid : self->astDoc.GetNamedSectionIds("Registry")) {
+                            const std::string hv = self->astDoc.GetString("Registry", rid, "Root", "HKLM");
+                            const std::string ky = self->astDoc.GetString("Registry", rid, "Key");
+                            if (rsw::EqualsIgnoreCase(hv, self->selectedRegHive) &&
+                                (rsw::EqualsIgnoreCase(ky, self->selectedRegKeyPath) ||
+                                 (ky.size() > pfx.size() && rsw::EqualsIgnoreCase(ky.substr(0, pfx.size()), pfx)))) {
+                                RemoveAstSection(self->astDoc, "Registry", rid);
+                            }
+                        }
+                        self->selectedRegKeyPath.clear();
+                        self->SyncSourceEditorFromAst();
+                        self->SyncAllViewsFromAst();
+                        self->AppendConsole(L"[AST] Removed registry key subtree under " + rsw::Utf8ToWide(self->selectedRegHive) + L".\r\n");
+                        return 0;
+                    }
+                    case IDC_REG_SET_VAL_BTN: {
+                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
+                        const char* hiveCodes[] = {"HKLM", "HKCU", "HKCR", "HKU", "HKMU"};
+                        const char* typeNames[] = {"string", "expand_string", "dword"};
+                        const int hIdx = std::clamp(static_cast<int>(::SendMessageW(self->hRegRootCombo, CB_GETCURSEL, 0, 0)), 0, 4);
+                        const int tIdx = std::clamp(static_cast<int>(::SendMessageW(self->hRegTypeCombo, CB_GETCURSEL, 0, 0)), 0, 2);
+
+                        const std::string hv  = hiveCodes[hIdx];
+                        const std::string ky  = ReadCtlUtf8(self->hRegKey);
+                        const std::string nm  = ReadCtlUtf8(self->hRegName).empty() ? "@" : ReadCtlUtf8(self->hRegName);
+                        const std::string val = ReadCtlUtf8(self->hRegVal);
+                        const std::string ft  = ReadCtlUtf8(self->hRegFeatEdit).empty() ? "Main" : ReadCtlUtf8(self->hRegFeatEdit);
+                        const std::string cmp = ReadCtlUtf8(self->hRegComp);
+                        if (ky.empty()) return 0;
+
+                        std::string rid = self->selectedRegSectionId;
+                        if (rid.empty()) {
+                            // Check if `(hv, ky, nm)` already exists so we update in-place cleanly!
+                            for (const auto& existing : self->astDoc.GetNamedSectionIds("Registry")) {
+                                if (rsw::EqualsIgnoreCase(self->astDoc.GetString("Registry", existing, "Root", "HKLM"), hv) &&
+                                    rsw::EqualsIgnoreCase(self->astDoc.GetString("Registry", existing, "Key"), ky) &&
+                                    rsw::EqualsIgnoreCase(self->astDoc.GetString("Registry", existing, "Name", "@"), nm)) {
+                                    rid = existing;
+                                    break;
+                                }
+                            }
+                            if (rid.empty()) {
+                                rid = "Reg" + std::to_string(self->astDoc.GetNamedSectionIds("Registry").size() + 1);
+                            }
+                        }
+
+                        self->astDoc.SetString("Registry", rid, "Root",    hv);
+                        self->astDoc.SetString("Registry", rid, "Key",     ky);
+                        self->astDoc.SetString("Registry", rid, "Name",    nm);
+                        self->astDoc.SetString("Registry", rid, "Type",    typeNames[tIdx]);
+                        self->astDoc.SetString("Registry", rid, "Value",   val);
+                        self->astDoc.SetString("Registry", rid, "Feature", ft);
+                        if (!cmp.empty()) self->astDoc.SetString("Registry", rid, "Component", cmp);
+                        else              RemoveAstKey(self->astDoc, "Registry", rid, "Component");
+
+                        self->selectedRegHive    = hv;
+                        self->selectedRegKeyPath = ky;
+                        self->SyncSourceEditorFromAst();
+                        self->SyncAllViewsFromAst();
+                        self->AppendConsole(L"[AST] Saved [Registry." + rsw::Utf8ToWide(rid) + L"] -> " + rsw::Utf8ToWide(hv + "\\" + ky + " :: " + nm) + L".\r\n");
+                        return 0;
+                    }
+                    case IDC_REG_DEL_VAL_BTN: {
+                        if (self->selectedRegSectionId.empty()) return 0;
+                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
+                        RemoveAstSection(self->astDoc, "Registry", self->selectedRegSectionId);
+                        self->selectedRegSectionId.clear();
+                        self->SyncSourceEditorFromAst();
+                        self->SyncAllViewsFromAst();
+                        self->AppendConsole(L"[AST] Deleted selected registry value.\r\n");
+                        return 0;
+                    }
+                    case IDC_REG_IMPORT_BTN: {
+                        std::wstring regFile;
+                        if (!self->PickPathDialog(false, L"Windows Registry Scripts (*.reg)\0*.reg\0All Files (*.*)\0*.*\0", regFile)) {
+                            return 0;
+                        }
+                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
+                        int imported = 0;
+                        const std::string targetFeat = self->activeRegFeatureFilter.empty() ? "Main" : self->activeRegFeatureFilter;
+                        if (ImportRegFileIntoAst(regFile, self->astDoc, targetFeat, imported)) {
+                            self->SyncSourceEditorFromAst();
+                            self->SyncAllViewsFromAst();
+                            self->AppendConsole(L"[REGISTRY] Imported " + std::to_wstring(imported) + L" registry value(s) from " + regFile + L".\r\n");
+                        } else {
+                            self->AppendConsole(L"[WARN] No standard registry values found in " + regFile + L".\r\n");
+                        }
+                        return 0;
+                    }
+
+                    // --- View 6: File Associations Tree ---
                     case IDC_FA_ADD_BTN: {
                         self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
-                        const std::string aid = "Assoc" + std::to_string(self->astDoc.GetNamedSectionIds("FileAssociation").size() + 1);
-                        self->astDoc.SetString("FileAssociation", aid, "Extension",   ReadCtlUtf8(self->hFaExt));
+                        std::string aid = self->selectedFaId;
+                        const std::string ext = ReadCtlUtf8(self->hFaExt);
+                        if (aid.empty() || !rsw::EqualsIgnoreCase(self->astDoc.GetString("FileAssociation", aid, "Extension"), ext)) {
+                            aid = "Assoc" + std::to_string(self->astDoc.GetNamedSectionIds("FileAssociation").size() + 1);
+                        }
+                        self->astDoc.SetString("FileAssociation", aid, "Extension",   ext);
                         self->astDoc.SetString("FileAssociation", aid, "ProgId",      ReadCtlUtf8(self->hFaProgId));
                         self->astDoc.SetString("FileAssociation", aid, "Description", ReadCtlUtf8(self->hFaDesc));
                         self->astDoc.SetString("FileAssociation", aid, "TargetFile",  ReadCtlUtf8(self->hFaTarget));
                         self->astDoc.SetString("FileAssociation", aid, "Verbs",       ReadCtlUtf8(self->hFaVerbs));
                         self->astDoc.SetString("FileAssociation", aid, "Advertise",
                                                (::SendMessageW(self->hFaAdvChk, BM_GETCHECK, 0, 0) == BST_CHECKED) ? "true" : "false");
+                        self->selectedFaId = aid;
                         self->SyncSourceEditorFromAst();
                         self->SyncAllViewsFromAst();
-                        self->AppendConsole(L"[AST] Added [FileAssociation." + rsw::Utf8ToWide(aid) + L"].\r\n");
+                        self->AppendConsole(L"[AST] Saved [FileAssociation." + rsw::Utf8ToWide(aid) + L"].\r\n");
                         return 0;
                     }
                     case IDC_FA_REMOVE_BTN: {
-                        const int sel = ListView_GetNextItem(self->hFaGrid, -1, LVNI_SELECTED);
-                        if (sel < 0) return 0;
-                        const auto ids = self->astDoc.GetNamedSectionIds("FileAssociation");
-                        if (static_cast<std::size_t>(sel) < ids.size()) {
-                            const std::string targetId = ids[static_cast<std::size_t>(sel)];
-                            self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
-                            std::vector<rsw::RswAstLine> kept;
-                            for (const auto& ln : self->astDoc.lines) {
-                                if ((ln.kind == rsw::AstLineKind::SectionHeader || ln.kind == rsw::AstLineKind::KeyValue) &&
-                                    rsw::EqualsIgnoreCase(ln.sectionPrefix, "FileAssociation") &&
-                                    rsw::EqualsIgnoreCase(ln.sectionItemId, targetId)) continue;
-                                kept.push_back(ln);
-                            }
-                            self->astDoc.lines = std::move(kept);
-                            self->SyncSourceEditorFromAst();
-                            self->SyncAllViewsFromAst();
-                        }
+                        if (self->selectedFaId.empty()) return 0;
+                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
+                        RemoveAstSection(self->astDoc, "FileAssociation", self->selectedFaId);
+                        self->selectedFaId.clear();
+                        self->SyncSourceEditorFromAst();
+                        self->SyncAllViewsFromAst();
+                        self->AppendConsole(L"[AST] Removed selected [FileAssociation.*].\r\n");
                         return 0;
                     }
 
-                    // --- View 4: Shortcuts & Registry ---
-                    case IDC_SC_ADD_BTN: {
+                    // --- View 7: Application Shortcuts Tree ---
+                    case IDC_SC_SAVE_BTN: {
                         self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
-                        const std::string sid = "Link" + std::to_string(self->astDoc.GetNamedSectionIds("Shortcut").size() + 1);
+                        std::string sid = ReadCtlUtf8(self->hScIdEdit);
+                        if (sid.empty()) sid = "Link" + std::to_string(self->astDoc.GetNamedSectionIds("Shortcut").size() + 1);
+                        const bool isDesk = (::SendMessageW(self->hScLocCombo, CB_GETCURSEL, 0, 0) == 1);
                         self->astDoc.SetString("Shortcut", sid, "Name",       ReadCtlUtf8(self->hScName));
                         self->astDoc.SetString("Shortcut", sid, "TargetFile", ReadCtlUtf8(self->hScTarget));
-                        self->astDoc.SetString("Shortcut", sid, "Location",   "StartMenu");
+                        self->astDoc.SetString("Shortcut", sid, "Location",   isDesk ? "Desktop" : "StartMenu");
+                        const std::string args = ReadCtlUtf8(self->hScArgs);
+                        if (!args.empty()) self->astDoc.SetString("Shortcut", sid, "Arguments", args);
+                        else               RemoveAstKey(self->astDoc, "Shortcut", sid, "Arguments");
+                        const std::string ft = ReadCtlUtf8(self->hScFeat);
+                        if (!ft.empty()) self->astDoc.SetString("Shortcut", sid, "Feature", ft);
+                        self->selectedScId = sid;
                         self->SyncSourceEditorFromAst();
                         self->SyncAllViewsFromAst();
+                        self->AppendConsole(L"[AST] Saved [Shortcut." + rsw::Utf8ToWide(sid) + L"].\r\n");
                         return 0;
                     }
-                    case IDC_REG_ADD_BTN: {
+                    case IDC_SC_DEL_BTN: {
+                        const std::string sid = self->selectedScId.empty() ? ReadCtlUtf8(self->hScIdEdit) : self->selectedScId;
+                        if (sid.empty()) return 0;
                         self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
-                        const std::string rid = "Reg" + std::to_string(self->astDoc.GetNamedSectionIds("Registry").size() + 1);
-                        self->astDoc.SetString("Registry", rid, "Key",   ReadCtlUtf8(self->hRegKey));
-                        self->astDoc.SetString("Registry", rid, "Name",  ReadCtlUtf8(self->hRegName));
-                        self->astDoc.SetString("Registry", rid, "Value", ReadCtlUtf8(self->hRegVal));
-                        const std::string rComp = ReadCtlUtf8(self->hRegComp);
-                        if (!rComp.empty()) self->astDoc.SetString("Registry", rid, "Component", rComp);
+                        RemoveAstSection(self->astDoc, "Shortcut", sid);
+                        self->selectedScId.clear();
                         self->SyncSourceEditorFromAst();
                         self->SyncAllViewsFromAst();
+                        self->AppendConsole(L"[AST] Deleted [Shortcut." + rsw::Utf8ToWide(sid) + L"].\r\n");
                         return 0;
                     }
 
-                    // --- View 5: C++ Wizard Designer ---
+                    // --- View 8: C++ Wizard Designer ---
                     case IDC_UI_ICON_BROWSE: {
                         std::wstring p;
                         if (self->PickPathDialog(false, L"Icon Files (*.ico)\0*.ico\0", p)) ::SetWindowTextW(self->hUiIcon, p.c_str());
@@ -2783,7 +3861,7 @@ public:
                         self->ApplyUiViewToAst();
                         return 0;
 
-                    // --- View 6: MSI.DLL Dialog Designer ---
+                    // --- View 9: MSI.DLL Dialog Designer ---
                     case IDC_MSI_ADD_DLG_BTN: {
                         const std::string did = ReadCtlUtf8(self->hMsiNewId);
                         if (did.empty()) return 0;
@@ -2840,7 +3918,7 @@ public:
                         return 0;
                     }
 
-                    // --- View 7: Signing, .MST & .MSP ---
+                    // --- View 10: Signing, .MST & .MSP ---
                     case IDC_SIG_APPLY:
                         self->ApplySigningViewToAst();
                         return 0;
@@ -2928,7 +4006,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         ::LocalFree(argv);
     }
 
-    // Headless CI smoke test verifying AST round-trip, `@include` resolution, comment retention, & VPAT export!
+    // Headless CI smoke test verifying AST round-trip, `@include` resolution, feature reordering, & VPAT export!
     for (std::size_t i = 0; i < args.size(); ++i) {
         if (args[i] == L"--headless-smoke-test") {
             if (i + 1 >= args.size()) return 2;
@@ -2988,8 +4066,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     ::RegisterClassExW(&wc);
 
     const UINT dpi = ::GetDpiForSystem();
-    const int winW = rsw::ui::ScalePx(1320, dpi, ide.theme.textScalePercent);
-    const int winH = rsw::ui::ScalePx(790,  dpi, ide.theme.textScalePercent);
+    const int winW = rsw::ui::ScalePx(1340, dpi, ide.theme.textScalePercent);
+    const int winH = rsw::ui::ScalePx(800,  dpi, ide.theme.textScalePercent);
     const int posX = std::max(0, (::GetSystemMetrics(SM_CXSCREEN) - winW) / 2);
     const int posY = std::max(0, (::GetSystemMetrics(SM_CYSCREEN) - winH) / 2);
 
@@ -3021,7 +4099,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     } else {
         ide.LoadProjectText(BuildStarterRsipTemplate(), {});
     }
-    ide.AppendConsole(L"RaggieSoft Installer Studio ready. Press F1 for the Offline C++ Help Viewer, Ctrl+W for the Aero Project Assistant, or F5 to build.\r\n");
+    ide.AppendConsole(L"RaggieSoft Installer Studio v" + std::wstring(rsw::kVersionStringWide) +
+                      L" ready. Press F1 for the Offline C++ Help Viewer, Ctrl+W for the Aero Project Assistant, or F5 to build.\r\n");
 
     ACCEL accels[] = {
         {FVIRTKEY,            VK_F1, IDM_HELP_TOPICS},
@@ -3040,19 +4119,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
 
     if (!exportShotDir.empty()) {
         auto snapView = [&](int viewIdx, const wchar_t* fileName) {
-            ide.activeView = viewIdx;
-            ::SendMessageW(ide.hNavViews, LB_SETCURSEL, static_cast<WPARAM>(viewIdx), 0);
-            ide.UpdateActiveViewVisibility();
+            ide.SelectIdeView(viewIdx);
             return rsw::ui::CaptureWindowToPngFile(hWnd, exportShotDir / fileName);
         };
-        const bool ok1 = snapView(VIEW_DEST_FOLDERS, L"ide-destination-folders.png");
-        const bool ok2 = snapView(VIEW_PREREQS,      L"ide-runtimes-msm.png");
+        const bool ok1 = snapView(VIEW_FEATURES,     L"ide-features-tree.png");
+        ide.SelectIdeView(VIEW_REGISTRY);
+        ide.SelectRegistryKeyInTree("HKLM", "Software\\RaggieSoft\\Installer Studio");
+        const bool ok2 = rsw::ui::CaptureWindowToPngFile(hWnd, exportShotDir / L"ide-registry-tree.png");
+        const bool ok3 = snapView(VIEW_DEST_FOLDERS, L"ide-destination-folders.png");
+        const bool ok4 = snapView(VIEW_PREREQS,      L"ide-runtimes-msm.png");
         ::SendMessageW(ide.hUiPreviewStep, CB_SETCURSEL, 5, 0); // `Select Features (MSI SelectionTree)`
-        const bool ok3 = snapView(VIEW_CPP_WIZARD,   L"ide-wizard-designer.png");
+        const bool ok5 = snapView(VIEW_CPP_WIZARD,   L"ide-wizard-designer.png");
         if (hAccel) ::DestroyAcceleratorTable(hAccel);
         ::DestroyWindow(hWnd);
         ::CoUninitialize();
-        return (ok1 && ok2 && ok3) ? 0 : 2;
+        return (ok1 && ok2 && ok3 && ok4 && ok5) ? 0 : 2;
     }
 
     MSG msg{};

@@ -9,7 +9,7 @@
 //     This header holds the canonical version numbers, file extensions, IDE
 //     Edition tiers, and embedded resource IDs shared across the entire
 //     **RaggieSoft Installer Studio** native Win32 C++20 packaging suite:
-//       - `InstallerStudio.exe` : 10-view Visual IDE + 5 Guided AeroWizards
+//       - `InstallerStudio.exe` : 12-view Tree-First Visual IDE + 5 Guided AeroWizards
 //       - `instbuild.exe`       : Headless CLI compiler, JSON linter, AI spec & VPAT emitter
 //       - `SetupWizard.exe`     : White-label WCAG 2.2 AA runtime wizard ("RaggieSoft Setup Wizard")
 //       - `msiprism.exe`        : Native 64-bit/ARM64 MSI, MSM, MST & MSP SQL inspector ("RaggieSoft MSI Prism")
@@ -29,7 +29,7 @@
 //     for core MSI, Prerequisite, Native, or Scripting features!
 //
 //   Community Edition White-Label Attribution Rule:
-//     `kGeneratorSigWide` (`"RaggieSoft Installer Studio (instbuild.exe 0.4.1)"`) is
+//     `kGeneratorSigWide` (`"RaggieSoft Installer Studio (instbuild.exe 0.4.2)"`) is
 //     written ONLY to the non-visible MSI `SummaryInformation` `PID_APPNAME`
 //     (Creating Application) diagnostic field—never stamped as a visible watermark
 //     onto customer dialogs or `Setup.exe` `VERSIONINFO`!
@@ -41,13 +41,13 @@
 
 namespace rsw {
 
-// Semantic Versioning (`0.4.1`)
+// Semantic Versioning (`0.4.2`)
 inline constexpr int kVersionMajor = 0;
 inline constexpr int kVersionMinor = 4;
-inline constexpr int kVersionPatch = 1;
+inline constexpr int kVersionPatch = 2;
 
-inline constexpr std::string_view  kVersionString      = "0.4.1";
-inline constexpr std::wstring_view kVersionStringWide  = L"0.4.1";
+inline constexpr std::string_view  kVersionString      = "0.4.2";
+inline constexpr std::wstring_view kVersionStringWide  = L"0.4.2";
 
 // Suite, Runtime Wizard, Help Viewer, & MSI Prism Product Identity
 inline constexpr std::string_view  kSuiteTitle         = "RaggieSoft Installer Studio";
@@ -62,8 +62,8 @@ inline constexpr std::string_view  kCanonicalExt       = ".rsip";
 inline constexpr std::string_view  kSuiteExt           = ".rsis";
 inline constexpr std::string_view  kIncludeExt         = ".rsii";
 inline constexpr std::string_view  kScriptExt          = ".rssc";
-inline constexpr std::string_view  kGeneratorSignature = "RaggieSoft Installer Studio (instbuild.exe 0.4.1)";
-inline constexpr std::wstring_view kGeneratorSigWide   = L"RaggieSoft Installer Studio (instbuild.exe 0.4.1)";
+inline constexpr std::string_view  kGeneratorSignature = "RaggieSoft Installer Studio (instbuild.exe 0.4.2)";
+inline constexpr std::wstring_view kGeneratorSigWide   = L"RaggieSoft Installer Studio (instbuild.exe 0.4.2)";
 inline constexpr std::string_view  kManifestSchemaVer  = "0.4";
 
 /// IDE Product Editions (`Community` permanently maintains 100% feature parity with `Premier`!).

@@ -942,6 +942,7 @@ public:
     HFONT                           hFontTitle    = nullptr;
     HFONT                           hFontUi       = nullptr;
     HFONT                           hFontBold     = nullptr;
+    HIMAGELIST                      hTreeIcons    = nullptr;
 
     std::vector<LoadedHelpModule>   modules;
     std::size_t                     activeModIdx  = 0;
@@ -976,6 +977,7 @@ public:
         for (HFONT* f : {&hFontTitle, &hFontUi, &hFontBold}) {
             if (*f) { ::DeleteObject(*f); *f = nullptr; }
         }
+        if (hTreeIcons) { ::ImageList_Destroy(hTreeIcons); hTreeIcons = nullptr; }
         if (hRichEditDll) { ::FreeLibrary(hRichEditDll); hRichEditDll = nullptr; }
     }
 
@@ -1060,10 +1062,10 @@ public:
         hTabIndex    = mkBtn(L"&Index",    IDC_HLP_TAB_INDEX);
         hTabSearch   = mkBtn(L"&Search",   IDC_HLP_TAB_SEARCH);
 
-        // 1. Contents Tree (`SysTreeView32`)
+        // 1. Contents Tree (`SysTreeView32` with 32-bit ARGB vector icons!)
         hTocTree = ::CreateWindowExW(
             WS_EX_CLIENTEDGE, WC_TREEVIEWW, L"Help Table of Contents",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS | TVS_SHAREIMAGELISTS,
             0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_HLP_TOC_TREE)), hInst, nullptr);
 
         // 2. Index Filter & Dark-Header `SysListView32`
@@ -1148,16 +1150,18 @@ public:
             if (hb) ::SendMessageW(hb, WM_SETFONT, reinterpret_cast<WPARAM>(hFontBold), TRUE);
         }
 
+        HIMAGELIST newIcons = rsw::ui::CreateStudioTreeImageList(dpi, theme);
+        TreeView_SetImageList(hTocTree, newIcons, TVSIL_NORMAL);
+        if (hTreeIcons) ::ImageList_Destroy(hTreeIcons);
+        hTreeIcons = newIcons;
+        rsw::ui::ApplyDarkTreeViewTheme(hTocTree, theme, dpi);
         if (!theme.isHighContrast) {
-            TreeView_SetBkColor(hTocTree, theme.cardBg);
-            TreeView_SetTextColor(hTocTree, theme.textPrimary);
             for (HWND lv : {hIdxList, hSrchList}) {
                 ListView_SetBkColor(lv, theme.cardBg);
                 ListView_SetTextBkColor(lv, theme.cardBg);
                 ListView_SetTextColor(lv, theme.textPrimary);
             }
         }
-        TreeView_SetItemHeight(hTocTree, static_cast<SHORT>(rsw::ui::ScalePx(25, dpi, theme.textScalePercent)));
 
         RECT rc{};
         ::GetClientRect(hWnd, &rc);
@@ -1239,8 +1243,10 @@ public:
                 TVINSERTSTRUCTW cIns{};
                 cIns.hParent      = TVI_ROOT;
                 cIns.hInsertAfter = TVI_LAST;
-                cIns.item.mask    = TVIF_TEXT | TVIF_PARAM | TVIF_STATE;
+                cIns.item.mask    = TVIF_TEXT | TVIF_IMAGE | TVIF_SELECTEDIMAGE | TVIF_PARAM | TVIF_STATE;
                 cIns.item.pszText = wCat.data();
+                cIns.item.iImage  = static_cast<int>(rsw::ui::StudioTreeIcon::CategoryFolder);
+                cIns.item.iSelectedImage = static_cast<int>(rsw::ui::StudioTreeIcon::CategoryFolder);
                 cIns.item.lParam  = static_cast<LPARAM>(metaIdx);
                 cIns.item.stateMask = TVIS_BOLD | TVIS_EXPANDED;
                 cIns.item.state   = TVIS_BOLD | TVIS_EXPANDED;
@@ -1254,8 +1260,10 @@ public:
             TVINSERTSTRUCTW tIns{};
             tIns.hParent      = catHandles[catKey];
             tIns.hInsertAfter = TVI_LAST;
-            tIns.item.mask    = TVIF_TEXT | TVIF_PARAM;
+            tIns.item.mask    = TVIF_TEXT | TVIF_IMAGE | TVIF_SELECTEDIMAGE | TVIF_PARAM;
             tIns.item.pszText = wTitle.data();
+            tIns.item.iImage  = static_cast<int>(rsw::ui::StudioTreeIcon::FileLeaf);
+            tIns.item.iSelectedImage = static_cast<int>(rsw::ui::StudioTreeIcon::FileLeaf);
             tIns.item.lParam  = static_cast<LPARAM>(metaIdx);
             HTREEITEM hItem = TreeView_InsertItem(hTocTree, &tIns);
             topicToTreeHandle[LowerUtf8(t.id)] = hItem;

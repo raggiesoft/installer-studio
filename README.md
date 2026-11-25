@@ -1,10 +1,11 @@
 # RaggieSoft Installer Studio — *Install Without Limits*
 
 **Official Product Portal:** [https://raggiesoftstudio.com](https://raggiesoftstudio.com) *(301 target of `installwithoutlimits.com`)*  
+**Visual Tour & Screenshots:** [https://raggiesoftstudio.com/screenshots](https://raggiesoftstudio.com/screenshots)  
 **Public Engineering Roadmap:** [ROADMAP.md](ROADMAP.md) • [https://raggiesoftstudio.com/roadmap](https://raggiesoftstudio.com/roadmap)  
 **Version History & Changelog:** [https://raggiesoftstudio.com/changelog](https://raggiesoftstudio.com/changelog)  
 **Developer & AI Spec Hub:** [https://raggiesoft.dev](https://raggiesoft.dev)  
-**Current Milestone:** `v0.4.1` Open Technical Preview (`x64` & `ARM64`)  
+**Current Milestone:** `v0.4.2` Open Technical Preview (`x64` & `ARM64`)  
 **License:** MIT License (Core Toolchain Source)
 
 <p align="center">
@@ -38,7 +39,7 @@ Since writing my first Visual Basic 6.0 application in 1998, I spent 28 years se
 
 | Executable | Role |
 | :--- | :--- |
-| **`InstallerStudio.exe`** | **10-View Native Win32 C++20 Visual IDE + 5 Guided AeroWizards** for standalone `.rsip` projects & multi-project `.rsis` suites with a Destination Computer folder tree, Setup Design (`Features -> Components -> KeyPaths`), Runtime Prerequisites & `.MSM` Merge Modules, Dual C++ & `MSI.DLL` Dialog Designers, custom Dark Mode controls, live `ImmersiveColorSet` Light/Dark hot-swapping, and a 100% comment/`@include`-preserving AST. |
+| **`InstallerStudio.exe`** | **12-View Tree-First Win32 C++20 Visual IDE + 5 Guided AeroWizards** for standalone `.rsip` projects & multi-project `.rsis` suites with 32-bit ARGB vector `SysTreeView32` hierarchies across a categorized sidebar, dedicated **Features** tree (`Move Up`/`Down`), **`RegEdit`-style Registry** tree (`.REG` import + Feature filter), Dual Destination Folder & Contents trees, Pre-MSI Runtimes & `.MSM` Merge Modules, Dual C++ & `MSI.DLL` Dialog Designers, live `ImmersiveColorSet` Light/Dark hot-swapping, and a 100% comment/`@include`-preserving AST. |
 | **`instbuild.exe`** | **Headless CLI Compiler, JSON Linter, AI Spec & VPAT 2.5 Emitter** driving `msiquery.h` (`msi.lib`) and `fci.h` (`Cabinet.lib`) to output `.msi`, `.msm`, `.mst`, `.msp`, LZMS-compressed `Setup.exe`, `llms.txt`/`SKILL.md`, and HTML5 VPAT 2.5 Conformance Reports. |
 | **`SetupWizard.exe`** | **White-Label Accessible Runtime Wizard** (`MsiSetInternalUI(INSTALLUILEVEL_NONE)` + `MsiSetExternalUIRecord`) with Express/Compact/Custom modes, authentic Windows Installer `SelectionTree`, Pre-MSI `[Prerequisite.*]` runtime broker, `640x480` `16:9` Autorun mode, custom-subclassed Dark Mode buttons & checkboxes, live `WM_SETTINGCHANGE` Light/Dark hot-swapping, Windows Contrast Themes, and Per-Monitor V2 DPI. |
 | **`msiprism.exe`** | **RaggieSoft MSI Prism** — Native 64-bit (`x64` & `ARM64`) Dark Mode SQL database inspector and `.mst`/`.msp` differ for `.msi`, `.msm`, and `.msp` packages. |
@@ -75,14 +76,14 @@ Commercial pricing is intentionally omitted while **RaggieSoft Installer Studio*
 
 ## Public Engineering Roadmap (`v0.5.0` → `v1.0.0 GA`)
 
-Read the full phase-by-phase engineering plan in **[ROADMAP.md](ROADMAP.md)** or browse the interactive web edition at **[raggiesoftstudio.com/roadmap](https://raggiesoftstudio.com/roadmap)**:
+Read the full phase-by-phase engineering plan in **[ROADMAP.md](ROADMAP.md)** or browse the interactive web edition at **[raggiesoftstudio.com/roadmap](https://raggiesoftstudio.com/roadmap)** (anchored to our **`v1.0.0 GA` North Star**: packaging and distributing 100% of RaggieSoft's own Windows software exclusively with Installer Studio):
 
-- **Phase B (`v0.5.0`)**: Authenticode Signing UX (Windows Cert Store & Azure Artifact Signing), 8 Wizard Layout Variations (`Wizard95`, `Wizard97`, `AeroWizard`, `FluentMica`, `OneClickSplash`, `PassiveToast`, `FullScreenBlue` with billboard/docked progress gauge, & `Autorun16x9`), WCAG-contrast-enforced Publisher Branding & custom imagery, from-scratch Dual C++ & Raw `MSI.DLL` Dialog Builders + `RsDialog` (`Rs*()`) scripting, CPU-aware Universal Web Installer powered by `.rswpak` On-Demand Feature Packs + All-in-One Offline Universal Single-EXE (`x64 + ARM64`), curated `.NET 11` runtime presets, and `Engine = native`.
-- **Phase C (`v0.6.0`)**: Snapshot-Diff Setup Capture ("Repackager") + one-click disposable Windows 11 Pro Sandbox (`.wsb`) capture.
-- **Phase D (`v0.7.0`)**: Open-Format Setup Conversion Wizard (`.msi`/`.msm`, `.slnx`/`.csproj`, VB6 `.vbp` Reg-Free COM, XML/INI) + Visual Studio `.vsix` extension.
-- **Phase E (`v0.8.0`)**: Windows Services, safe `PATH` / Firewall / Scheduled Tasks, JSON/XML/INI Config Patchers, and Windows Restart Manager (`Rstrtmgr.dll`).
-- **Phase F (`v0.9.0`)**: White-label `RsUpdate.exe` auto-updater, guided Microsoft-compliant `.MSP` servicing (`--plan-update`), in-process `.MSIX`/`.MSIXBUNDLE` (`AppxPackaging.dll`), `I18N` + RTL, and SPDX/CycloneDX `--emit-sbom`.
-- **Phase G (`v1.0.0 GA`)**: GitHub Actions / Azure DevOps tasks & 100% RaggieSoft production cutover.
+- **`v0.5.0`**: 8 Wizard Layout Variations (`Wizard95`, `Wizard97`, `AeroWizard`, `FluentMica`, `OneClickSplash`, `PassiveToast`, `FullScreenBlue` with rotating billboards & docked 3D progress gauge, & `Autorun16x9`), automatic `SPI_GETHIGHCONTRAST` contrast-theme override, complete `[Branding]` / `.rswskin` imagery, and live WCAG 2.2 AA contrast enforcement.
+- **`v0.6.0`**: Single-Download CPU-aware Web Installer powered by `.rswpak` On-Demand Feature Packs, All-in-One Offline Universal Single-EXE (`x64 + ARM64`), curated `.NET 11` + `.NET 10 LTS` runtime presets, and `Engine = native`.
+- **`v0.7.0`**: From-scratch Dual C++ & Raw `370x270` `MSI.DLL` Dialog Builders + `.rssc` event hooks & `RsDialog` (`Rs*()`) procedural dialog scripting.
+- **`v0.8.0`**: Visual Studio `.slnx`/`.csproj`, Visual Basic 6.0 `.vbp` (Windows 11 WRP + Reg-Free COM for *StoreTrainer*), and `.msi` importers + Windows Restart Manager (`Rstrtmgr.dll`).
+- **`v0.9.0`**: Authenticode & Azure Artifact Signing Studio, white-label `RsUpdate.exe` auto-updater, and guided Microsoft-compliant `.MSP` servicing (`--plan-update`).
+- **`v1.0.0 GA`**: GitHub Actions / Azure DevOps tasks, `--emit-winget`, and 100% RaggieSoft production cutover across all apps, interactive books, and supporter audio archives *(followed by `v1.1+` Windows Sandbox `.wsb` Setup Capture, `.vsix`, Services/Firewall/Config Patchers, `.MSIXBUNDLE`, `I18N` + RTL, and `--emit-sbom`)*.
 
 ---
 

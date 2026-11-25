@@ -49,8 +49,8 @@ BEGIN
 END
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,4,1,0
- PRODUCTVERSION 0,4,1,0
+ FILEVERSION 0,4,2,0
+ PRODUCTVERSION 0,4,2,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -63,12 +63,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "RaggieSoft"
             VALUE "FileDescription",  "RaggieSoft Help Viewer — Native C++20 Offline Documentation Reader"
-            VALUE "FileVersion",      "0.4.1.0"
+            VALUE "FileVersion",      "0.4.2.0"
             VALUE "InternalName",     "RaggieSoftHelp"
             VALUE "LegalCopyright",   "Copyright (c) 2026 Michael P. Ragsdale / RaggieSoft (MIT License)"
             VALUE "OriginalFilename", "RaggieSoftHelp.exe"
             VALUE "ProductName",      "RaggieSoft Installer Studio"
-            VALUE "ProductVersion",   "0.4.1"
+            VALUE "ProductVersion",   "0.4.2"
         END
     END
     BLOCK "VarFileInfo"

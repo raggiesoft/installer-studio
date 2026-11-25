@@ -7,15 +7,18 @@
 // PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
 //   What is `msiprism.exe` ("RaggieSoft MSI Prism")?
 //     Legacy SDK database table viewers were built as 32-bit era utilities with
-//     no Dark Mode, no native ARM64 build, and no Per-Monitor V2 DPI scaling.
+//     flat ungrouped table lists, no Dark Mode, no native ARM64 build, and no
+//     Per-Monitor V2 DPI scaling.
 //
 //     `msiprism.exe` is a zero-dependency static `/MT` Win32 C++20 database
 //     inspector (`x64` & `ARM64`) built right into **RaggieSoft Installer Studio**:
 //       1. Opens any `.msi` (Installation Database), `.msm` (Merge Module), or
 //          `.msp` (Patch Package via `MSIDBOPEN_READONLY + MSIDBOPEN_PATCHFILE`).
-//       2. Lists `SummaryInformation` plus every relational SQL table (`_Tables`)
-//          in the left pane, and renders all columns and rows inside a fast,
-//          keyboard-accessible, Dark-Mode-aware Win32 `SysListView32` table!
+//       2. Organizes `SummaryInformation` plus every relational SQL table (`_Tables`)
+//          into a categorized, 32-bit ARGB icon-rich `SysTreeView32` schema tree
+//          (`Metadata & Streams`, `Core Packaging Tables`, `Registry, Shortcuts &
+//          Classes`, `Dialogs & UI Controls`, and `Sequences, Locators & Actions`)
+//          paired with a fast, Dark-Mode-aware `SysListView32` relational row grid!
 //       3. Runs instant relational/ICE80 audits and generates `.mst` Transforms
 //          or `.msp` Patch Packages by diffing two `.msi` files!
 //       4. Supports `--inspect-summary <file>` and `--export-screenshots <dir> [db]`
@@ -34,6 +37,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -48,7 +52,7 @@ enum PrismId : int {
     IDC_PRISM_VERIFY    = 3002,
     IDC_PRISM_GEN_MST   = 3003,
     IDC_PRISM_GEN_MSP   = 3004,
-    IDC_PRISM_TABLELIST = 3010,
+    IDC_PRISM_TABLETREE = 3010,
     IDC_PRISM_ROWGRID   = 3011,
     IDC_PRISM_STATUS    = 3012
 };
@@ -135,25 +139,78 @@ std::vector<std::wstring> QueryTableNames(MSIHANDLE hDb) {
     return names;
 }
 
+/// Classifies a Windows Installer SQL table name into one of 5 logical schema categories (`0..4`).
+int ClassifyMsiSqlTableCategory(const std::wstring& t) noexcept {
+    auto eq = [&](const wchar_t* s) { return _wcsicmp(t.c_str(), s) == 0; };
+    if (eq(L"[SummaryInformation]") || eq(L"_Validation") || eq(L"_Tables") || eq(L"_Columns") ||
+        eq(L"_Streams") || eq(L"_Storages") || eq(L"Media") || eq(L"Binary") || eq(L"Icon") ||
+        eq(L"MsiDigitalCertificate") || eq(L"MsiDigitalSignature") || eq(L"MsiPatchMetadata") ||
+        eq(L"MsiPatchSequence")) {
+        return 0; // Metadata & Streams
+    }
+    if (eq(L"Property") || eq(L"Directory") || eq(L"Feature") || eq(L"FeatureComponents") ||
+        eq(L"Component") || eq(L"File") || eq(L"CreateFolder") || eq(L"RemoveFile") ||
+        eq(L"DuplicateFile") || eq(L"MoveFile") || eq(L"ReserveCost") || eq(L"Font") ||
+        eq(L"Upgrade") || eq(L"ModuleSignature") || eq(L"ModuleComponents") ||
+        eq(L"ModuleDependency") || eq(L"ModuleExclusion")) {
+        return 1; // Core Packaging Tables
+    }
+    if (eq(L"Registry") || eq(L"RemoveRegistry") || eq(L"Shortcut") || eq(L"ProgId") ||
+        eq(L"Extension") || eq(L"Verb") || eq(L"MIME") || eq(L"Class") || eq(L"TypeLib") ||
+        eq(L"AppId") || eq(L"Environment") || eq(L"IniFile") || eq(L"RemoveIniFile") ||
+        eq(L"ServiceInstall") || eq(L"ServiceControl") || eq(L"LockPermissions") ||
+        eq(L"MsiLockPermissionsEx")) {
+        return 2; // Registry, Shortcuts & Classes
+    }
+    if (eq(L"Dialog") || eq(L"Control") || eq(L"ControlEvent") || eq(L"ControlCondition") ||
+        eq(L"EventMapping") || eq(L"RadioButton") || eq(L"ComboBox") || eq(L"ListBox") ||
+        eq(L"ListView") || eq(L"CheckBox") || eq(L"TextStyle") || eq(L"Billboard") ||
+        eq(L"BBControl") || eq(L"UIText") || eq(L"ActionText") || eq(L"Error")) {
+        return 3; // Dialogs & UI Controls
+    }
+    return 4; // Sequences, Locators & Custom Actions
+}
+
 class MsiPrismWindow {
 public:
-    rsw::ui::RswTheme     theme{};
-    HWND                  hWnd       = nullptr;
-    HFONT                 hFontTitle = nullptr;
-    HFONT                 hFontUi    = nullptr;
-    HFONT                 hFontMono  = nullptr;
+    rsw::ui::RswTheme                   theme{};
+    HWND                                hWnd        = nullptr;
+    HFONT                               hFontTitle  = nullptr;
+    HFONT                               hFontUi     = nullptr;
+    HFONT                               hFontMono   = nullptr;
+    HIMAGELIST                          hTreeIcons  = nullptr;
 
-    std::filesystem::path currentPath;
-    rsw::ScopedMsiHandle  hOpenDb;
-    bool                  isPatchPkg = false;
+    std::filesystem::path               currentPath;
+    rsw::ScopedMsiHandle                hOpenDb;
+    bool                                isPatchPkg  = false;
+    std::wstring                        activeTable = L"[SummaryInformation]";
+    std::vector<std::wstring>           treeNodeNames;
+    std::map<std::wstring, HTREEITEM>   tableItemMap;
 
     HWND hBtnOpen = nullptr, hBtnVerify = nullptr, hBtnGenMst = nullptr, hBtnGenMsp = nullptr;
-    HWND hTableList = nullptr, hRowGrid = nullptr, hStatusEdit = nullptr;
+    HWND hTableTree = nullptr, hRowGrid = nullptr, hStatusEdit = nullptr;
 
     ~MsiPrismWindow() {
         for (HFONT* f : {&hFontTitle, &hFontUi, &hFontMono}) {
             if (*f) { ::DeleteObject(*f); *f = nullptr; }
         }
+        if (hTreeIcons) {
+            ::ImageList_Destroy(hTreeIcons);
+            hTreeIcons = nullptr;
+        }
+    }
+
+    void RefreshTreeThemeAndIcons() {
+        if (!hTableTree) return;
+        const UINT dpi = ::GetDpiForWindow(hWnd);
+        HIMAGELIST newIcons = rsw::ui::CreateStudioTreeImageList(dpi, theme);
+        TreeView_SetImageList(hTableTree, newIcons, TVSIL_NORMAL);
+        if (hTreeIcons) {
+            ::ImageList_Destroy(hTreeIcons);
+        }
+        hTreeIcons = newIcons;
+        rsw::ui::ApplyDarkTreeViewTheme(hTableTree, theme, dpi);
+        rsw::ui::ApplyDarkScrollbarTheme(hTableTree, theme);
     }
 
     void CreateControls() {
@@ -171,10 +228,11 @@ public:
         hBtnGenMst = mkBtn(L"Diff -> .&MST Transform...",   IDC_PRISM_GEN_MST);
         hBtnGenMsp = mkBtn(L"Diff -> .MS&P Patch...",       IDC_PRISM_GEN_MSP);
 
-        hTableList = ::CreateWindowExW(
-            WS_EX_CLIENTEDGE, L"LISTBOX", nullptr,
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY,
-            0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PRISM_TABLELIST)), hInst, nullptr);
+        // Categorized SQL Schema `SysTreeView32` with 32-bit ARGB vector icons (`v0.4.2+`)
+        hTableTree = ::CreateWindowExW(
+            WS_EX_CLIENTEDGE, WC_TREEVIEWW, L"Database Schema Tables",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS | TVS_SHAREIMAGELISTS,
+            0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PRISM_TABLETREE)), hInst, nullptr);
 
         hRowGrid = ::CreateWindowExW(
             WS_EX_CLIENTEDGE, WC_LISTVIEWW, nullptr,
@@ -184,11 +242,11 @@ public:
         rsw::ui::AttachDarkAwareListViewSubclass(hRowGrid, &theme);
 
         hStatusEdit = ::CreateWindowExW(
-            WS_EX_CLIENTEDGE, L"EDIT", L"Open an .msi, .msm, or .msp database in MSI Prism to inspect its SummaryInformation and relational SQL tables.",
+            WS_EX_CLIENTEDGE, L"EDIT", L"Open an .msi, .msm, or .msp database in MSI Prism to inspect its SummaryInformation and categorized SQL tables.",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_READONLY | WS_VSCROLL,
             0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PRISM_STATUS)), hInst, nullptr);
 
-        rsw::ui::ApplyDarkScrollbarTheme(hTableList,  theme);
+        RefreshTreeThemeAndIcons();
         rsw::ui::ApplyDarkScrollbarTheme(hStatusEdit, theme);
     }
 
@@ -201,11 +259,12 @@ public:
         hFontUi    = rsw::ui::CreateScaledFont(L"Segoe UI",       9, FW_NORMAL, dpi, theme.textScalePercent);
         hFontMono  = rsw::ui::CreateScaledFont(L"Cascadia Mono",  9, FW_NORMAL, dpi, theme.textScalePercent);
 
-        for (HWND h : {hBtnOpen, hBtnVerify, hBtnGenMst, hBtnGenMsp, hTableList, hRowGrid}) {
+        for (HWND h : {hBtnOpen, hBtnVerify, hBtnGenMst, hBtnGenMsp, hTableTree, hRowGrid}) {
             if (h) ::SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(hFontUi), TRUE);
         }
         if (hStatusEdit) ::SendMessageW(hStatusEdit, WM_SETFONT, reinterpret_cast<WPARAM>(hFontMono), TRUE);
 
+        RefreshTreeThemeAndIcons();
         ListView_SetBkColor(hRowGrid, theme.cardBg);
         ListView_SetTextBkColor(hRowGrid, theme.cardBg);
         ListView_SetTextColor(hRowGrid, theme.textPrimary);
@@ -223,11 +282,11 @@ public:
         ::MoveWindow(hBtnGenMsp, S(550), tbY, S(162), S(30), TRUE);
 
         const int topY    = S(102);
-        const int statusH = S(96);
+        const int statusH = S(92);
         const int mainH   = std::max(S(140), H - topY - statusH - S(20));
-        const int leftW   = S(220);
+        const int leftW   = S(252);
 
-        ::MoveWindow(hTableList,  S(12), topY, leftW, mainH, TRUE);
+        ::MoveWindow(hTableTree,  S(12), topY, leftW, mainH, TRUE);
         ::MoveWindow(hRowGrid,    S(24) + leftW, topY, W - leftW - S(36), mainH, TRUE);
         ::MoveWindow(hStatusEdit, S(12), topY + mainH + S(8), W - S(24), statusH, TRUE);
         ::InvalidateRect(hWnd, nullptr, TRUE);
@@ -236,6 +295,41 @@ public:
     void ClearGridColumns() {
         ListView_DeleteAllItems(hRowGrid);
         while (ListView_DeleteColumn(hRowGrid, 0)) {}
+    }
+
+    HTREEITEM InsertSchemaNode(HTREEITEM hParent, const std::wstring& displayText, const std::wstring& tableId, rsw::ui::StudioTreeIcon icon) {
+        const std::size_t idx = treeNodeNames.size();
+        treeNodeNames.push_back(tableId);
+
+        TVINSERTSTRUCTW tvi{};
+        tvi.hParent             = hParent;
+        tvi.hInsertAfter        = TVI_LAST;
+        tvi.item.mask           = TVIF_TEXT | TVIF_IMAGE | TVIF_SELECTEDIMAGE | TVIF_PARAM;
+        tvi.item.pszText        = const_cast<LPWSTR>(displayText.c_str());
+        tvi.item.iImage         = static_cast<int>(icon);
+        tvi.item.iSelectedImage = static_cast<int>(icon);
+        tvi.item.lParam         = static_cast<LPARAM>(idx);
+        HTREEITEM hItem = TreeView_InsertItem(hTableTree, &tvi);
+        if (!tableId.empty()) {
+            std::wstring low = tableId;
+            for (wchar_t& c : low) c = static_cast<wchar_t>(::towlower(c));
+            tableItemMap[low] = hItem;
+        }
+        return hItem;
+    }
+
+    bool SelectTableByName(const wchar_t* name) {
+        if (!name) return false;
+        std::wstring low = name;
+        for (wchar_t& c : low) c = static_cast<wchar_t>(::towlower(c));
+        auto it = tableItemMap.find(low);
+        if (it == tableItemMap.end()) return false;
+        HTREEITEM hPar = TreeView_GetParent(hTableTree, it->second);
+        if (hPar) TreeView_Expand(hTableTree, hPar, TVE_EXPAND);
+        TreeView_SelectItem(hTableTree, it->second);
+        TreeView_EnsureVisible(hTableTree, it->second);
+        PopulateSelectedTable(name);
+        return true;
     }
 
     void LoadDatabaseFile(const std::filesystem::path& path) {
@@ -250,30 +344,54 @@ public:
         hOpenDb     = std::move(newDb);
         isPatchPkg  = patchFlag;
 
-        ::SendMessageW(hTableList, LB_RESETCONTENT, 0, 0);
-        ::SendMessageW(hTableList, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"[SummaryInformation]"));
-        const auto tables = QueryTableNames(hOpenDb.Get());
-        for (const auto& t : tables) {
-            ::SendMessageW(hTableList, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(t.c_str()));
-        }
-        ::SendMessageW(hTableList, LB_SETCURSEL, 0, 0);
-        PopulateSelectedTable();
+        TreeView_DeleteAllItems(hTableTree);
+        treeNodeNames.clear();
+        tableItemMap.clear();
 
-        const std::wstring title = L"RaggieSoft MSI Prism — " + path.filename().wstring();
+        const auto tables = QueryTableNames(hOpenDb.Get());
+        std::vector<std::wstring> buckets[5];
+        buckets[0].push_back(L"[SummaryInformation]");
+        for (const auto& t : tables) {
+            buckets[ClassifyMsiSqlTableCategory(t)].push_back(t);
+        }
+
+        const wchar_t* catTitles[5] = {
+            L"Metadata & Streams",
+            L"Core Packaging Tables",
+            L"Registry, Shortcuts & Classes",
+            L"Dialogs & UI Controls",
+            L"Sequences, Locators & Actions"
+        };
+
+        const std::wstring rootLbl = path.filename().wstring() + L" (" + std::to_wstring(tables.size()) + L" SQL tables)";
+        HTREEITEM hRoot = InsertSchemaNode(TVI_ROOT, rootLbl, L"", rsw::ui::StudioTreeIcon::ComputerRoot);
+
+        for (int c = 0; c < 5; ++c) {
+            if (buckets[c].empty()) continue;
+            const std::wstring catLbl = std::wstring(catTitles[c]) + L" (" + std::to_wstring(buckets[c].size()) + L")";
+            HTREEITEM hCat = InsertSchemaNode(hRoot, catLbl, L"", rsw::ui::StudioTreeIcon::CategoryFolder);
+            for (const auto& tbl : buckets[c]) {
+                const auto ico = (tbl == L"[SummaryInformation]")
+                    ? rsw::ui::StudioTreeIcon::CertShield
+                    : rsw::ui::StudioTreeIcon::SqlTable;
+                InsertSchemaNode(hCat, tbl, tbl, ico);
+            }
+            TreeView_Expand(hTableTree, hCat, TVE_EXPAND);
+        }
+        TreeView_Expand(hTableTree, hRoot, TVE_EXPAND);
+        SelectTableByName(L"[SummaryInformation]");
+
+        const std::wstring title = L"RaggieSoft MSI Prism v" + std::wstring(rsw::kVersionStringWide) + L" — " + path.filename().wstring();
         ::SetWindowTextW(hWnd, title.c_str());
         ::SetWindowTextW(
             hStatusEdit,
             (L"[OK] Opened " + std::wstring(isPatchPkg ? L"Patch (.msp)" : L"Database (.msi/.msm)") + L": " +
-             path.wstring() + L" (" + std::to_wstring(tables.size()) + L" SQL tables).").c_str());
+             path.wstring() + L" (" + std::to_wstring(tables.size()) + L" SQL tables grouped by schema category).").c_str());
     }
 
-    void PopulateSelectedTable() {
-        if (!hOpenDb) return;
-        const LRESULT sel = ::SendMessageW(hTableList, LB_GETCURSEL, 0, 0);
-        if (sel == LB_ERR) return;
-
-        wchar_t tableName[128]{};
-        ::SendMessageW(hTableList, LB_GETTEXT, static_cast<WPARAM>(sel), reinterpret_cast<LPARAM>(tableName));
+    void PopulateSelectedTable(const std::wstring& tableName) {
+        if (!hOpenDb || tableName.empty()) return;
+        activeTable = tableName;
 
         ClearGridColumns();
         const UINT dpi = ::GetDpiForWindow(hWnd);
@@ -286,7 +404,7 @@ public:
             ListView_InsertColumn(hRowGrid, idx, &col);
         };
 
-        if (::lstrcmpW(tableName, L"[SummaryInformation]") == 0) {
+        if (tableName == L"[SummaryInformation]") {
             addCol(0, L"Property ID", 240);
             addCol(1, L"Value",       540);
             rsw::ScopedMsiHandle hSum;
@@ -306,7 +424,7 @@ public:
             return;
         }
 
-        const std::wstring sql = L"SELECT * FROM `" + std::wstring(tableName) + L"`";
+        const std::wstring sql = L"SELECT * FROM `" + tableName + L"`";
         rsw::ScopedMsiHandle hView;
         if (::MsiDatabaseOpenViewW(hOpenDb.Get(), sql.c_str(), hView.Put()) != ERROR_SUCCESS ||
             ::MsiViewExecute(hView.Get(), 0) != ERROR_SUCCESS) {
@@ -405,7 +523,7 @@ public:
         HGDIOBJ oldF = ::SelectObject(hdc, hFontTitle);
         ::SetTextColor(hdc, theme.bannerTitleText);
         RECT tRc{S(16), S(10), rc.right - S(16), S(42)};
-        ::DrawTextW(hdc, L"RaggieSoft MSI Prism  •  Native 64-Bit MSI, MSM, MST & MSP SQL Inspector",
+        ::DrawTextW(hdc, L"RaggieSoft MSI Prism  •  Native 64-Bit MSI, MSM, MST & MSP SQL Schema Inspector",
                     -1, &tRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         ::SelectObject(hdc, oldF);
     }
@@ -443,7 +561,7 @@ public:
                 if (rsw::ui::IsLiveThemeBroadcast(msg, wParam, lParam)) {
                     self->theme.Refresh(RGB(14, 165, 233), RGB(251, 191, 36));
                     rsw::ui::ApplyWindowChromeAndA11y(hWnd, self->theme);
-                    for (HWND sc : {self->hTableList, self->hRowGrid, self->hStatusEdit}) {
+                    for (HWND sc : {self->hRowGrid, self->hStatusEdit}) {
                         rsw::ui::ApplyDarkScrollbarTheme(sc, self->theme);
                     }
                     self->LayoutChildren();
@@ -469,13 +587,20 @@ public:
                 ::SetBkColor(dc, self->theme.cardBg);
                 return reinterpret_cast<LRESULT>(self->theme.hbrCard);
             }
-            case WM_COMMAND: {
-                const int id   = LOWORD(wParam);
-                const int code = HIWORD(wParam);
-                if (id == IDC_PRISM_TABLELIST && code == LBN_SELCHANGE) {
-                    self->PopulateSelectedTable();
+            case WM_NOTIFY: {
+                const auto* nm = reinterpret_cast<const NMHDR*>(lParam);
+                if (nm && nm->idFrom == IDC_PRISM_TABLETREE && nm->code == TVN_SELCHANGEDW) {
+                    const auto* nmtv = reinterpret_cast<const NMTREEVIEWW*>(lParam);
+                    const std::size_t idx = static_cast<std::size_t>(nmtv->itemNew.lParam);
+                    if (idx < self->treeNodeNames.size() && !self->treeNodeNames[idx].empty()) {
+                        self->PopulateSelectedTable(self->treeNodeNames[idx]);
+                    }
                     return 0;
                 }
+                break;
+            }
+            case WM_COMMAND: {
+                const int id = LOWORD(wParam);
                 if (id == IDC_PRISM_OPEN) {
                     std::filesystem::path p;
                     if (self->PickFileDialog(false, L"Windows Installer (*.msi;*.msm;*.msp)\0*.msi;*.msm;*.msp\0All Files\0*.*\0", L"msi", p)) {
@@ -554,7 +679,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
 
     ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     rsw::ui::ScopedGdiPlusSession gdiPlusSession;
-    INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES};
+    INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES | ICC_TREEVIEW_CLASSES};
     ::InitCommonControlsEx(&icc);
 
     std::filesystem::path exportShotDir;
@@ -583,8 +708,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     ::RegisterClassExW(&wc);
 
     const UINT dpi = ::GetDpiForSystem();
-    const int W = rsw::ui::ScalePx(1080, dpi, prism.theme.textScalePercent);
-    const int H = rsw::ui::ScalePx(680,  dpi, prism.theme.textScalePercent);
+    const int W = rsw::ui::ScalePx(1100, dpi, prism.theme.textScalePercent);
+    const int H = rsw::ui::ScalePx(690,  dpi, prism.theme.textScalePercent);
     HWND hWnd = ::CreateWindowExW(
         0, kCls, L"RaggieSoft MSI Prism",
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
@@ -603,19 +728,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     ::UpdateWindow(hWnd);
 
     if (!exportShotDir.empty()) {
-        const LRESULT featIdx = ::SendMessageW(prism.hTableList, LB_FINDSTRINGEXACT, static_cast<WPARAM>(-1), reinterpret_cast<LPARAM>(L"Feature"));
-        if (featIdx != LB_ERR) {
-            ::SendMessageW(prism.hTableList, LB_SETCURSEL, static_cast<WPARAM>(featIdx), 0);
-            prism.PopulateSelectedTable();
-        }
+        prism.SelectTableByName(L"Feature");
         const bool okDark = rsw::ui::CaptureWindowToPngFile(hWnd, exportShotDir / L"msiprism-sql-inspector.png");
 
-        // Torture-test live `WM_SETTINGCHANGE(L"ImmersiveColorSet")` hot-swapping on a dense 31-row SQL table (`Component`)!
-        const LRESULT compIdx = ::SendMessageW(prism.hTableList, LB_FINDSTRINGEXACT, static_cast<WPARAM>(-1), reinterpret_cast<LPARAM>(L"Component"));
-        if (compIdx != LB_ERR) {
-            ::SendMessageW(prism.hTableList, LB_SETCURSEL, static_cast<WPARAM>(compIdx), 0);
-            prism.PopulateSelectedTable();
-        }
+        // Torture-test live `WM_SETTINGCHANGE(L"ImmersiveColorSet")` hot-swapping on `Component`!
+        prism.SelectTableByName(L"Component");
         rsw::ui::ForcedThemeOverride() = 0;
         ::SendMessageW(hWnd, WM_SETTINGCHANGE, 0, reinterpret_cast<LPARAM>(L"ImmersiveColorSet"));
         const bool okLight = rsw::ui::CaptureWindowToPngFile(hWnd, exportShotDir / L"msiprism-sql-inspector-light.png");

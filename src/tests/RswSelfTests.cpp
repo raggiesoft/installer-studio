@@ -463,6 +463,19 @@ int wmain() {
               rsw::EditionHasFullPremierParity(rsw::RswIdeEdition::Premier),
               "IDE Community Edition enforces 100% feature parity with Premier Edition");
 
+        // Verify `v0.4.2` 32-bit ARGB `StudioTreeIcon` vector `HIMAGELIST` (`20` icons, `ILC_COLOR32`)!
+        {
+            rsw::ui::ScopedGdiPlusSession gpTest;
+            rsw::ui::RswTheme treeTheme{};
+            treeTheme.Refresh();
+            HIMAGELIST hStudioIml = rsw::ui::CreateStudioTreeImageList(96, treeTheme);
+            const int icoCount = hStudioIml ? ::ImageList_GetImageCount(hStudioIml) : 0;
+            if (hStudioIml) ::ImageList_Destroy(hStudioIml);
+            Check(icoCount == static_cast<int>(rsw::ui::StudioTreeIcon::Count),
+                  "32-bit PARGB StudioTreeIcon HIMAGELIST renders all 20 vector tree icons cleanly",
+                  "count=" + std::to_string(icoCount));
+        }
+
         // Windows `COMPRESS_ALGORITHM_LZMS` (`Cabinet.lib`) solid compression round-trip
         std::vector<std::uint8_t> repData(65536);
         for (std::size_t i = 0; i < repData.size(); ++i) repData[i] = static_cast<std::uint8_t>((i * 7u) & 0x3Fu);

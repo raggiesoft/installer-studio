@@ -6,7 +6,7 @@
 // PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
 //   Embeds Common Controls v6, Per-Monitor V2 DPI Awareness, Long Path support,
 //   and 100% first-party RaggieSoft `VERSIONINFO` into `InstallerStudio.exe` (our
-//   7-view native Win32 C++20 Visual IDE for `.rsip` projects & `.rsis` suites!).
+//   12-view Tree-First native Win32 C++20 Visual IDE for `.rsip` projects & `.rsis` suites!).
 // ================================================================================
 
 #include <winresrc.h>
@@ -39,8 +39,8 @@ BEGIN
 END
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,4,1,0
- PRODUCTVERSION 0,4,1,0
+ FILEVERSION 0,4,2,0
+ PRODUCTVERSION 0,4,2,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -53,12 +53,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "RaggieSoft"
             VALUE "FileDescription",  "RaggieSoft Installer Studio Visual IDE (.rsip & .rsis)"
-            VALUE "FileVersion",      "0.4.1.0"
+            VALUE "FileVersion",      "0.4.2.0"
             VALUE "InternalName",     "InstallerStudio"
             VALUE "LegalCopyright",   "Copyright (c) 2026 Michael P. Ragsdale / RaggieSoft (MIT License)"
             VALUE "OriginalFilename", "InstallerStudio.exe"
             VALUE "ProductName",      "RaggieSoft Installer Studio"
-            VALUE "ProductVersion",   "0.4.1"
+            VALUE "ProductVersion",   "0.4.2"
         END
     END
     BLOCK "VarFileInfo"

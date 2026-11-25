@@ -1704,6 +1704,292 @@ inline void AttachAccessiblePushButtonSubclass(
     }
 }
 
+// ================================================================================
+// 32-BIT ARGB VECTOR `HIMAGELIST` & DARK-MODE `SysTreeView32` THEMING (`v0.4.2+`)
+// ================================================================================
+// 100-Level UI Lesson:
+//   Why build a 32-bit premultiplied ARGB (`PixelFormat32bppPARGB` + `ILC_COLOR32`)
+//   image list instead of classic 16-color bitmaps or opaque background fills?
+//     When a user hovers or selects a row inside a Windows 11 `Explorer` /
+//     `DarkMode_Explorer` `SysTreeView32`, `ComCtl32 v6` draws a rounded translucent
+//     selection bar behind BOTH the icon AND the text. True per-pixel premultiplied
+//     alpha (`AlphaBlend`) lets every vector icon float crisply on normal surfaces,
+//     hover bars, and selected rows across Dark Mode, Light Mode, and High Contrast!
+enum class StudioTreeIcon : int {
+    CategoryFolder   = 0,  // Warm Gold open category folder (`Application Information`, `Setup Architecture`, etc.)
+    SubFolder        = 1,  // Sky-accented destination / directory folder (`INSTALLDIR`, `Plugins`, etc.)
+    ComputerRoot     = 2,  // Desktop monitor root (`Destination Computer`, `Target Registry`, `All Features`)
+    PackageCube      = 3,  // 3D isometric cobalt/cyan cube (`Package & Identity`)
+    FeatureBox       = 4,  // Stacked feature module with emerald badge (`Features`)
+    ComponentGear    = 5,  // Violet precision component gear (`Components & KeyPaths`)
+    FileLeaf         = 6,  // Crisp document sheet with folded corner (`Payload` / `File` / Help Topic)
+    RegistryHive     = 7,  // Cyan-teal `RegEdit` hive cube cluster (`HKEY_CLASSES_ROOT` .. `HKEY_USERS`)
+    RegistryKey      = 8,  // `RegEdit`-style amber key folder (`SOFTWARE\RaggieSoft\...`)
+    RegistryValueSz  = 9,  // Crimson-rose `ab` string value badge (`REG_SZ` / `REG_EXPAND_SZ`)
+    RegistryValueNum = 10, // Royal-cobalt `01` numeric value badge (`REG_DWORD`)
+    ShortcutLink     = 11, // App tile with curved shortcut arrow (`Shortcuts`)
+    FileExtDoc       = 12, // Document page with sky-blue `.EXT` ribbon (`File Associations`)
+    VerbBolt         = 13, // Lightning bolt badge (`Pre-MSI Runtimes` & `Shell Verbs`)
+    MergeModuleMsm   = 14, // Interlocking emerald/cobalt module block (`.MSM Merge Modules`)
+    WizardWindow     = 15, // Mini window frame with cobalt header (`C++ Wizard Designer`)
+    MsiDialogSql     = 16, // Mini `370x270` dialog form (`MSI.DLL Dialog Designer`)
+    CertShield       = 17, // Emerald security shield with checkmark (`Signing, .MST & .MSP`)
+    SourceCode       = 18, // Slate code badge with chevrons (`Lossless .RSIP Source`)
+    SqlTable         = 19, // Relational 3x3 SQL table grid (`msiprism.exe` SQL tables)
+    Count            = 20
+};
+
+/// Paints one DPI-scaled vector tree icon inside `[ox .. ox + s, 0 .. s]` on a transparent PARGB canvas.
+inline void PaintSingleStudioTreeIcon(
+    Gdiplus::Graphics& g,
+    StudioTreeIcon kind,
+    float ox,
+    float s,
+    const RswTheme& theme) noexcept
+{
+    const float cx = ox + s * 0.50f;
+    const float cy = s * 0.50f;
+    const float r  = s * 0.42f;
+    const Gdiplus::Color white(255, 248, 250, 252);
+    const Gdiplus::Color slateDark(255, 15, 23, 42);
+    const Gdiplus::Color rimCol = theme.isDarkMode
+        ? Gdiplus::Color(230, 226, 232, 240)
+        : Gdiplus::Color(220, 30, 41, 59);
+
+    switch (kind) {
+        case StudioTreeIcon::CategoryFolder:
+        case StudioTreeIcon::RegistryKey: {
+            const Gdiplus::Color tabCol  = (kind == StudioTreeIcon::RegistryKey)
+                ? Gdiplus::Color(255, 217, 119, 6)
+                : Gdiplus::Color(255, 245, 158, 11);
+            const Gdiplus::Color bodyCol = Gdiplus::Color(255, 251, 191, 36);
+            Gdiplus::SolidBrush tabBr(tabCol);
+            Gdiplus::SolidBrush bodyBr(bodyCol);
+            Gdiplus::Pen pen(Gdiplus::Color(220, 146, 64, 14), 1.0f);
+            FillAndStrokeRoundRect(g, ox + s * 0.12f, s * 0.18f, s * 0.38f, s * 0.22f, s * 0.06f, &tabBr);
+            FillAndStrokeRoundRect(g, ox + s * 0.10f, s * 0.30f, s * 0.80f, s * 0.54f, s * 0.10f, &bodyBr, &pen);
+            if (kind == StudioTreeIcon::RegistryKey) {
+                Gdiplus::SolidBrush cyanDot(ToGpColor(brand::kRaggieBlue));
+                g.FillEllipse(&cyanDot, ox + s * 0.56f, s * 0.46f, s * 0.22f, s * 0.22f);
+            }
+            break;
+        }
+        case StudioTreeIcon::SubFolder: {
+            Gdiplus::SolidBrush tabBr(ToGpColor(brand::kRaggieBlue));
+            Gdiplus::SolidBrush bodyBr(ToGpColor(brand::kSkyCyan));
+            Gdiplus::Pen pen(Gdiplus::Color(220, 30, 64, 175), 1.0f);
+            FillAndStrokeRoundRect(g, ox + s * 0.12f, s * 0.20f, s * 0.36f, s * 0.20f, s * 0.06f, &tabBr);
+            FillAndStrokeRoundRect(g, ox + s * 0.10f, s * 0.32f, s * 0.80f, s * 0.52f, s * 0.10f, &bodyBr, &pen);
+            break;
+        }
+        case StudioTreeIcon::ComputerRoot: {
+            Gdiplus::SolidBrush bezelBr(Gdiplus::Color(255, 30, 41, 59));
+            Gdiplus::SolidBrush scrBr(ToGpColor(brand::kSkyCyan));
+            Gdiplus::Pen pen(rimCol, 1.1f);
+            FillAndStrokeRoundRect(g, ox + s * 0.12f, s * 0.14f, s * 0.76f, s * 0.54f, s * 0.08f, &bezelBr, &pen);
+            FillAndStrokeRoundRect(g, ox + s * 0.18f, s * 0.20f, s * 0.64f, s * 0.40f, s * 0.04f, &scrBr);
+            g.DrawLine(&pen, cx, s * 0.68f, cx, s * 0.84f);
+            g.DrawLine(&pen, ox + s * 0.28f, s * 0.84f, ox + s * 0.72f, s * 0.84f);
+            break;
+        }
+        case StudioTreeIcon::PackageCube:
+            DrawVectorGlyph(g, GlassGlyph::Cube, cx, cy, r * 1.05f, rimCol, ToGpColor(brand::kSkyCyan));
+            break;
+        case StudioTreeIcon::FeatureBox: {
+            Gdiplus::SolidBrush b0(ToGpColor(brand::kRaggieBlue));
+            Gdiplus::SolidBrush b1(ToGpColor(brand::kEmeraldOk));
+            Gdiplus::Pen pen(white, 1.0f);
+            FillAndStrokeRoundRect(g, ox + s * 0.12f, s * 0.16f, s * 0.54f, s * 0.54f, s * 0.10f, &b0, &pen);
+            FillAndStrokeRoundRect(g, ox + s * 0.36f, s * 0.34f, s * 0.52f, s * 0.52f, s * 0.10f, &b1, &pen);
+            break;
+        }
+        case StudioTreeIcon::ComponentGear:
+            DrawVectorGlyph(g, GlassGlyph::Gear, cx, cy, r * 1.02f, ToGpColor(brand::kVioletTune), ToGpColor(brand::kWarmGold));
+            break;
+        case StudioTreeIcon::FileLeaf:
+        case StudioTreeIcon::FileExtDoc: {
+            Gdiplus::SolidBrush docBr(Gdiplus::Color(255, 241, 245, 249));
+            Gdiplus::Pen docPen(Gdiplus::Color(255, 100, 116, 139), 1.0f);
+            FillAndStrokeRoundRect(g, ox + s * 0.18f, s * 0.12f, s * 0.64f, s * 0.76f, s * 0.08f, &docBr, &docPen);
+            Gdiplus::SolidBrush stripeBr(ToGpColor((kind == StudioTreeIcon::FileExtDoc) ? brand::kRaggieBlue : brand::kSkyCyan));
+            FillAndStrokeRoundRect(g, ox + s * 0.24f, (kind == StudioTreeIcon::FileExtDoc) ? s * 0.50f : s * 0.28f,
+                                   s * 0.52f, s * 0.22f, s * 0.05f, &stripeBr);
+            break;
+        }
+        case StudioTreeIcon::RegistryHive: {
+            // Classic Registry Editor teal/cyan 3-block cluster!
+            Gdiplus::SolidBrush c1(Gdiplus::Color(255, 14, 165, 233));
+            Gdiplus::SolidBrush c2(Gdiplus::Color(255, 6, 182, 212));
+            Gdiplus::SolidBrush c3(Gdiplus::Color(255, 37, 99, 235));
+            Gdiplus::Pen pen(white, 0.9f);
+            FillAndStrokeRoundRect(g, ox + s * 0.14f, s * 0.44f, s * 0.34f, s * 0.34f, s * 0.06f, &c1, &pen);
+            FillAndStrokeRoundRect(g, ox + s * 0.50f, s * 0.48f, s * 0.34f, s * 0.34f, s * 0.06f, &c2, &pen);
+            FillAndStrokeRoundRect(g, ox + s * 0.32f, s * 0.14f, s * 0.34f, s * 0.34f, s * 0.06f, &c3, &pen);
+            break;
+        }
+        case StudioTreeIcon::RegistryValueSz:
+        case StudioTreeIcon::RegistryValueNum: {
+            const bool isNum = (kind == StudioTreeIcon::RegistryValueNum);
+            Gdiplus::SolidBrush bBr(ToGpColor(isNum ? brand::kRaggieBlue : brand::kCoralRose));
+            Gdiplus::Pen bPen(white, 0.9f);
+            FillAndStrokeRoundRect(g, ox + s * 0.10f, s * 0.22f, s * 0.80f, s * 0.56f, s * 0.12f, &bBr, &bPen);
+            Gdiplus::Pen glyphPen(white, std::max(1.3f, s * 0.08f));
+            if (isNum) {
+                g.DrawEllipse(&glyphPen, ox + s * 0.22f, s * 0.34f, s * 0.22f, s * 0.32f);
+                g.DrawLine(&glyphPen, ox + s * 0.64f, s * 0.33f, ox + s * 0.64f, s * 0.67f);
+            } else {
+                g.DrawLine(&glyphPen, ox + s * 0.24f, s * 0.64f, ox + s * 0.36f, s * 0.36f);
+                g.DrawLine(&glyphPen, ox + s * 0.36f, s * 0.36f, ox + s * 0.48f, s * 0.64f);
+                g.DrawLine(&glyphPen, ox + s * 0.60f, s * 0.34f, ox + s * 0.60f, s * 0.66f);
+                g.DrawEllipse(&glyphPen, ox + s * 0.60f, s * 0.46f, s * 0.16f, s * 0.18f);
+            }
+            break;
+        }
+        case StudioTreeIcon::ShortcutLink: {
+            Gdiplus::SolidBrush tileBr(ToGpColor(brand::kRaggieBlue));
+            Gdiplus::Pen rimPen(white, 1.0f);
+            FillAndStrokeRoundRect(g, ox + s * 0.14f, s * 0.16f, s * 0.72f, s * 0.68f, s * 0.14f, &tileBr, &rimPen);
+            Gdiplus::Pen arrPen(ToGpColor(brand::kWarmGold), std::max(1.6f, s * 0.10f));
+            arrPen.SetEndCap(Gdiplus::LineCapArrowAnchor);
+            g.DrawLine(&arrPen, ox + s * 0.30f, s * 0.66f, ox + s * 0.68f, s * 0.32f);
+            break;
+        }
+        case StudioTreeIcon::VerbBolt:
+            DrawVectorGlyph(g, GlassGlyph::Bolt, cx, cy, r * 1.02f, slateDark, ToGpColor(brand::kWarmGold));
+            break;
+        case StudioTreeIcon::MergeModuleMsm: {
+            Gdiplus::SolidBrush m1(ToGpColor(brand::kEmeraldOk));
+            Gdiplus::SolidBrush m2(ToGpColor(brand::kVioletTune));
+            Gdiplus::Pen pen(white, 0.9f);
+            FillAndStrokeRoundRect(g, ox + s * 0.12f, s * 0.22f, s * 0.42f, s * 0.56f, s * 0.08f, &m1, &pen);
+            FillAndStrokeRoundRect(g, ox + s * 0.46f, s * 0.22f, s * 0.42f, s * 0.56f, s * 0.08f, &m2, &pen);
+            g.FillEllipse(&m1, ox + s * 0.44f, s * 0.38f, s * 0.20f, s * 0.24f);
+            break;
+        }
+        case StudioTreeIcon::WizardWindow:
+        case StudioTreeIcon::MsiDialogSql: {
+            const bool isMsi = (kind == StudioTreeIcon::MsiDialogSql);
+            Gdiplus::SolidBrush winBr(Gdiplus::Color(255, 241, 245, 249));
+            Gdiplus::SolidBrush capBr(ToGpColor(isMsi ? brand::kVioletTune : brand::kRaggieBlue));
+            Gdiplus::Pen pen(Gdiplus::Color(255, 71, 85, 105), 1.0f);
+            FillAndStrokeRoundRect(g, ox + s * 0.10f, s * 0.16f, s * 0.80f, s * 0.68f, s * 0.09f, &winBr, &pen);
+            FillAndStrokeRoundRect(g, ox + s * 0.10f, s * 0.16f, s * 0.80f, s * 0.22f, s * 0.07f, &capBr);
+            Gdiplus::SolidBrush ctaBr(ToGpColor(isMsi ? brand::kWarmGold : brand::kEmeraldOk));
+            FillAndStrokeRoundRect(g, ox + s * 0.52f, s * 0.60f, s * 0.28f, s * 0.14f, s * 0.04f, &ctaBr);
+            break;
+        }
+        case StudioTreeIcon::CertShield: {
+            Gdiplus::PointF pts[5] = {
+                {cx,             s * 0.12f},
+                {ox + s * 0.84f, s * 0.26f},
+                {ox + s * 0.78f, s * 0.62f},
+                {cx,             s * 0.88f},
+                {ox + s * 0.22f, s * 0.62f}
+            };
+            Gdiplus::PointF shield[6] = {pts[0], pts[1], pts[2], pts[3], pts[4], {ox + s * 0.16f, s * 0.26f}};
+            Gdiplus::SolidBrush shBr(ToGpColor(brand::kEmeraldOk));
+            Gdiplus::Pen shPen(white, 1.0f);
+            g.FillPolygon(&shBr, shield, 6);
+            g.DrawPolygon(&shPen, shield, 6);
+            DrawVectorGlyph(g, GlassGlyph::ShieldCheck, cx, cy + s * 0.02f, r * 0.68f, white, white);
+            break;
+        }
+        case StudioTreeIcon::SourceCode: {
+            Gdiplus::SolidBrush bgBr(Gdiplus::Color(255, 15, 23, 42));
+            Gdiplus::Pen rim(ToGpColor(brand::kSkyCyan), 1.0f);
+            FillAndStrokeRoundRect(g, ox + s * 0.10f, s * 0.16f, s * 0.80f, s * 0.68f, s * 0.10f, &bgBr, &rim);
+            Gdiplus::Pen codePen(ToGpColor(brand::kWarmGold), std::max(1.4f, s * 0.08f));
+            g.DrawLine(&codePen, ox + s * 0.38f, s * 0.36f, ox + s * 0.24f, cy);
+            g.DrawLine(&codePen, ox + s * 0.24f, cy, ox + s * 0.38f, s * 0.64f);
+            g.DrawLine(&codePen, ox + s * 0.62f, s * 0.36f, ox + s * 0.76f, cy);
+            g.DrawLine(&codePen, ox + s * 0.76f, cy, ox + s * 0.62f, s * 0.64f);
+            break;
+        }
+        case StudioTreeIcon::SqlTable:
+        default: {
+            Gdiplus::SolidBrush tblBr(Gdiplus::Color(255, 248, 250, 252));
+            Gdiplus::SolidBrush hdrBr(ToGpColor(brand::kRaggieBlue));
+            Gdiplus::Pen gridPen(Gdiplus::Color(255, 100, 116, 139), 1.0f);
+            FillAndStrokeRoundRect(g, ox + s * 0.12f, s * 0.16f, s * 0.76f, s * 0.68f, s * 0.07f, &tblBr, &gridPen);
+            FillAndStrokeRoundRect(g, ox + s * 0.12f, s * 0.16f, s * 0.76f, s * 0.22f, s * 0.05f, &hdrBr);
+            g.DrawLine(&gridPen, ox + s * 0.42f, s * 0.38f, ox + s * 0.42f, s * 0.84f);
+            g.DrawLine(&gridPen, ox + s * 0.12f, s * 0.58f, ox + s * 0.88f, s * 0.58f);
+            break;
+        }
+    }
+}
+
+/// Builds a Per-Monitor V2 DPI-scaled 32-bpp premultiplied ARGB `HIMAGELIST` (`TVSIL_NORMAL`)
+/// containing all `StudioTreeIcon` vector glyphs with zero selection/hover halo!
+inline HIMAGELIST CreateStudioTreeImageList(UINT dpi, const RswTheme& theme) noexcept {
+    const int sz    = std::max(16, ScalePx(18, dpi, theme.textScalePercent));
+    const int count = static_cast<int>(StudioTreeIcon::Count);
+    const int totalW = sz * count;
+
+    Gdiplus::Bitmap sheet(totalW, sz, PixelFormat32bppPARGB);
+    {
+        Gdiplus::Graphics g(&sheet);
+        g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+        g.Clear(Gdiplus::Color(0, 0, 0, 0));
+        for (int i = 0; i < count; ++i) {
+            PaintSingleStudioTreeIcon(g, static_cast<StudioTreeIcon>(i), static_cast<float>(i * sz), static_cast<float>(sz), theme);
+        }
+    }
+
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth       = totalW;
+    bmi.bmiHeader.biHeight      = -sz; // Top-down 32-bpp PARGB DIB
+    bmi.bmiHeader.biPlanes      = 1;
+    bmi.bmiHeader.biBitCount    = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* pvBits = nullptr;
+    HDC screenDc = ::GetDC(nullptr);
+    HBITMAP hDib = ::CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &pvBits, nullptr, 0);
+    ::ReleaseDC(nullptr, screenDc);
+    if (!hDib || !pvBits) {
+        if (hDib) ::DeleteObject(hDib);
+        return nullptr;
+    }
+
+    Gdiplus::Rect lockRc(0, 0, totalW, sz);
+    Gdiplus::BitmapData bd{};
+    if (sheet.LockBits(&lockRc, Gdiplus::ImageLockModeRead, PixelFormat32bppPARGB, &bd) == Gdiplus::Ok) {
+        const std::size_t rowBytes = static_cast<std::size_t>(totalW) * 4u;
+        for (int y = 0; y < sz; ++y) {
+            const auto* srcRow = static_cast<const std::uint8_t*>(bd.Scan0) + static_cast<std::ptrdiff_t>(y) * bd.Stride;
+            auto* dstRow       = static_cast<std::uint8_t*>(pvBits) + static_cast<std::size_t>(y) * rowBytes;
+            std::memcpy(dstRow, srcRow, rowBytes);
+        }
+        sheet.UnlockBits(&bd);
+    }
+
+    HIMAGELIST hIml = ::ImageList_Create(sz, sz, ILC_COLOR32, count, 0);
+    if (hIml) {
+        ::ImageList_Add(hIml, hDib, nullptr);
+    }
+    ::DeleteObject(hDib);
+    return hIml;
+}
+
+/// Applies Windows 11 `DarkMode_Explorer` / `Explorer` expand/collapse chevrons, dark scrollbars,
+/// surface colors, connector lines, and accessible 24px row height to any `SysTreeView32`!
+inline void ApplyDarkTreeViewTheme(HWND hTree, const RswTheme& theme, UINT dpi) noexcept {
+    if (!hTree) return;
+    if (theme.isHighContrast) {
+        ::SetWindowTheme(hTree, L"", L"");
+    } else {
+        ::SetWindowTheme(hTree, theme.isDarkMode ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+    }
+    TreeView_SetBkColor(hTree, theme.cardBg);
+    TreeView_SetTextColor(hTree, theme.textPrimary);
+    ::SendMessageW(hTree, TVM_SETLINECOLOR, 0, static_cast<LPARAM>(theme.borderSubtle));
+    const int rowH = std::max(22, ScalePx(24, dpi, theme.textScalePercent));
+    ::SendMessageW(hTree, TVM_SETITEMHEIGHT, static_cast<WPARAM>(rowH), 0);
+}
+
 /// Encodes a 32-bpp BGRA pixel buffer (`width x height`, stride `width * 4`) to a `.png` file via OS WIC!
 inline bool SaveBgraPixelsToPngFile(
     const std::uint8_t* pixels,

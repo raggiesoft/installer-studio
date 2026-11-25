@@ -1024,6 +1024,7 @@ inline bool CompileManifestToMsi(
         int rootNum = 2; // HKLM
         if (EqualsIgnoreCase(rootStr, "HKCU")) rootNum = 1;
         else if (EqualsIgnoreCase(rootStr, "HKCR")) rootNum = 0;
+        else if (EqualsIgnoreCase(rootStr, "HKU"))  rootNum = 3;
         else if (EqualsIgnoreCase(rootStr, "HKMU")) rootNum = -1;
 
         const std::string keyP    = ExpandArchToken(doc.GetString("Registry", rid, "Key"), arch);
