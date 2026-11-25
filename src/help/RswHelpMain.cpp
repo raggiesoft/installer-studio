@@ -1065,7 +1065,7 @@ public:
         // 1. Contents Tree (`SysTreeView32` with 32-bit ARGB vector icons!)
         hTocTree = ::CreateWindowExW(
             WS_EX_CLIENTEDGE, WC_TREEVIEWW, L"Help Table of Contents",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS | TVS_SHAREIMAGELISTS,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS,
             0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_HLP_TOC_TREE)), hInst, nullptr);
 
         // 2. Index Filter & Dark-Header `SysListView32`

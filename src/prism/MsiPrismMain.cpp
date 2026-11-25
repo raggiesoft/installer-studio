@@ -231,7 +231,7 @@ public:
         // Categorized SQL Schema `SysTreeView32` with 32-bit ARGB vector icons (`v0.4.2+`)
         hTableTree = ::CreateWindowExW(
             WS_EX_CLIENTEDGE, WC_TREEVIEWW, L"Database Schema Tables",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS | TVS_SHAREIMAGELISTS,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS,
             0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PRISM_TABLETREE)), hInst, nullptr);
 
         hRowGrid = ::CreateWindowExW(

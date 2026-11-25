@@ -923,7 +923,7 @@ public:
         auto mkTree = [&](int view, int id, const wchar_t* a11yName) {
             return RegisterViewCtrl(view, ::CreateWindowExW(
                 WS_EX_CLIENTEDGE, WC_TREEVIEWW, a11yName,
-                WS_CHILD | WS_TABSTOP | TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS | TVS_SHAREIMAGELISTS,
+                WS_CHILD | WS_TABSTOP | TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS,
                 0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), hInst, nullptr));
         };
         auto mkCombo = [&](int view, int id, std::initializer_list<const wchar_t*> items, int defSel = 0) {
