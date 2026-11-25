@@ -29,7 +29,7 @@
 //     for core MSI, Prerequisite, Native, or Scripting features!
 //
 //   Community Edition White-Label Attribution Rule:
-//     `kGeneratorSigWide` (`"RaggieSoft Installer Studio (instbuild.exe 0.4.3)"`) is
+//     `kGeneratorSigWide` (`"RaggieSoft Installer Studio (instbuild.exe 0.4.4)"`) is
 //     written ONLY to the non-visible MSI `SummaryInformation` `PID_APPNAME`
 //     (Creating Application) diagnostic field—never stamped as a visible watermark
 //     onto customer dialogs or `Setup.exe` `VERSIONINFO`!
@@ -41,13 +41,13 @@
 
 namespace rsw {
 
-// Semantic Versioning (`0.4.3`)
+// Semantic Versioning (`0.4.4`)
 inline constexpr int kVersionMajor = 0;
 inline constexpr int kVersionMinor = 4;
-inline constexpr int kVersionPatch = 3;
+inline constexpr int kVersionPatch = 4;
 
-inline constexpr std::string_view  kVersionString      = "0.4.3";
-inline constexpr std::wstring_view kVersionStringWide  = L"0.4.3";
+inline constexpr std::string_view  kVersionString      = "0.4.4";
+inline constexpr std::wstring_view kVersionStringWide  = L"0.4.4";
 
 // Suite, Runtime Wizard, Help Viewer, & MSI Prism Product Identity
 inline constexpr std::string_view  kSuiteTitle         = "RaggieSoft Installer Studio";
@@ -62,8 +62,8 @@ inline constexpr std::string_view  kCanonicalExt       = ".rsip";
 inline constexpr std::string_view  kSuiteExt           = ".rsis";
 inline constexpr std::string_view  kIncludeExt         = ".rsii";
 inline constexpr std::string_view  kScriptExt          = ".rssc";
-inline constexpr std::string_view  kGeneratorSignature = "RaggieSoft Installer Studio (instbuild.exe 0.4.3)";
-inline constexpr std::wstring_view kGeneratorSigWide   = L"RaggieSoft Installer Studio (instbuild.exe 0.4.3)";
+inline constexpr std::string_view  kGeneratorSignature = "RaggieSoft Installer Studio (instbuild.exe 0.4.4)";
+inline constexpr std::wstring_view kGeneratorSigWide   = L"RaggieSoft Installer Studio (instbuild.exe 0.4.4)";
 inline constexpr std::string_view  kManifestSchemaVer  = "0.4";
 
 /// IDE Product Editions (`Community` permanently maintains 100% feature parity with `Premier`!).

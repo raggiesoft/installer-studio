@@ -1,6 +1,6 @@
 ; ==============================================================================
 ; FILE: projects/apps/installer-studio/installer-studio.rsip
-; APPLICATION: RaggieSoft Installer Studio (v0.4.3 Technical Preview)
+; APPLICATION: RaggieSoft Installer Studio (v0.4.4 Technical Preview)
 ; COMPILER: RaggieSoft Installer Studio (instbuild.exe -> .msi + Universal Setup.exe)
 ; ==============================================================================
 
@@ -10,7 +10,7 @@
 Name                     = RaggieSoft Installer Studio
 Tagline                  = Install Without Limits - Tree-First AeroWizard IDE, MSI Compiler, Prism & Help
 WebsiteLabel             = raggiesoftstudio.com
-Version                  = 0.4.3
+Version                  = 0.4.4
 Manufacturer             = RaggieSoft
 UpgradeCode              = {D9C0EF36-990C-519C-A9C7-D7E19FDD5627}
 Architecture             = $(ARCH)
@@ -38,29 +38,29 @@ IconFile              = ..\..\..\..\windows\RaggieSoftApps\RaggieSoftLauncher\As
 InstallButtonText     = &Install
 FinishLaunchCheckbox  = &Open RaggieSoft Installer Studio when setup finishes
 
-; Hierarchical MSI SelectionTree Features (shown in Custom Setup & Maintenance -> Modify!)
+; Hierarchical MSI SelectionTree Features with plain-English `Inclusion` tiers (`minimal` vs `typical`)!
 [Feature.Main]
 Title                 = Visual IDE, CLI Compiler, MSI Prism & Help Viewer
 Description           = Core 64-bit native Win32 C++20 executables (InstallerStudio.exe, instbuild.exe, SetupWizard.exe, msiprism.exe, RaggieSoftHelp.exe).
-Level                 = 1
+Inclusion             = minimal
 DisallowAbsent        = true
 
 [Feature.HelpDocs]
 Parent                = Main
 Title                 = Offline Documentation Module (.rshm.json)
 Description           = Searchable offline HTML5 help topics for F1 context navigation inside RaggieSoftHelp.exe.
-Level                 = 1
+Inclusion             = typical
 
 [Feature.Templates]
 Title                 = Reusable Dialog & Workflow Presets
 Description           = Reusable .rsii @include dialog presets and starter .rsip blueprints.
-Level                 = 1
+Inclusion             = typical
 
 [Feature.AiSpecs]
 Parent                = Templates
 Title                 = AI Agent Grammar & SKILL.md Specs
 Description           = Machine-readable llms.txt, llms-full.txt, and SKILL.md documentation for autonomous AI packaging.
-Level                 = 1
+Inclusion             = typical
 
 [Payload.HelpManifest]
 Source                = ..\..\..\help\raggiesoft.installer-studio\module.rshm.json

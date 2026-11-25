@@ -5,7 +5,8 @@
 **Public Engineering Roadmap:** [ROADMAP.md](ROADMAP.md) • [https://raggiesoftstudio.com/roadmap](https://raggiesoftstudio.com/roadmap)  
 **Version History & Changelog:** [https://raggiesoftstudio.com/changelog](https://raggiesoftstudio.com/changelog)  
 **Developer & AI Spec Hub:** [https://raggiesoft.dev](https://raggiesoft.dev)  
-**Current Milestone:** `v0.4.3` Open Technical Preview (`x64` & `ARM64` Universal Single-Download)  
+**Frequently Asked Questions:** [https://raggiesoftstudio.com/faq](https://raggiesoftstudio.com/faq)  
+**Current Milestone:** `v0.4.4` Open Technical Preview (`x64` & `ARM64` Universal Single-Download)  
 **License:** MIT License (Core Toolchain Source)
 
 <p align="center">
@@ -78,7 +79,7 @@ Commercial pricing is intentionally omitted while **RaggieSoft Installer Studio*
 
 Read the full phase-by-phase engineering plan in **[ROADMAP.md](ROADMAP.md)** or browse the interactive web edition at **[raggiesoftstudio.com/roadmap](https://raggiesoftstudio.com/roadmap)** (anchored to our **`v1.0.0 GA` North Star**: packaging and distributing 100% of RaggieSoft's own Windows software exclusively with Installer Studio):
 
-- **`v0.5.0`**: 8 Wizard Layout Variations (`Wizard95`, `Wizard97`, `AeroWizard`, `FluentMica`, `OneClickSplash`, `PassiveToast`, `FullScreenBlue` with rotating billboards & docked 3D progress gauge, & `Autorun16x9`), automatic `SPI_GETHIGHCONTRAST` contrast-theme override, complete `[Branding]` / `.rswskin` imagery, and live WCAG 2.2 AA contrast enforcement.
+- **`v0.5.0`**: 8 Wizard Layout Variations (`Wizard95`, `Wizard97`, `AeroWizard`, `FluentMica`, `OneClickSplash`, `PassiveToast`, `FullScreenBlue` with rotating billboards & docked 3D progress gauge, & `Autorun16x9`), classic Windows 95-style & custom author-defined Setup Types (`Typical`, `Compact`, `Complete`, `Custom`, & `[SetupType.*]`), automatic `SPI_GETHIGHCONTRAST` contrast-theme override, complete `[Branding]` / `.rswskin` imagery, and live WCAG 2.2 AA contrast enforcement.
 - **`v0.6.0`**: Granular `.rswpak` On-Demand Feature Packs *(building on `v0.4.3`'s CPU-aware Smart Web Stub & Combined Offline Universal Single-EXE)*, curated `.NET 11` + `.NET 10 LTS` runtime presets, and `Engine = native`.
 - **`v0.7.0`**: From-scratch Dual C++ & Raw `370x270` `MSI.DLL` Dialog Builders + `.rssc` event hooks & `RsDialog` (`Rs*()`) procedural dialog scripting.
 - **`v0.8.0`**: Visual Studio `.slnx`/`.csproj`, Visual Basic 6.0 `.vbp` (Windows 11 WRP + Reg-Free COM for *StoreTrainer*), and `.msi` importers + Windows Restart Manager (`Rstrtmgr.dll`).

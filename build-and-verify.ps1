@@ -23,7 +23,7 @@ $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Set-Location $RepoRoot
 
 Write-Host "======================================================================" -ForegroundColor Cyan
-Write-Host "  RaggieSoft Installer Studio v0.4.3 - x64 + ARM64 Build & Test Suite" -ForegroundColor Cyan
+Write-Host "  RaggieSoft Installer Studio v0.4.4 - x64 + ARM64 Build & Test Suite" -ForegroundColor Cyan
 Write-Host "======================================================================" -ForegroundColor Cyan
 
 # Step 1: Locate Visual Studio `vcvarsall.bat` for `cl.exe`, `rc.exe`, & Windows 11 SDK
@@ -148,4 +148,4 @@ Write-Host "[6/6] Running automated C++20 self-test suite (insttests.exe)..." -F
 if ($LASTEXITCODE -ne 0) { throw "insttests.exe reported failures!" }
 
 Write-Host ""
-Write-Host "ALL RAGGIESOFT INSTALLER STUDIO v0.4.3 x64 + ARM64 BINARIES, UNIVERSAL EXE, HELP VIEWER, AI SPECS, SUITE, VPAT, AND TESTS PASSED!" -ForegroundColor Green
+Write-Host "ALL RAGGIESOFT INSTALLER STUDIO v0.4.4 x64 + ARM64 BINARIES, UNIVERSAL EXE, HELP VIEWER, AI SPECS, SUITE, VPAT, AND TESTS PASSED!" -ForegroundColor Green

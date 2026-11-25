@@ -644,6 +644,39 @@ int wmain() {
                   "Combined Offline Universal EXE pierces Prism via IsWow64Process2 and dispatches native silicon child installer",
                   "auto=" + autoTmpl + " forcedX64=" + x64Tmpl);
         }
+
+        // 5D. Verify `v0.4.4` Plain-English Feature `Inclusion` Tiers (`minimal`, `typical`, `complete`, `hidden`)!
+        {
+            std::ostringstream tierManifest;
+            tierManifest << "[Package]\nName = TierSample\nVersion = 0.4.4\nManufacturer = RaggieSoft\n"
+                         << "UpgradeCode = {4C7A9D11-2233-4E88-9B11-776655443322}\n"
+                         << "[Install]\nDefaultSubdir = RaggieSoft\\TierSample\n"
+                         << "[Feature.Main]\nTitle = Core Engine\nInclusion = minimal\nDisallowAbsent = true\n"
+                         << "[Feature.Templates]\nTitle = Standard Templates\nInclusion = typical\n"
+                         << "[Feature.SdkBonus]\nTitle = Optional Bonus SDK\nInclusion = complete\n"
+                         << "[Feature.Internal]\nTitle = Hidden Internal\nInclusion = hidden\n"
+                         << "[Payload.MainExe]\nSource = " << rsw::WideToUtf8(payloadToUse.wstring()) << "\nFeature = Main\n"
+                         << "[Registry.Tpl]\nRoot = HKCU\nKey = Software\\RaggieSoft\\TierSample\nName = Tpl\nValue = 1\nFeature = Templates\n"
+                         << "[Registry.Sdk]\nRoot = HKCU\nKey = Software\\RaggieSoft\\TierSample\nName = Sdk\nValue = 1\nFeature = SdkBonus\n"
+                         << "[Registry.Hid]\nRoot = HKCU\nKey = Software\\RaggieSoft\\TierSample\nName = Hid\nValue = 1\nFeature = Internal\n";
+            auto tierDoc = rsw::ParseManifestText(tierManifest.str(), testWorkDir / L"tier-sample.rsip");
+            tierDoc.SetString("Package", "", "OutputDir", rsw::WideToUtf8((testWorkDir / L"tier-out").wstring()));
+
+            const auto valRep = rsw::ValidateManifestDocument(tierDoc, hostArch);
+            rsw::CompiledMsiSummary tierSum{};
+            std::string tierErr;
+            const bool tierOk = valRep.IsOk() && rsw::CompileManifestToMsi(tierDoc, hostArch, tierSum, tierErr);
+            std::vector<rsw::MsiFeatureNode> tNodes;
+            const bool loadedT = tierOk && rsw::LoadFeatureTreeFromMsiDatabase(tierSum.msiPath, L"", tNodes);
+
+            // Expect 3 visible features (`Main` = Level 1 Local, `Templates` = Level 50 Local, `SdkBonus` = Level 150 Absent; `Internal` = Level 0 hidden!)
+            Check(loadedT && tNodes.size() == 3 &&
+                  tNodes[0].installLevel == 1   && tNodes[0].defaultState == rsw::MsiTreeState::Local &&
+                  tNodes[1].installLevel == 50  && tNodes[1].defaultState == rsw::MsiTreeState::Local &&
+                  tNodes[2].installLevel == 150 && tNodes[2].defaultState == rsw::MsiTreeState::Absent,
+                  "Plain-English Feature Inclusion (minimal/typical/complete/hidden) maps cleanly to MSI Feature.Level & SelectionTree defaults",
+                  tierErr);
+        }
     }
 
     // 6. Live Windows Installer (`msi.dll`) Engine Verification (`AppSearch`, `Signature`, `LaunchConditions`,

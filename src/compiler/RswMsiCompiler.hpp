@@ -562,12 +562,15 @@ inline bool CompileManifestToMsi(
         int fAttrs = 0;
         if (!doc.GetBool("Feature", fid, "AllowAdvertise", false)) fAttrs |= 8;  // `msidbFeatureAttributesDisallowAdvertise`
         if (doc.GetBool("Feature", fid, "DisallowAbsent", false))  fAttrs |= 16; // `msidbFeatureAttributesUIDisallowAbsent`
+        const std::string incStr = TrimAscii(doc.GetString("Feature", fid, "Inclusion"));
+        const std::string rawLvl = TrimAscii(doc.GetString("Feature", fid, "Level"));
+        const int resolvedLvl    = ResolveFeatureMsiLevel(incStr, doc.GetInt("Feature", fid, "Level", 1), !rawLvl.empty());
         features.push_back({
             fid,
             TrimAscii(doc.GetString("Feature", fid, "Parent")),
             doc.GetString("Feature", fid, "Title", fid),
             doc.GetString("Feature", fid, "Description", ""),
-            doc.GetInt("Feature", fid, "Level", 1),
+            resolvedLvl,
             fAttrs
         });
     }
@@ -902,6 +905,7 @@ inline bool CompileManifestToMsi(
     addProp("Manufacturer",    outSummary.manufacturer);
     addProp("UpgradeCode",     outSummary.upgradeCode);
     addProp("DefaultUIFont",   "DlgFont8");
+    addProp("INSTALLLEVEL",    "100");
     addProp("IAgree",          "No");
     addProp("LAUNCHAPP",       outSummary.offerLaunchOnFinish && !outSummary.mainExeRel.empty() ? "1" : "0");
 

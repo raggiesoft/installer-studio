@@ -277,6 +277,8 @@ inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>
      "Helper caption for the Custom Setup mode card in `SetupWizard.exe` and MSI `SetupTypeDlg`."},
     {"UI",       "AuthorOrArtist",       FieldValueKind::String,      false, "",                  "",
      "Optional author or band credit badge displayed in `autorun16x9` book/album micro-installers."},
+    {"Feature",  "Inclusion",            FieldValueKind::EnumChoice,  false, "minimal",           "minimal|typical|complete|hidden",
+     "Plain-English setup inclusion tier replacing raw numeric `InstallLevel`: `minimal` (`Level = 1`, installed in Minimal/Compact, Typical/Express, & Complete), `typical` (`Level = 50`, installed in Typical/Express & Complete, skipped in Minimal/Compact), `complete` (`Level = 150`, installed in Complete or when opted in inside Custom SelectionTree), or `hidden` (`Level = 0`, hidden/conditional)."},
     {"Feature",  "Parent",               FieldValueKind::String,      false, "",                  "",
      "Optional parent Feature ID (`Feature_Parent`) creating a hierarchical sub-feature in `SelectionTree`."},
     {"Feature",  "DisallowAbsent",       FieldValueKind::Boolean,     false, "false",             "",
@@ -477,6 +479,86 @@ inline constexpr std::string_view ValueKindToDisplayName(FieldValueKind kind) no
         case FieldValueKind::RelativePath:      return "relpath";
     }
     return "string";
+}
+
+/// Plain-English setup inclusion tiers replacing raw numeric Windows Installer `InstallLevel` mystery values!
+///   - `Minimal`  (`Level = 1`)   : Core files installed in Minimal/Compact (`INSTALLLEVEL=20`), Typical/Express (`100`), & Complete (`1000`).
+///   - `Typical`  (`Level = 50`)  : Standard extras installed in Typical/Express & Complete, skipped in Minimal/Compact.
+///   - `Complete` (`Level = 150`) : Optional extras installed in Complete or when checked in Custom `SelectionTree`.
+///   - `Hidden`   (`Level = 0`)   : Hidden from `SelectionTree` unless conditionally enabled.
+enum class FeatureInclusionTier : int {
+    Minimal  = 0,
+    Typical  = 1,
+    Complete = 2,
+    Hidden   = 3
+};
+
+inline constexpr bool SchemaEqNoCase(std::string_view a, std::string_view b) noexcept {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        char ca = a[i];
+        char cb = b[i];
+        if (ca >= 'A' && ca <= 'Z') ca = static_cast<char>(ca - 'A' + 'a');
+        if (cb >= 'A' && cb <= 'Z') cb = static_cast<char>(cb - 'A' + 'a');
+        if (ca != cb) return false;
+    }
+    return true;
+}
+
+inline constexpr FeatureInclusionTier ResolveFeatureInclusionTier(
+    std::string_view inclusionStr,
+    int rawLevel = 1,
+    bool hasExplicitLevel = false) noexcept
+{
+    if (!inclusionStr.empty()) {
+        if (SchemaEqNoCase(inclusionStr, "minimal") || SchemaEqNoCase(inclusionStr, "compact")) return FeatureInclusionTier::Minimal;
+        if (SchemaEqNoCase(inclusionStr, "typical") || SchemaEqNoCase(inclusionStr, "express")) return FeatureInclusionTier::Typical;
+        if (SchemaEqNoCase(inclusionStr, "complete") || SchemaEqNoCase(inclusionStr, "optional")) return FeatureInclusionTier::Complete;
+        if (SchemaEqNoCase(inclusionStr, "hidden") || SchemaEqNoCase(inclusionStr, "none")) return FeatureInclusionTier::Hidden;
+    }
+    if (hasExplicitLevel) {
+        if (rawLevel <= 0)   return FeatureInclusionTier::Hidden;
+        if (rawLevel <= 39)  return FeatureInclusionTier::Minimal;
+        if (rawLevel <= 100) return FeatureInclusionTier::Typical;
+        return FeatureInclusionTier::Complete;
+    }
+    return FeatureInclusionTier::Minimal;
+}
+
+inline constexpr int ResolveFeatureMsiLevel(
+    std::string_view inclusionStr,
+    int rawLevel = 1,
+    bool hasExplicitLevel = false) noexcept
+{
+    if (!inclusionStr.empty()) {
+        switch (ResolveFeatureInclusionTier(inclusionStr, rawLevel, false)) {
+            case FeatureInclusionTier::Minimal:  return 1;
+            case FeatureInclusionTier::Typical:  return 50;
+            case FeatureInclusionTier::Complete: return 150;
+            case FeatureInclusionTier::Hidden:   return 0;
+        }
+    }
+    return hasExplicitLevel ? rawLevel : 1;
+}
+
+inline constexpr std::string_view FeatureInclusionToken(FeatureInclusionTier tier) noexcept {
+    switch (tier) {
+        case FeatureInclusionTier::Minimal:  return "minimal";
+        case FeatureInclusionTier::Typical:  return "typical";
+        case FeatureInclusionTier::Complete: return "complete";
+        case FeatureInclusionTier::Hidden:   return "hidden";
+    }
+    return "minimal";
+}
+
+inline constexpr std::string_view FeatureInclusionBadge(FeatureInclusionTier tier) noexcept {
+    switch (tier) {
+        case FeatureInclusionTier::Minimal:  return "Minimal & All Setups";
+        case FeatureInclusionTier::Typical:  return "Typical & Complete";
+        case FeatureInclusionTier::Complete: return "Complete / Optional";
+        case FeatureInclusionTier::Hidden:   return "Hidden / Conditional";
+    }
+    return "Minimal & All Setups";
 }
 
 } // namespace rsw

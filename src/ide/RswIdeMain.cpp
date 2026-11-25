@@ -518,7 +518,7 @@ std::string BuildStarterRsipTemplate() {
       << "[Feature.Main]\r\n"
       << "Title             = Core Application Files\r\n"
       << "Description       = Essential program executables and libraries.\r\n"
-      << "Level             = 1\r\n"
+      << "Inclusion         = minimal\r\n"
       << "DisallowAbsent    = true\r\n\r\n"
       << "[Payload.App]\r\n"
       << "Source            = ..\\..\\bin\\$(ARCH)\\HelloRaggieSoft.exe\r\n"
@@ -1010,8 +1010,14 @@ public:
         hFtReqChk     = mkBtn(VIEW_FEATURES, L"Core &Required (DisallowAbsent)", IDC_FT_REQUIRED_CHK, BS_AUTOCHECKBOX);
         mkLbl(VIEW_FEATURES, L"Feature ID:");          hFtId     = mkEd(VIEW_FEATURES, IDC_FT_ID, L"Main");
         mkLbl(VIEW_FEATURES, L"Display Title:");       hFtTitle  = mkEd(VIEW_FEATURES, IDC_FT_TITLE, L"Core Application");
-        mkLbl(VIEW_FEATURES, L"Install Level:");       hFtLevel  = mkEd(VIEW_FEATURES, IDC_FT_LEVEL, L"1");
-        mkLbl(VIEW_FEATURES, L"Parent Feature:");      hFtParent = mkEd(VIEW_FEATURES, IDC_FT_PARENT, L"");
+        mkLbl(VIEW_FEATURES, L"Included &In:");
+        hFtLevel = mkCombo(VIEW_FEATURES, IDC_FT_LEVEL, {
+            L"Minimal / Compact & All Setups",
+            L"Typical / Express & Complete",
+            L"Complete Only (Optional in Custom)",
+            L"Hidden / Conditional Only"
+        }, 0);
+        mkLbl(VIEW_FEATURES, L"Parent:");              hFtParent = mkEd(VIEW_FEATURES, IDC_FT_PARENT, L"");
         mkLbl(VIEW_FEATURES, L"Feature Description:"); hFtDesc   = mkEd(VIEW_FEATURES, IDC_FT_DESC, L"Essential application executables and support libraries.");
 
         // --- VIEW 3: Files & Folders (`Destination Computer` Tree + `Folder Contents` Tree) ---
@@ -1027,7 +1033,13 @@ public:
         hDesignTree = mkTree(VIEW_SETUP_DESIGN, IDC_DESIGN_TREE, L"Components and KeyPaths Tree");
         mkLbl(VIEW_SETUP_DESIGN, L"Feature ID:");     hFeatId     = mkEd(VIEW_SETUP_DESIGN, IDC_FEAT_ID, L"Main");
         mkLbl(VIEW_SETUP_DESIGN, L"Feature Title:");  hFeatTitle  = mkEd(VIEW_SETUP_DESIGN, IDC_FEAT_TITLE, L"Core Application");
-        mkLbl(VIEW_SETUP_DESIGN, L"Install Level:");  hFeatLevel  = mkEd(VIEW_SETUP_DESIGN, IDC_FEAT_LEVEL, L"1");
+        mkLbl(VIEW_SETUP_DESIGN, L"Included In:");
+        hFeatLevel = mkCombo(VIEW_SETUP_DESIGN, IDC_FEAT_LEVEL, {
+            L"Minimal / Compact & All Setups",
+            L"Typical / Express & Complete",
+            L"Complete Only (Optional in Custom)",
+            L"Hidden / Conditional Only"
+        }, 0);
         mkLbl(VIEW_SETUP_DESIGN, L"Parent Feature:"); hFeatParent = mkEd(VIEW_SETUP_DESIGN, IDC_FEAT_PARENT, L"");
         hFeatSaveBtn = mkBtn(VIEW_SETUP_DESIGN, L"Save &Feature", IDC_FEAT_SAVE_BTN);
 
@@ -1317,14 +1329,14 @@ public:
 
             if (v.size() >= 19) {
                 const int r1Y = actY + S(36);
-                ::MoveWindow(v[9],  paneX,          r1Y + S(4), S(74),  S(22), TRUE);
-                ::MoveWindow(hFtId, paneX + S(76),  r1Y,        S(116), S(26), TRUE);
-                ::MoveWindow(v[11], paneX + S(200), r1Y + S(4), S(86),  S(22), TRUE);
-                ::MoveWindow(hFtTitle, paneX + S(288), r1Y,     S(250), S(26), TRUE);
-                ::MoveWindow(v[13], paneX + S(546), r1Y + S(4), S(80),  S(22), TRUE);
-                ::MoveWindow(hFtLevel, paneX + S(628), r1Y,     S(54),  S(26), TRUE);
-                ::MoveWindow(v[15], paneX + S(690), r1Y + S(4), S(98),  S(22), TRUE);
-                ::MoveWindow(hFtParent, paneX + S(790), r1Y,    std::max(S(90), paneW - S(790)), S(26), TRUE);
+                ::MoveWindow(v[9],      paneX,          r1Y + S(4), S(72),  S(22),  TRUE);
+                ::MoveWindow(hFtId,     paneX + S(74),  r1Y,        S(100), S(26),  TRUE);
+                ::MoveWindow(v[11],     paneX + S(182), r1Y + S(4), S(82),  S(22),  TRUE);
+                ::MoveWindow(hFtTitle,  paneX + S(266), r1Y,        S(198), S(26),  TRUE);
+                ::MoveWindow(v[13],     paneX + S(472), r1Y + S(4), S(74),  S(22),  TRUE);
+                ::MoveWindow(hFtLevel,  paneX + S(548), r1Y,        S(200), S(160), TRUE);
+                ::MoveWindow(v[15],     paneX + S(756), r1Y + S(4), S(48),  S(22),  TRUE);
+                ::MoveWindow(hFtParent, paneX + S(806), r1Y,        std::max(S(74), paneW - S(806)), S(26), TRUE);
 
                 const int r2Y = r1Y + S(34);
                 ::MoveWindow(v[17],  paneX,          r2Y + S(4), S(128), S(22), TRUE);
@@ -1365,7 +1377,7 @@ public:
                 };
                 row(v[1], hFeatId);
                 row(v[3], hFeatTitle);
-                row(v[5], hFeatLevel);
+                row(v[5], hFeatLevel, 160);
                 row(v[7], hFeatParent);
                 ::MoveWindow(hFeatSaveBtn, formX, y, formW, S(28), TRUE);
                 y += S(36);
@@ -1676,18 +1688,24 @@ public:
         TreeView_Expand(hPrTree, hMsmRoot, TVE_EXPAND);
     }
 
+    static rsw::FeatureInclusionTier QueryFeatureTierFromDoc(const rsw::RswManifestDocument& doc, const std::string& fid) {
+        const std::string inc = rsw::TrimAscii(doc.GetString("Feature", fid, "Inclusion"));
+        const std::string lvl = rsw::TrimAscii(doc.GetString("Feature", fid, "Level"));
+        return rsw::ResolveFeatureInclusionTier(inc, doc.GetInt("Feature", fid, "Level", 1), !lvl.empty());
+    }
+
     void PopulateFeatureInspectorFields(const rsw::RswManifestDocument& doc, const std::string& fid) {
         if (fid.empty()) return;
         selectedFtId = fid;
         const std::string title = doc.GetString("Feature", fid, "Title", fid);
-        const std::string level = doc.GetString("Feature", fid, "Level", "1");
+        const auto tier         = QueryFeatureTierFromDoc(doc, fid);
         const std::string par   = doc.GetString("Feature", fid, "Parent");
         const std::string desc  = doc.GetString("Feature", fid, "Description");
         const bool req          = doc.GetBool("Feature", fid, "DisallowAbsent", false);
 
         ::SetWindowTextW(hFtId,     rsw::Utf8ToWide(fid).c_str());
         ::SetWindowTextW(hFtTitle,  rsw::Utf8ToWide(title).c_str());
-        ::SetWindowTextW(hFtLevel,  rsw::Utf8ToWide(level).c_str());
+        ::SendMessageW(hFtLevel, CB_SETCURSEL, static_cast<WPARAM>(tier), 0);
         ::SetWindowTextW(hFtParent, rsw::Utf8ToWide(par).c_str());
         ::SetWindowTextW(hFtDesc,   rsw::Utf8ToWide(desc).c_str());
         ::SendMessageW(hFtReqChk, BM_SETCHECK, req ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -1713,7 +1731,7 @@ public:
 
         auto featIds = doc.GetNamedSectionIds("Feature");
         if (featIds.empty()) {
-            addFtNode(hAll, L"Main — Core Application Files  [Level 1]", rsw::ui::StudioTreeIcon::FeatureBox, "Main");
+            addFtNode(hAll, L"Main — Core Application Files  [Minimal & All Setups]", rsw::ui::StudioTreeIcon::FeatureBox, "Main");
         } else {
             // Multi-pass insertion so child features attach cleanly under parents regardless of declaration order
             std::set<std::string> inserted;
@@ -1729,9 +1747,10 @@ public:
                         if (pIt != ftItemMap.end()) hParent = pIt->second;
                     }
                     const std::string title = doc.GetString("Feature", fid, "Title", fid);
-                    const std::string level = doc.GetString("Feature", fid, "Level", "1");
+                    const auto tier         = QueryFeatureTierFromDoc(doc, fid);
                     const bool req          = doc.GetBool("Feature", fid, "DisallowAbsent", false);
-                    std::string label = fid + " — " + title + "  [Level " + level + (req ? " • Core Required]" : "]");
+                    std::string label = fid + " — " + title + "  [" + std::string(rsw::FeatureInclusionBadge(tier)) +
+                                        (req ? " • Core Required]" : "]");
                     addFtNode(hParent, rsw::Utf8ToWide(label),
                               req ? rsw::ui::StudioTreeIcon::CertShield : rsw::ui::StudioTreeIcon::FeatureBox,
                               fid);
@@ -1890,7 +1909,7 @@ public:
         std::map<std::string, HTREEITEM> featNodes;
         auto featIds = doc.GetNamedSectionIds("Feature");
         if (featIds.empty()) {
-            featNodes["main"] = addTv(hTop, "Feature: Main (Level 1 — Default)", rsw::ui::StudioTreeIcon::FeatureBox, "Feature", "Main");
+            featNodes["main"] = addTv(hTop, "Feature: Main (Minimal & All Setups)", rsw::ui::StudioTreeIcon::FeatureBox, "Feature", "Main");
         } else {
             for (const auto& fid : featIds) {
                 const std::string par = doc.GetString("Feature", fid, "Parent");
@@ -1898,8 +1917,9 @@ public:
                 if (!par.empty() && featNodes.count(rsw::AsciiLower(par))) {
                     hPar = featNodes[rsw::AsciiLower(par)];
                 }
+                const auto tier = QueryFeatureTierFromDoc(doc, fid);
                 const std::string lbl = "Feature: " + fid + " — " + doc.GetString("Feature", fid, "Title", fid) +
-                                        " (Level " + doc.GetString("Feature", fid, "Level", "1") + ")";
+                                        " (" + std::string(rsw::FeatureInclusionBadge(tier)) + ")";
                 featNodes[rsw::AsciiLower(fid)] = addTv(hPar, lbl, rsw::ui::StudioTreeIcon::FeatureBox, "Feature", fid);
             }
         }
@@ -3129,7 +3149,7 @@ public:
             if (ref.prefix == "Feature" && !ref.id.empty()) {
                 ::SetWindowTextW(hFeatId,     rsw::Utf8ToWide(ref.id).c_str());
                 ::SetWindowTextW(hFeatTitle,  rsw::Utf8ToWide(doc.GetString("Feature", ref.id, "Title", ref.id)).c_str());
-                ::SetWindowTextW(hFeatLevel,  rsw::Utf8ToWide(doc.GetString("Feature", ref.id, "Level", "1")).c_str());
+                ::SendMessageW(hFeatLevel, CB_SETCURSEL, static_cast<WPARAM>(QueryFeatureTierFromDoc(doc, ref.id)), 0);
                 ::SetWindowTextW(hFeatParent, rsw::Utf8ToWide(doc.GetString("Feature", ref.id, "Parent")).c_str());
             } else if (ref.prefix == "Component" && !ref.id.empty()) {
                 ::SetWindowTextW(hCompId,       rsw::Utf8ToWide(ref.id).c_str());
@@ -3572,22 +3592,25 @@ public:
                         const std::string newId = "Feature" + std::to_string(self->astDoc.GetNamedSectionIds("Feature").size() + 1);
                         self->astDoc.SetString("Feature", newId, "Title",       "Optional Program Feature");
                         self->astDoc.SetString("Feature", newId, "Description", "Additional components installed when this feature is selected.");
-                        self->astDoc.SetString("Feature", newId, "Level",       "1");
+                        self->astDoc.SetString("Feature", newId, "Inclusion",   "typical");
                         if (id == IDC_FT_NEW_SUB_BTN && !self->selectedFtId.empty()) {
                             self->astDoc.SetString("Feature", newId, "Parent", self->selectedFtId);
                         }
                         self->selectedFtId = newId;
                         self->SyncSourceEditorFromAst();
                         self->SyncAllViewsFromAst();
-                        self->AppendConsole(L"[AST] Created [Feature." + rsw::Utf8ToWide(newId) + L"].\r\n");
+                        self->AppendConsole(L"[AST] Created [Feature." + rsw::Utf8ToWide(newId) + L"] (Typical & Complete).\r\n");
                         return 0;
                     }
                     case IDC_FT_SAVE_BTN: {
                         const std::string fid = ReadCtlUtf8(self->hFtId);
                         if (fid.empty()) return 0;
                         self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
-                        self->astDoc.SetString("Feature", fid, "Title", ReadCtlUtf8(self->hFtTitle));
-                        self->astDoc.SetString("Feature", fid, "Level", ReadCtlUtf8(self->hFtLevel));
+                        const int tierIdx = std::clamp(static_cast<int>(::SendMessageW(self->hFtLevel, CB_GETCURSEL, 0, 0)), 0, 3);
+                        const auto tier   = static_cast<rsw::FeatureInclusionTier>(tierIdx);
+                        self->astDoc.SetString("Feature", fid, "Title",     ReadCtlUtf8(self->hFtTitle));
+                        self->astDoc.SetString("Feature", fid, "Inclusion", std::string(rsw::FeatureInclusionToken(tier)));
+                        RemoveAstKey(self->astDoc, "Feature", fid, "Level");
                         const std::string desc = ReadCtlUtf8(self->hFtDesc);
                         if (!desc.empty()) self->astDoc.SetString("Feature", fid, "Description", desc);
                         else               RemoveAstKey(self->astDoc, "Feature", fid, "Description");
@@ -3606,7 +3629,8 @@ public:
                         self->selectedFtId = fid;
                         self->SyncSourceEditorFromAst();
                         self->SyncAllViewsFromAst();
-                        self->AppendConsole(L"[AST] Saved [Feature." + rsw::Utf8ToWide(fid) + L"] properties & description.\r\n");
+                        self->AppendConsole(L"[AST] Saved [Feature." + rsw::Utf8ToWide(fid) + L"] (" +
+                                            rsw::Utf8ToWide(rsw::FeatureInclusionBadge(tier)) + L").\r\n");
                         return 0;
                     }
                     case IDC_FT_DELETE_BTN: {
@@ -3652,8 +3676,11 @@ public:
                         const std::string fid = ReadCtlUtf8(self->hFeatId);
                         if (fid.empty()) return 0;
                         self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
-                        self->astDoc.SetString("Feature", fid, "Title", ReadCtlUtf8(self->hFeatTitle));
-                        self->astDoc.SetString("Feature", fid, "Level", ReadCtlUtf8(self->hFeatLevel));
+                        const int tierIdx = std::clamp(static_cast<int>(::SendMessageW(self->hFeatLevel, CB_GETCURSEL, 0, 0)), 0, 3);
+                        const auto tier   = static_cast<rsw::FeatureInclusionTier>(tierIdx);
+                        self->astDoc.SetString("Feature", fid, "Title",     ReadCtlUtf8(self->hFeatTitle));
+                        self->astDoc.SetString("Feature", fid, "Inclusion", std::string(rsw::FeatureInclusionToken(tier)));
+                        RemoveAstKey(self->astDoc, "Feature", fid, "Level");
                         const std::string par = ReadCtlUtf8(self->hFeatParent);
                         if (!par.empty() && !rsw::EqualsIgnoreCase(par, fid)) {
                             self->astDoc.SetString("Feature", fid, "Parent", par);

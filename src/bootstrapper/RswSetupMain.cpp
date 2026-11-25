@@ -1752,7 +1752,9 @@ public:
         msiProps += wantDesktopSc ? L" DESKTOP_SHORTCUT=1" : L" DESKTOP_SHORTCUT=0";
         msiProps += wantFileAssoc ? L" REGISTER_ASSOC=1"   : L" REGISTER_ASSOC=0";
         if (selectedAction == SelectedAction::InstallCompact) {
-            msiProps += L" ADDLOCAL=Main";
+            // Minimal / Compact Setup installs all features with `Inclusion = minimal` (`Level <= 20`)
+            // while skipping `typical` (`Level = 50`) and `complete` (`Level = 150`) extras!
+            msiProps += L" INSTALLLEVEL=20";
         } else if ((selectedAction == SelectedAction::InstallCustom ||
                     selectedAction == SelectedAction::MaintModify) &&
                    !featureNodes.empty()) {

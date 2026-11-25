@@ -39,8 +39,8 @@ BEGIN
 END
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,4,3,0
- PRODUCTVERSION 0,4,3,0
+ FILEVERSION 0,4,4,0
+ PRODUCTVERSION 0,4,4,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -53,12 +53,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "RaggieSoft"
             VALUE "FileDescription",  "RaggieSoft MSI Prism — Native 64-Bit MSI, MSM, MST & MSP Inspector"
-            VALUE "FileVersion",      "0.4.3.0"
+            VALUE "FileVersion",      "0.4.4.0"
             VALUE "InternalName",     "msiprism"
             VALUE "LegalCopyright",   "Copyright (c) 2026 Michael P. Ragsdale / RaggieSoft (MIT License)"
             VALUE "OriginalFilename", "msiprism.exe"
             VALUE "ProductName",      "RaggieSoft Installer Studio"
-            VALUE "ProductVersion",   "0.4.3"
+            VALUE "ProductVersion",   "0.4.4"
         END
     END
     BLOCK "VarFileInfo"
