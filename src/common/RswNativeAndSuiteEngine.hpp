@@ -49,6 +49,7 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shobjidl.h>
+#include <tlhelp32.h>
 
 #include <algorithm>
 #include <atomic>
@@ -140,13 +141,18 @@ struct NativeOrSfxManifest {
     bool          offerLaunchOnFinish   = true;
     std::uint64_t uncompressedBytes     = 0;
 
-    // `[SFX]` post-extraction options
+    // `[SFX]` post-extraction & Software Installation `%TEMP%` wrapper options
     std::string   postExtractRun;
     std::string   postExtractArgs;
     std::string   postExtractOpen;
     bool          extractToTemp         = false;
     bool          allowChangeFolder     = true;
     bool          silentOverwrite       = true;
+    bool          cleanupTempAfterRun   = false;
+    std::string   waitMode              = "auto"; // `auto` | `none` | `direct` | `job_tree` | `process_name`
+    std::string   waitForProcess;                 // e.g. `_ISDEL.EXE; _INS*._MP; setup-worker.exe`
+    int           waitSpawnGraceMs      = 1500;
+    bool          autoStartExtract      = false;
 
     std::vector<NativeFolderRule>    folders;
     std::vector<NativeShortcutRule>  shortcuts;
@@ -447,7 +453,12 @@ inline std::string SerializeNativeOrSfxManifestIni(const NativeOrSfxManifest& m)
         << "PostExtractOpen="       << EscapeSingleLine(m.postExtractOpen) << "\n"
         << "ExtractToTemp="         << (m.extractToTemp ? "true" : "false") << "\n"
         << "AllowChangeFolder="     << (m.allowChangeFolder ? "true" : "false") << "\n"
-        << "SilentOverwrite="       << (m.silentOverwrite ? "true" : "false") << "\n";
+        << "SilentOverwrite="       << (m.silentOverwrite ? "true" : "false") << "\n"
+        << "CleanupTempAfterRun="   << (m.cleanupTempAfterRun ? "true" : "false") << "\n"
+        << "WaitMode="              << EscapeSingleLine(m.waitMode) << "\n"
+        << "WaitForProcess="        << EscapeSingleLine(m.waitForProcess) << "\n"
+        << "WaitSpawnGraceMs="      << m.waitSpawnGraceMs << "\n"
+        << "AutoStartExtract="      << (m.autoStartExtract ? "true" : "false") << "\n";
 
     out << "FolderCount=" << m.folders.size() << "\n";
     for (std::size_t i = 0; i < m.folders.size(); ++i) {
@@ -537,9 +548,16 @@ inline NativeOrSfxManifest ParseNativeOrSfxManifestIni(std::string_view text) {
     m.postExtractRun    = getS("PostExtractRun");
     m.postExtractArgs   = getS("PostExtractArgs");
     m.postExtractOpen   = getS("PostExtractOpen");
-    m.extractToTemp     = EqualsIgnoreCase(getS("ExtractToTemp", "false"), "true");
-    m.allowChangeFolder = !EqualsIgnoreCase(getS("AllowChangeFolder", "true"), "false");
-    m.silentOverwrite   = !EqualsIgnoreCase(getS("SilentOverwrite", "true"), "false");
+    m.extractToTemp       = EqualsIgnoreCase(getS("ExtractToTemp", "false"), "true");
+    m.allowChangeFolder   = !EqualsIgnoreCase(getS("AllowChangeFolder", "true"), "false");
+    m.silentOverwrite     = !EqualsIgnoreCase(getS("SilentOverwrite", "true"), "false");
+    m.cleanupTempAfterRun = EqualsIgnoreCase(getS("CleanupTempAfterRun", "false"), "true");
+    m.waitMode            = AsciiLower(TrimAscii(getS("WaitMode", "auto")));
+    m.waitForProcess      = TrimAscii(getS("WaitForProcess"));
+    if (!kv["WaitSpawnGraceMs"].empty()) {
+        m.waitSpawnGraceMs = std::clamp(std::atoi(kv["WaitSpawnGraceMs"].c_str()), 0, 60000);
+    }
+    m.autoStartExtract    = EqualsIgnoreCase(getS("AutoStartExtract", "false"), "true");
 
     const int nFold = std::clamp(std::atoi(kv["FolderCount"].c_str()), 0, 512);
     for (int i = 0; i < nFold; ++i) {
@@ -1373,6 +1391,358 @@ inline bool IsInstalledAppHiddenAsSuiteComponent(std::wstring_view uninstallKeyL
         }
     }
     return false;
+}
+
+// ================================================================================
+// 4. `[SFX]` SOFTWARE INSTALLATION `%TEMP%` WRAPPER, `_ISDEL` WATCHER & AUTO-CLEANUP
+// ================================================================================
+namespace sfx_wait_detail {
+
+/// Case-insensitive ASCII/UTF-16 wildcard matcher (`*` and `?`) for `WaitForProcess`
+/// entries like `_ISDEL.EXE`, `_INS*._MP`, or `setup-*.exe`.
+inline bool WildcardMatchWideInsensitive(std::wstring_view pattern, std::wstring_view text) noexcept {
+    std::size_t p = 0, t = 0;
+    std::size_t starIdx = std::wstring_view::npos, matchIdx = 0;
+    auto low = [](wchar_t c) noexcept -> wchar_t {
+        return (c >= L'A' && c <= L'Z') ? static_cast<wchar_t>(c - L'A' + L'a') : c;
+    };
+    while (t < text.size()) {
+        if (p < pattern.size() && (pattern[p] == L'?' || low(pattern[p]) == low(text[t]))) {
+            ++p;
+            ++t;
+        } else if (p < pattern.size() && pattern[p] == L'*') {
+            starIdx  = p++;
+            matchIdx = t;
+        } else if (starIdx != std::wstring_view::npos) {
+            p = starIdx + 1;
+            t = ++matchIdx;
+        } else {
+            return false;
+        }
+    }
+    while (p < pattern.size() && pattern[p] == L'*') ++p;
+    return p == pattern.size();
+}
+
+/// Parses a comma- or semicolon-separated `WaitForProcess` string (`"_ISDEL.EXE; _INS*._MP"`)
+/// into normalized filename patterns.
+inline std::vector<std::wstring> ParseWaitProcessPatterns(std::string_view rawList) {
+    std::vector<std::wstring> out;
+    std::string cur;
+    auto flushOne = [&]() {
+        std::string trimmed = TrimAscii(cur);
+        cur.clear();
+        if (trimmed.empty()) return;
+        const auto slash = trimmed.find_last_of("\\/");
+        if (slash != std::string::npos) trimmed.erase(0, slash + 1);
+        if (!trimmed.empty()) out.push_back(Utf8ToWide(trimmed));
+    };
+    for (char ch : rawList) {
+        if (ch == ';' || ch == ',') flushOne();
+        else cur.push_back(ch);
+    }
+    flushOne();
+    return out;
+}
+
+/// Scans running processes (`TH32CS_SNAPPROCESS`) for:
+///   1. Any process whose executable filename matches `waitPatterns` (e.g. `_ISDEL.EXE`, `_INS*._MP`), OR
+///   2. When `checkTempDirImages == true`, any process whose full image path still lives inside `tempDir`!
+inline bool FindActiveCompanionOrTempProcess(
+    const std::filesystem::path& tempDir,
+    const std::vector<std::wstring>& waitPatterns,
+    bool checkTempDirImages,
+    std::wstring& outMatchedProcessName)
+{
+    outMatchedProcessName.clear();
+    if (waitPatterns.empty() && !checkTempDirImages) return false;
+
+    std::error_code ec;
+    std::wstring normTempPrefix;
+    if (checkTempDirImages && !tempDir.empty()) {
+        normTempPrefix = tempDir.lexically_normal().wstring();
+        if (!normTempPrefix.empty() && normTempPrefix.back() != L'\\') {
+            normTempPrefix.push_back(L'\\');
+        }
+    }
+
+    const DWORD selfPid = ::GetCurrentProcessId();
+    HANDLE hSnap = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap == INVALID_HANDLE_VALUE) return false;
+
+    PROCESSENTRY32W pe{};
+    pe.dwSize = sizeof(pe);
+    bool found = false;
+    if (::Process32FirstW(hSnap, &pe)) {
+        do {
+            if (pe.th32ProcessID == 0 || pe.th32ProcessID == selfPid) continue;
+            const std::wstring_view exeLeaf(pe.szExeFile);
+
+            for (const auto& pat : waitPatterns) {
+                if (WildcardMatchWideInsensitive(pat, exeLeaf)) {
+                    outMatchedProcessName = pe.szExeFile;
+                    found = true;
+                    break;
+                }
+            }
+            if (found) break;
+
+            if (!normTempPrefix.empty()) {
+                HANDLE hProc = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
+                if (hProc) {
+                    wchar_t imgBuf[MAX_PATH * 4]{};
+                    DWORD cch = static_cast<DWORD>(std::size(imgBuf));
+                    if (::QueryFullProcessImageNameW(hProc, 0, imgBuf, &cch) && cch > normTempPrefix.size()) {
+                        const std::wstring normImg = std::filesystem::path(imgBuf).lexically_normal().wstring();
+                        if (normImg.size() > normTempPrefix.size() &&
+                            _wcsnicmp(normImg.c_str(), normTempPrefix.c_str(), normTempPrefix.size()) == 0) {
+                            outMatchedProcessName = pe.szExeFile;
+                            found = true;
+                        }
+                    }
+                    ::CloseHandle(hProc);
+                    if (found) break;
+                }
+            }
+        } while (::Process32NextW(hSnap, &pe));
+    }
+    ::CloseHandle(hSnap);
+    return found;
+}
+
+/// Safely deletes an isolated `%TEMP%` staging directory (`CleanupTempAfterRun = true`)
+/// ONLY after verifying `tempDir` is strictly a child folder inside the OS `%TEMP%` root!
+inline bool CleanupSfxTempStagingDirectory(const std::filesystem::path& tempDir) noexcept {
+    std::error_code ec;
+    if (tempDir.empty() || !std::filesystem::exists(tempDir, ec)) return true;
+
+    const auto osTempRoot = std::filesystem::temp_directory_path(ec).lexically_normal();
+    if (osTempRoot.empty()) return false;
+
+    std::wstring rootPfx = osTempRoot.wstring();
+    if (!rootPfx.empty() && rootPfx.back() != L'\\') rootPfx.push_back(L'\\');
+    const std::wstring cand = tempDir.lexically_normal().wstring();
+
+    // Belt-and-suspenders safety guard: NEVER auto-delete `%TEMP%` itself or any path outside `%TEMP%\...`!
+    if (cand.size() <= rootPfx.size() || _wcsnicmp(cand.c_str(), rootPfx.c_str(), rootPfx.size()) != 0) {
+        return false;
+    }
+
+    auto stripReadOnlyAttributes = [&]() {
+        for (const auto& de : std::filesystem::recursive_directory_iterator(tempDir, ec)) {
+            const std::wstring p = de.path().wstring();
+            const DWORD attrs = ::GetFileAttributesW(p.c_str());
+            if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_READONLY) != 0) {
+                ::SetFileAttributesW(p.c_str(), attrs & ~FILE_ATTRIBUTE_READONLY);
+            }
+        }
+    };
+
+    for (int attempt = 0; attempt < 10; ++attempt) {
+        stripReadOnlyAttributes();
+        ec.clear();
+        std::filesystem::remove_all(tempDir, ec);
+        if (!std::filesystem::exists(tempDir, ec)) {
+            return true;
+        }
+        ::Sleep(120);
+    }
+    return !std::filesystem::exists(tempDir, ec);
+}
+
+} // namespace sfx_wait_detail
+
+/// Launches `[SFX] PostExtractOpen` / `PostExtractRun`, optionally tracks the entire child process
+/// tree (Win32 Job Object + `%TEMP%` image scanner) AND explicit companion cleanup processes
+/// (`WaitForProcess`, such as `_ISDEL.EXE` / `_INS*._MP`), and deletes `%TEMP%` staging afterward!
+inline bool ExecuteSfxLaunchWaitAndCleanup(
+    const NativeOrSfxManifest& m,
+    const std::filesystem::path& targetDir,
+    std::atomic<bool>* cancelFlag,
+    const std::function<void(const std::wstring& status)>& onStatus,
+    DWORD& outChildExitCode,
+    std::string& outError)
+{
+    outChildExitCode = 0;
+    std::error_code ec;
+
+    if (!m.postExtractOpen.empty()) {
+        const auto docPath = (targetDir / Utf8ToWide(m.postExtractOpen)).lexically_normal();
+        if (std::filesystem::exists(docPath, ec)) {
+            SHELLEXECUTEINFOW sei{sizeof(sei)};
+            sei.fMask        = SEE_MASK_FLAG_NO_UI;
+            sei.lpVerb       = L"open";
+            const std::wstring wDoc = docPath.wstring();
+            const std::wstring wDir = docPath.parent_path().wstring();
+            sei.lpFile       = wDoc.c_str();
+            sei.lpDirectory  = wDir.c_str();
+            sei.nShow        = SW_SHOWNORMAL;
+            ::ShellExecuteExW(&sei);
+        }
+    }
+
+    const std::string exeRel = !m.postExtractRun.empty() ? m.postExtractRun : m.mainExecutable;
+    if (exeRel.empty()) {
+        if (m.mode == "sfx" && m.extractToTemp && m.cleanupTempAfterRun) {
+            sfx_wait_detail::CleanupSfxTempStagingDirectory(targetDir);
+        }
+        return true;
+    }
+
+    const auto exePath = (targetDir / Utf8ToWide(exeRel)).lexically_normal();
+    if (!std::filesystem::exists(exePath, ec)) {
+        outError = "Post-extract executable not found: " + WideToUtf8(exePath.wstring());
+        return false;
+    }
+
+    std::string effWait = AsciiLower(TrimAscii(m.waitMode));
+    if (effWait.empty() || effWait == "auto") {
+        effWait = (m.cleanupTempAfterRun || !m.waitForProcess.empty()) ? "job_tree" : "none";
+    }
+
+    // Fire-and-forget mode for normal portable extractors (`CleanupTempAfterRun = false` & `WaitMode = none`)
+    if (effWait == "none" && !m.cleanupTempAfterRun) {
+        const std::wstring wExe  = exePath.wstring();
+        const std::wstring wArgs = Utf8ToWide(m.postExtractArgs);
+        const std::wstring wDir  = exePath.parent_path().wstring();
+        ::ShellExecuteW(nullptr, L"open", wExe.c_str(), wArgs.empty() ? nullptr : wArgs.c_str(), wDir.c_str(), SW_SHOWNORMAL);
+        return true;
+    }
+
+    if (onStatus) {
+        onStatus(L"Running " + exePath.filename().wstring() + L"...");
+    }
+
+    // Create a Win32 Job Object so multi-stage setup bootstrappers that spawn child workers and exit
+    // early keep `ActiveProcesses > 0` until the entire child tree completes!
+    HANDLE hJob = ::CreateJobObjectW(nullptr, nullptr);
+    if (hJob) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli{};
+        jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+        ::SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli));
+    }
+
+    const std::string extLow = AsciiLower(WideToUtf8(exePath.extension().wstring()));
+    const std::wstring workDir = exePath.parent_path().wstring();
+    const std::wstring wArgs   = Utf8ToWide(m.postExtractArgs);
+    HANDLE hChildProc = nullptr;
+
+    if (extLow == ".msi") {
+        std::wstring cmd = L"msiexec.exe /i \"" + exePath.wstring() + L"\"" + (wArgs.empty() ? L"" : (L" " + wArgs));
+        STARTUPINFOW si{sizeof(si)};
+        PROCESS_INFORMATION pi{};
+        if (::CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, workDir.c_str(), &si, &pi)) {
+            ::CloseHandle(pi.hThread);
+            hChildProc = pi.hProcess;
+        }
+    } else if (extLow == ".cmd" || extLow == ".bat") {
+        std::wstring cmd = L"cmd.exe /c \"\"" + exePath.wstring() + L"\"" + (wArgs.empty() ? L"" : (L" " + wArgs)) + L"\"";
+        STARTUPINFOW si{sizeof(si)};
+        PROCESS_INFORMATION pi{};
+        if (::CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, workDir.c_str(), &si, &pi)) {
+            ::CloseHandle(pi.hThread);
+            hChildProc = pi.hProcess;
+        }
+    } else {
+        std::wstring cmd = L"\"" + exePath.wstring() + L"\"" + (wArgs.empty() ? L"" : (L" " + wArgs));
+        STARTUPINFOW si{sizeof(si)};
+        PROCESS_INFORMATION pi{};
+        if (::CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, workDir.c_str(), &si, &pi)) {
+            ::CloseHandle(pi.hThread);
+            hChildProc = pi.hProcess;
+        } else {
+            SHELLEXECUTEINFOW sei{sizeof(sei)};
+            sei.fMask        = SEE_MASK_NOCLOSEPROCESS;
+            sei.lpVerb       = L"open";
+            const std::wstring wExe = exePath.wstring();
+            sei.lpFile       = wExe.c_str();
+            sei.lpParameters = wArgs.empty() ? nullptr : wArgs.c_str();
+            sei.lpDirectory  = workDir.c_str();
+            sei.nShow        = SW_SHOWNORMAL;
+            if (::ShellExecuteExW(&sei)) {
+                hChildProc = sei.hProcess;
+            }
+        }
+    }
+
+    if (!hChildProc) {
+        if (hJob) ::CloseHandle(hJob);
+        outError = "Failed launching post-extract installer '" + WideToUtf8(exePath.filename().wstring()) + "'.";
+        return false;
+    }
+
+    if (hJob) {
+        (void)::AssignProcessToJobObject(hJob, hChildProc);
+    }
+
+    // Phase 1: Wait for the primary `PostExtractRun` process handle
+    while (::WaitForSingleObject(hChildProc, 100) == WAIT_TIMEOUT) {
+        if (cancelFlag && cancelFlag->load()) break;
+    }
+    ::GetExitCodeProcess(hChildProc, &outChildExitCode);
+    ::CloseHandle(hChildProc);
+
+    // Phase 2: Wait for Job Object descendants, `%TEMP%`-resident child processes, AND explicit
+    //          companion processes (`WaitForProcess`, e.g. `_ISDEL.EXE` / `_INS*._MP`)!
+    const auto waitPatterns    = sfx_wait_detail::ParseWaitProcessPatterns(m.waitForProcess);
+    const bool watchJobOrTemp  = (effWait == "job_tree");
+    const bool watchCompanions = (effWait == "job_tree" || effWait == "process_name" || !waitPatterns.empty());
+
+    if ((watchJobOrTemp || watchCompanions) && !(cancelFlag && cancelFlag->load())) {
+        const ULONGLONG graceMs = static_cast<ULONGLONG>(std::clamp(m.waitSpawnGraceMs, 0, 60000));
+        ULONGLONG idleSinceTick = 0;
+
+        for (;;) {
+            if (cancelFlag && cancelFlag->load()) break;
+
+            DWORD jobActiveCount = 0;
+            if (watchJobOrTemp && hJob) {
+                JOBOBJECT_BASIC_ACCOUNTING_INFORMATION acct{};
+                if (::QueryInformationJobObject(hJob, JobObjectBasicAccountingInformation, &acct, sizeof(acct), nullptr)) {
+                    jobActiveCount = acct.ActiveProcesses;
+                }
+            }
+
+            std::wstring matchedProcName;
+            const bool procStillAlive = sfx_wait_detail::FindActiveCompanionOrTempProcess(
+                targetDir,
+                waitPatterns,
+                watchJobOrTemp && m.extractToTemp,
+                matchedProcName);
+
+            if (jobActiveCount > 0 || procStillAlive) {
+                idleSinceTick = 0;
+                if (onStatus) {
+                    const std::wstring label = !matchedProcName.empty()
+                        ? (L"Waiting for " + matchedProcName + L" to finish...")
+                        : L"Waiting for setup child processes to finish...";
+                    onStatus(label);
+                }
+            } else {
+                const ULONGLONG now = ::GetTickCount64();
+                if (idleSinceTick == 0) {
+                    idleSinceTick = now;
+                }
+                if (now - idleSinceTick >= graceMs) {
+                    break;
+                }
+            }
+            ::Sleep(100);
+        }
+    }
+
+    if (hJob) {
+        ::CloseHandle(hJob);
+    }
+
+    // Phase 3: Remove isolated `%TEMP%` staging directory once all setup & `_ISDEL` processes exit!
+    if (m.mode == "sfx" && m.extractToTemp && m.cleanupTempAfterRun && !(cancelFlag && cancelFlag->load())) {
+        if (onStatus) {
+            onStatus(L"Cleaning up temporary setup files...");
+        }
+        sfx_wait_detail::CleanupSfxTempStagingDirectory(targetDir);
+    }
+    return true;
 }
 
 } // namespace rsw

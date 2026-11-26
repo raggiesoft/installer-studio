@@ -1278,6 +1278,86 @@ int wmain() {
                   "v0.6.0 PackageKind=sfx builds from .ZIP archive, stamps selectable UAC levels, and extracts byte-for-byte",
                   zipErr);
 
+            // (3B) Software Installation `%TEMP%` Self-Extractor + `_ISDEL.EXE` Companion Process Wait + Auto-Cleanup!
+            //      `launcher-stub.cmd` spawns `_isdel.exe` (`--sleep-ms 550 --copy-check <tempReadMe> <proofOut>`)
+            //      in the background and EXITS IMMEDIATELY. If the SFX wiped `%TEMP%` prematurely when `launcher-stub.cmd`
+            //      exited, `<tempReadMe>` would already be gone when `_isdel.exe` woke up at 550ms! Waiting on
+            //      `WaitForProcess = _isdel.exe` guarantees `<proofOut>` succeeds AND `%TEMP%\rsw-sfx-...` is deleted afterward!
+            {
+                const auto isdelProofFile   = testWorkDir / L"isdel-proof-copied.txt";
+                const auto tempStageRecord  = testWorkDir / L"recorded-temp-stage-dir.txt";
+                const auto isdelZipPath     = testWorkDir / L"sfx-temp-installer.zip";
+                std::vector<std::uint8_t> helperExeBytes;
+                std::string hRdErr;
+                const bool gotHelperExe = rsw::ReadBinaryFileBytes(payloadToUse, helperExeBytes, hRdErr);
+
+                std::ostringstream stubBatch;
+                stubBatch << "@echo off\r\n"
+                          << "echo %~dp0> \"" << rsw::WideToUtf8(tempStageRecord.wstring()) << "\"\r\n"
+                          << "start \"\" \"%~dp0_isdel.exe\" --sleep-ms 550 --copy-check \"%~dp0ReadMe.txt\" \""
+                          << rsw::WideToUtf8(isdelProofFile.wstring()) << "\"\r\n"
+                          << "exit /b 0\r\n";
+                const std::string batchStr = stubBatch.str();
+
+                std::string izErr;
+                const bool izBuilt = gotHelperExe && rsw::WriteSimpleZipArchive({
+                    {"ReadMe.txt", std::vector<std::uint8_t>(zipTxtA.begin(), zipTxtA.end())},
+                    {"_isdel.exe", helperExeBytes},
+                    {"launcher-stub.cmd", std::vector<std::uint8_t>(batchStr.begin(), batchStr.end())}
+                }, isdelZipPath, izErr);
+
+                std::ostringstream tempSfxMan;
+                tempSfxMan << "[Package]\nName = TempSetupWrapper\nVersion = 0.6.0\nManufacturer = RaggieSoft\n"
+                           << "PackageKind = sfx\nRequestedExecutionLevel = asInvoker\n"
+                           << "OutputName = temp-setup-wrapper\nOutputDir = " << rsw::WideToUtf8((testWorkDir / L"sfx-out").wstring()) << "\n"
+                           << "[SFX]\nExtractToTemp = true\nAllowChangeFolder = false\nCleanupTempAfterRun = true\n"
+                           << "PostExtractRun = launcher-stub.cmd\n"
+                           << "WaitMode = process_name\nWaitForProcess = _ISDEL.EXE\nWaitSpawnGraceMs = 300\n"
+                           << "[UI]\nWizardLayout = simple\n"
+                           << "[Payload.Bundle]\nSource = " << rsw::WideToUtf8(isdelZipPath.wstring()) << "\n";
+                auto tempSfxDoc = rsw::ParseManifestText(tempSfxMan.str(), testWorkDir / L"temp-sfx.rsip");
+                rsw::CompiledMsiSummary tempSfxSum{};
+                std::filesystem::path tempSfxExe;
+                std::string tsErr;
+                const bool tempSfxBuilt = izBuilt &&
+                                          rsw::ValidateManifestDocument(tempSfxDoc, hostArch).IsOk() &&
+                                          rsw::PackageNativeOrSfxExecutable(tempSfxDoc, hostArch, binDir, tempSfxSum, tempSfxExe, tsErr);
+
+                bool tempSfxRanOk = false;
+                if (tempSfxBuilt) {
+                    std::wstring cmd = L"\"" + tempSfxExe.wstring() + L"\" /s";
+                    STARTUPINFOW si{sizeof(si)};
+                    PROCESS_INFORMATION pi{};
+                    if (::CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+                        ::WaitForSingleObject(pi.hProcess, 20000);
+                        DWORD code = 1;
+                        ::GetExitCodeProcess(pi.hProcess, &code);
+                        ::CloseHandle(pi.hThread);
+                        ::CloseHandle(pi.hProcess);
+                        tempSfxRanOk = (code == 0);
+                    }
+                }
+
+                std::vector<std::uint8_t> proofBytes, stageDirBytes;
+                const bool proofCopiedBeforeCleanup =
+                    tempSfxRanOk &&
+                    rsw::ReadBinaryFileBytes(isdelProofFile, proofBytes, tsErr) &&
+                    std::string(proofBytes.begin(), proofBytes.end()) == zipTxtA;
+
+                bool tempFolderCleanedUp = false;
+                if (rsw::ReadBinaryFileBytes(tempStageRecord, stageDirBytes, tsErr)) {
+                    std::string stageStr = rsw::TrimAscii(std::string(stageDirBytes.begin(), stageDirBytes.end()));
+                    while (!stageStr.empty() && (stageStr.back() == '\\' || stageStr.back() == '/')) stageStr.pop_back();
+                    if (!stageStr.empty()) {
+                        tempFolderCleanedUp = !std::filesystem::exists(std::filesystem::path(rsw::Utf8ToWide(stageStr)), ec);
+                    }
+                }
+
+                Check(tempSfxBuilt && proofCopiedBeforeCleanup && tempFolderCleanedUp,
+                      "v0.6.0 SFX Software Installation mode extracts to %TEMP%, waits for _ISDEL.EXE companion process, & auto-cleans %TEMP%",
+                      tsErr);
+            }
+
             // (4) Granular `.rswpak` On-Demand Feature Packs (`SHA-256` + `WinVerifyTrust` tamper rejection!)
             const auto pakOutDir = testWorkDir / L"pak-out";
             std::ostringstream pakMan;

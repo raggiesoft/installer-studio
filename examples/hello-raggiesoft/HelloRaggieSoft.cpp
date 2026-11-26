@@ -17,6 +17,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <shellapi.h>
+#include <cwchar>
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "comctl32.lib")
@@ -26,13 +27,34 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     int argc = 0;
     LPWSTR* argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
     bool smokeTest = false;
+    DWORD sleepMs  = 0;
+    const wchar_t* copySrc = nullptr;
+    const wchar_t* copyDst = nullptr;
     if (argv) {
         for (int i = 1; i < argc; ++i) {
-            if (::lstrcmpW(argv[i], L"--smoke-test") == 0) smokeTest = true;
+            if (::lstrcmpW(argv[i], L"--smoke-test") == 0) {
+                smokeTest = true;
+            } else if (::lstrcmpW(argv[i], L"--sleep-ms") == 0 && i + 1 < argc) {
+                sleepMs = static_cast<DWORD>(std::wcstoul(argv[++i], nullptr, 10));
+            } else if (::lstrcmpW(argv[i], L"--copy-check") == 0 && i + 2 < argc) {
+                copySrc = argv[i + 1];
+                copyDst = argv[i + 2];
+                i += 2;
+            }
         }
+    }
+    if (sleepMs > 0) {
+        ::Sleep(sleepMs);
+    }
+    if (copySrc && copyDst) {
+        const BOOL copied = ::CopyFileW(copySrc, copyDst, FALSE);
+        if (argv) ::LocalFree(argv);
+        return copied ? 0 : 2;
+    }
+    if (argv) {
         ::LocalFree(argv);
     }
-    if (smokeTest) {
+    if (smokeTest || sleepMs > 0) {
         return 0;
     }
 

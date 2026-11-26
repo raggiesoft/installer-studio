@@ -79,7 +79,7 @@ inline std::filesystem::path ComputeDefaultNativeOrSfxPath(const NativeOrSfxMani
     if (m.mode == "sfx") {
         if (m.extractToTemp) {
             return (std::filesystem::temp_directory_path(ec) /
-                    (selfPath.stem().wstring() + L"-" + std::to_wstring(::GetCurrentProcessId()))).lexically_normal();
+                    (L"rsw-sfx-" + selfPath.stem().wstring() + L"-" + std::to_wstring(::GetCurrentProcessId()))).lexically_normal();
         }
         if (!m.defaultSubdir.empty()) {
             std::filesystem::path sub(Utf8ToWide(m.defaultSubdir));
@@ -104,32 +104,9 @@ inline void ExecutePostExtractOrFinishActions(
     const NativeOrSfxManifest& m,
     const std::filesystem::path& targetDir) noexcept
 {
-    std::error_code ec;
-    if (!m.postExtractOpen.empty()) {
-        const auto docPath = (targetDir / Utf8ToWide(m.postExtractOpen)).lexically_normal();
-        if (std::filesystem::exists(docPath, ec)) {
-            SHELLEXECUTEINFOW sei{sizeof(sei)};
-            sei.fMask        = SEE_MASK_FLAG_NO_UI; // Gracefully ignore if no compatible viewer is installed!
-            sei.lpVerb       = L"open";
-            const std::wstring wDoc = docPath.wstring();
-            const std::wstring wDir = docPath.parent_path().wstring();
-            sei.lpFile       = wDoc.c_str();
-            sei.lpDirectory  = wDir.c_str();
-            sei.nShow        = SW_SHOWNORMAL;
-            ::ShellExecuteExW(&sei);
-        }
-    }
-
-    const std::string exeRel = !m.postExtractRun.empty() ? m.postExtractRun : m.mainExecutable;
-    if (!exeRel.empty()) {
-        const auto exePath = (targetDir / Utf8ToWide(exeRel)).lexically_normal();
-        if (std::filesystem::exists(exePath, ec)) {
-            const std::wstring wExe  = exePath.wstring();
-            const std::wstring wArgs = Utf8ToWide(m.postExtractArgs);
-            const std::wstring wDir  = exePath.parent_path().wstring();
-            ::ShellExecuteW(nullptr, L"open", wExe.c_str(), wArgs.empty() ? nullptr : wArgs.c_str(), wDir.c_str(), SW_SHOWNORMAL);
-        }
-    }
+    DWORD dummyCode = 0;
+    std::string dummyErr;
+    (void)ExecuteSfxLaunchWaitAndCleanup(m, targetDir, nullptr, nullptr, dummyCode, dummyErr);
 }
 
 /// Executes an elevated `Engine = native` worker job (`--elevated-native-worker <job.ini>`) spawned
@@ -229,7 +206,9 @@ public:
     HFONT                 hFontBold   = nullptr;
     HFONT                 hFontBody   = nullptr;
 
+    static constexpr UINT_PTR kAutoStartTimerId = 77;
     std::filesystem::path targetDir;
+    DWORD                 childExitCode = 0;
     std::atomic<bool>     running{false};
     std::atomic<bool>     finished{false};
     std::atomic<bool>     cancelFlag{false};
@@ -246,6 +225,13 @@ public:
         }
     }
 
+    bool IsTempSoftwareInstallerMode() const noexcept {
+        return manifest.mode == "sfx" &&
+               manifest.extractToTemp &&
+               manifest.cleanupTempAfterRun &&
+               !manifest.postExtractRun.empty();
+    }
+
     bool NeedsAdminElevation() const noexcept {
         if (manifest.mode == "sfx") return false;
         if (!manifest.perMachine) return false;
@@ -253,6 +239,10 @@ public:
     }
 
     bool HasPostAction() const noexcept {
+        if (IsTempSoftwareInstallerMode()) {
+            // Software Installation SFX runs `PostExtractRun`, waits (incl. `_ISDEL`), and cleans `%TEMP%` inline!
+            return false;
+        }
         if (manifest.mode == "sfx") {
             return !manifest.postExtractRun.empty() || !manifest.postExtractOpen.empty();
         }
@@ -392,7 +382,7 @@ public:
             opts.externalPackSearchDir  = selfPath.parent_path();
 
             std::string err;
-            const bool ok = ExecuteNativeOrSfxTransaction(
+            bool ok = ExecuteNativeOrSfxTransaction(
                 manifest, pakPtr, pakSize, featurePacks, {}, opts, &cancelFlag,
                 [this](int perm, const std::wstring& st) {
                     {
@@ -402,6 +392,23 @@ public:
                     ::PostMessageW(hWnd, WM_SMP_PROGRESS, static_cast<WPARAM>(perm), 0);
                 },
                 err);
+
+            if (ok && IsTempSoftwareInstallerMode() && !cancelFlag.load()) {
+                ok = ExecuteSfxSoftwareInstallWaitAndCleanup(
+                    manifest,
+                    targetDir,
+                    &cancelFlag,
+                    [this](const std::wstring& waitSt) {
+                        {
+                            std::lock_guard<std::mutex> lk(mtx);
+                            statusText = waitSt;
+                        }
+                        ::PostMessageW(hWnd, WM_SMP_PROGRESS, 950, 0);
+                    },
+                    childExitCode,
+                    err);
+            }
+
             {
                 std::lock_guard<std::mutex> lk(mtx);
                 errorTextUtf8 = err;
@@ -475,8 +482,11 @@ public:
         switch (msg) {
             case WM_CREATE: {
                 HINSTANCE hInst = ::GetModuleHandleW(nullptr);
-                const bool isSfx = (self->manifest.mode == "sfx");
-                const wchar_t* dirCaption = isSfx ? L"E&xtract to folder:" : L"&Destination folder:";
+                const bool isSfx   = (self->manifest.mode == "sfx");
+                const bool tempInst = self->IsTempSoftwareInstallerMode();
+                const wchar_t* dirCaption = tempInst
+                    ? L"Temporary staging folder (cleaned up automatically after setup):"
+                    : (isSfx ? L"E&xtract to folder:" : L"&Destination folder:");
                 self->hDirLbl = ::CreateWindowExW(
                     0, L"STATIC", dirCaption, WS_CHILD | WS_VISIBLE,
                     0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SMP_DIR_LBL)), hInst, nullptr);
@@ -519,7 +529,18 @@ public:
                 ui::AttachAccessiblePushButtonSubclass(self->hBtnPrimary, &self->theme, true,  false);
                 ui::AttachAccessiblePushButtonSubclass(self->hBtnClose,   &self->theme, false, false);
                 self->LayoutControls();
+                if (self->manifest.autoStartExtract && self->exportShotDir.empty()) {
+                    ::SetTimer(hWnd, kAutoStartTimerId, 60, nullptr);
+                }
                 return 0;
+            }
+            case WM_TIMER: {
+                if (wParam == kAutoStartTimerId) {
+                    ::KillTimer(hWnd, kAutoStartTimerId);
+                    self->StartExtractionOrInstall();
+                    return 0;
+                }
+                break;
             }
             case WM_CTLCOLORSTATIC:
             case WM_CTLCOLOREDIT: {
@@ -574,6 +595,11 @@ public:
                 self->running.store(false);
                 if (wParam == 1) {
                     self->finished.store(true);
+                    if (self->IsTempSoftwareInstallerMode()) {
+                        ::SendMessageW(self->hProgBar, PBM_SETPOS, 1000, 0);
+                        ::DestroyWindow(hWnd);
+                        return 0;
+                    }
                     ::SendMessageW(self->hProgBar, PBM_SETPOS, 1000, 0);
                     ::SetWindowTextW(self->hStatusLbl,
                                      (self->manifest.mode == "sfx") ? L"Extraction completed successfully." : L"Installation completed successfully.");
@@ -745,8 +771,14 @@ inline int RunNativeOrSfxEntrypoint(
         if (!ExecuteNativeOrSfxTransaction(manifest, pakPtr, pakSz, featurePacks, {}, opts, nullptr, nullptr, err)) {
             return ERROR_INSTALL_FAILURE;
         }
-        if (runPostActions) {
-            ExecutePostExtractOrFinishActions(manifest, targetDir);
+        const bool isTempInstallerWrapper =
+            (manifest.mode == "sfx" && manifest.extractToTemp && manifest.cleanupTempAfterRun && !manifest.postExtractRun.empty());
+        if (runPostActions || isTempInstallerWrapper) {
+            DWORD childCode = 0;
+            if (!ExecuteSfxLaunchWaitAndCleanup(manifest, targetDir, nullptr, nullptr, childCode, err)) {
+                return ERROR_INSTALL_FAILURE;
+            }
+            return static_cast<int>(childCode);
         }
         return 0;
     }
@@ -816,6 +848,9 @@ inline int RunNativeOrSfxEntrypoint(
                         ::TranslateMessage(&msg);
                         ::DispatchMessageW(&msg);
                     }
+                }
+                if (app.IsTempSoftwareInstallerMode() && app.finished.load()) {
+                    exitRc = static_cast<int>(app.childExitCode);
                 }
             }
         }

@@ -1502,12 +1502,17 @@ inline bool PackageNativeOrSfxExecutable(
     nm.offerLaunchOnFinish   = outSummary.offerLaunchOnFinish;
     nm.uncompressedBytes     = uncompTotal;
 
-    nm.postExtractRun    = ExpandArchToken(doc.GetString("SFX", "", "PostExtractRun"), arch);
-    nm.postExtractArgs   = ExpandArchToken(doc.GetString("SFX", "", "PostExtractArgs"), arch);
-    nm.postExtractOpen   = ExpandArchToken(doc.GetString("SFX", "", "PostExtractOpen"), arch);
-    nm.extractToTemp     = doc.GetBool("SFX", "", "ExtractToTemp", false);
-    nm.allowChangeFolder = doc.GetBool("SFX", "", "AllowChangeFolder", true);
-    nm.silentOverwrite   = doc.GetBool("SFX", "", "SilentOverwrite", true);
+    nm.postExtractRun      = ExpandArchToken(doc.GetString("SFX", "", "PostExtractRun"), arch);
+    nm.postExtractArgs     = ExpandArchToken(doc.GetString("SFX", "", "PostExtractArgs"), arch);
+    nm.postExtractOpen     = ExpandArchToken(doc.GetString("SFX", "", "PostExtractOpen"), arch);
+    nm.extractToTemp       = doc.GetBool("SFX", "", "ExtractToTemp", false);
+    nm.allowChangeFolder   = doc.GetBool("SFX", "", "AllowChangeFolder", true);
+    nm.silentOverwrite     = doc.GetBool("SFX", "", "SilentOverwrite", true);
+    nm.cleanupTempAfterRun = doc.GetBool("SFX", "", "CleanupTempAfterRun", false);
+    nm.waitMode            = doc.GetString("SFX", "", "WaitMode", "auto");
+    nm.waitForProcess      = ExpandArchToken(doc.GetString("SFX", "", "WaitForProcess"), arch);
+    nm.waitSpawnGraceMs    = std::clamp(doc.GetInt("SFX", "", "WaitSpawnGraceMs", 1500), 0, 60000);
+    nm.autoStartExtract    = doc.GetBool("SFX", "", "AutoStartExtract", false);
 
     if (!isSfx) {
         for (const auto& flId : doc.GetNamedSectionIds("Folder")) {

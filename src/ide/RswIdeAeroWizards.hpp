@@ -1559,23 +1559,29 @@ inline bool RunPrerequisiteMsmAeroWizard(HWND hOwner, RswManifestDocument& ioDoc
 //           (`Engine = native` + `WizardLayout = simple` — 3 GUIDED PAGES!)
 // ================================================================================
 struct SfxSimpleWizardData {
-    int         modeIdx          = 0; // 0 = Self-Extracting .EXE (`sfx`), 1 = Simple Native Setup (`Engine = native`)
-    std::string productName      = "Portable App Pack";
-    std::string version          = "1.0.0";
-    std::string manufacturer     = "Sample Studio";
-    std::string sourcePath       = "..\\..\\bin\\$(ARCH)\\HelloRaggieSoft.exe";
+    // 0 = Portable Self-Extracting Archive .EXE (`sfx`)
+    // 1 = Self-Extractor for Software Installation (`%TEMP%` -> Run Setup & Wait -> Auto-Clean!)
+    // 2 = Simple Native Setup Project (`Engine = native` + `Uninstall.exe`)
+    int         modeIdx             = 0;
+    std::string productName         = "Portable App Pack";
+    std::string version             = "1.0.0";
+    std::string manufacturer        = "Sample Studio";
+    std::string sourcePath          = "..\\..\\bin\\$(ARCH)\\HelloRaggieSoft.exe";
 
-    int         execLevelIdx     = 0; // 0 = asInvoker, 1 = highestAvailable, 2 = requireAdministrator
-    bool        perUserScope     = true;
-    std::string defaultSubdir    = "Sample Studio\\Portable App Pack";
-    bool        extractToTemp    = false;
-    bool        allowChangeDir   = true;
+    int         execLevelIdx        = 0; // 0 = asInvoker, 1 = highestAvailable, 2 = requireAdministrator
+    bool        perUserScope        = true;
+    std::string defaultSubdir       = "Sample Studio\\Portable App Pack";
+    bool        extractToTemp       = false;
+    bool        allowChangeDir      = true;
 
-    std::string postRunOrMainExe = "HelloRaggieSoft.exe";
-    std::string postOpenDoc      = "";
-    bool        addShortcuts     = true;
-    bool        autoValidate     = true;
-    bool        completed        = false;
+    std::string postRunOrMainExe    = "HelloRaggieSoft.exe";
+    std::string waitForProcess      = "";
+    std::string postOpenDoc         = "";
+    bool        cleanupTempAfterRun = false;
+    bool        autoStartExtract    = false;
+    bool        addShortcuts        = true;
+    bool        autoValidate        = true;
+    bool        completed           = false;
 };
 
 struct SfxSimplePageCtx {
@@ -1596,7 +1602,8 @@ inline INT_PTR CALLBACK SfxSimpleAeroPageProc(HWND hDlg, UINT msg, WPARAM wParam
             b.AddLabel(L"Build an ultra-compact single-dialog Self-Extractor or Simple Native Setup:", 6, 4, 296, 14);
             b.AddLabel(L"Package &Mode:", 6, 22, 90);
             b.AddCombo(951, {
-                L"Self-Extracting Archive .EXE (PackageKind = sfx — Zero Installed Apps Entry)",
+                L"Self-Extracting Archive .EXE (Portable Folder / .ZIP Unpacker)",
+                L"Self-Extractor for Software Installation (%TEMP% -> Run Setup -> Auto-Clean)",
                 L"Simple Native Setup Project (Engine = native — Instant Rollback + Uninstall.exe)"
             }, d.modeIdx, 98, 20, 204);
             b.AddLabel(L"&Product / Archive:", 6, 46, 90); b.AddEdit(952, Utf8ToWide(d.productName),  98, 44, 204);
@@ -1607,7 +1614,7 @@ inline INT_PTR CALLBACK SfxSimpleAeroPageProc(HWND hDlg, UINT msg, WPARAM wParam
             b.AddButton(956, L".&ZIP/File...", 212, 125, 44);
             b.AddButton(957, L"&Folder...",    258, 125, 44);
         } else if (ctx->pageIndex == 1) {
-            b.AddLabel(L"Configure UAC execution level and destination folder behavior:", 6, 4, 296, 14);
+            b.AddLabel(L"Configure UAC execution level and destination / %TEMP% staging behavior:", 6, 4, 296, 14);
             b.AddLabel(L"&UAC Execution Level:", 6, 22, 296);
             b.AddCombo(961, {
                 L"asInvoker — Standard user token (Elevate only if needed; zero UAC for SFX / per-user)",
@@ -1621,16 +1628,20 @@ inline INT_PTR CALLBACK SfxSimpleAeroPageProc(HWND hDlg, UINT msg, WPARAM wParam
             }, d.perUserScope ? 0 : 1, 6, 72, 296);
             b.AddLabel(L"&Default Destination Subfolder:", 6, 98, 296);
             b.AddEdit(963, Utf8ToWide(d.defaultSubdir), 6, 110, 296);
-            b.AddCheck(964, L"Extract to %&TEMP% staging folder by default (SFX mode)", d.extractToTemp,  6, 128, 296);
-            b.AddCheck(965, L"Allow user to &browse / edit destination folder in dialog", d.allowChangeDir, 6, 146, 296);
+            b.AddCheck(964, L"Extract to isolated %&TEMP% staging folder (Software Installation SFX)", d.extractToTemp,  6, 128, 296);
+            b.AddCheck(965, L"Allow user to &browse / edit destination folder in dialog",              d.allowChangeDir, 6, 146, 296);
         } else {
-            b.AddLabel(L"Configure optional post-extract launch / document open & shortcuts:", 6, 4, 296, 14);
-            b.AddLabel(L"Optional &Executable to Launch (PostExtractRun / MainExecutable):", 6, 24, 296);
-            b.AddEdit(971, Utf8ToWide(d.postRunOrMainExe), 6, 36, 296);
-            b.AddLabel(L"Optional Bundled &Document to Open (PostExtractOpen, e.g. ReadMe.pdf / Guide.html):", 6, 62, 296);
-            b.AddEdit(972, Utf8ToWide(d.postOpenDoc), 6, 74, 296);
-            b.AddCheck(973, L"Create Start &Menu & Desktop shortcuts (Simple Native Setup mode)", d.addShortcuts, 6, 102, 296);
-            b.AddCheck(974, L"&Validate generated .rsip manifest immediately in IDE",             d.autoValidate, 6, 122, 296);
+            b.AddLabel(L"Configure setup launch, companion process wait (e.g. _ISDEL.EXE), & %TEMP% cleanup:", 6, 2, 296, 12);
+            b.AddLabel(L"&Executable / Setup to Run (PostExtractRun / MainExecutable):", 6, 16, 296);
+            b.AddEdit(971, Utf8ToWide(d.postRunOrMainExe), 6, 27, 296);
+            b.AddLabel(L"&Wait for Companion Process Before Cleanup (optional, e.g. _ISDEL.EXE; _INS*._MP):", 6, 44, 296);
+            b.AddEdit(975, Utf8ToWide(d.waitForProcess), 6, 55, 296);
+            b.AddLabel(L"Optional Bundled &Document to Open (PostExtractOpen, e.g. ReadMe.pdf):", 6, 72, 296);
+            b.AddEdit(972, Utf8ToWide(d.postOpenDoc), 6, 83, 296);
+            b.AddCheck(976, L"Auto-&clean %TEMP% folder after setup & companion processes finish", d.cleanupTempAfterRun, 6, 101, 296);
+            b.AddCheck(977, L"&Auto-start extraction immediately on launch (zero extra click)",    d.autoStartExtract,    6, 117, 296);
+            b.AddCheck(973, L"Create Start &Menu & Desktop shortcuts (Simple Native Setup mode)",  d.addShortcuts,        6, 133, 296);
+            b.AddCheck(974, L"&Validate generated .rsip manifest immediately in IDE",              d.autoValidate,        6, 149, 296);
         }
         return TRUE;
     }
@@ -1660,6 +1671,13 @@ inline INT_PTR CALLBACK SfxSimpleAeroPageProc(HWND hDlg, UINT msg, WPARAM wParam
     if (msg == WM_NOTIFY) {
         const auto* nm = reinterpret_cast<const NMHDR*>(lParam);
         if (nm->code == PSN_SETACTIVE) {
+            if (ctx->pageIndex == 1) {
+                ::CheckDlgButton(hDlg, 964, d.extractToTemp ? BST_CHECKED : BST_UNCHECKED);
+                ::CheckDlgButton(hDlg, 965, d.allowChangeDir ? BST_CHECKED : BST_UNCHECKED);
+            } else if (ctx->pageIndex == 2) {
+                ::CheckDlgButton(hDlg, 976, d.cleanupTempAfterRun ? BST_CHECKED : BST_UNCHECKED);
+                ::CheckDlgButton(hDlg, 977, d.autoStartExtract ? BST_CHECKED : BST_UNCHECKED);
+            }
             DWORD btns = PSWIZB_BACK | PSWIZB_NEXT;
             if (ctx->pageIndex == 0) btns = PSWIZB_NEXT;
             if (ctx->pageIndex == 2) btns = PSWIZB_BACK | PSWIZB_FINISH;
@@ -1669,6 +1687,7 @@ inline INT_PTR CALLBACK SfxSimpleAeroPageProc(HWND hDlg, UINT msg, WPARAM wParam
         }
         if (nm->code == PSN_WIZNEXT || nm->code == PSN_WIZFINISH) {
             if (ctx->pageIndex == 0) {
+                const int prevMode = d.modeIdx;
                 d.modeIdx      = GetComboIndex(hDlg, 951);
                 d.productName  = ReadDlgItemUtf8(hDlg, 952);
                 d.version      = ReadDlgItemUtf8(hDlg, 953);
@@ -1677,6 +1696,13 @@ inline INT_PTR CALLBACK SfxSimpleAeroPageProc(HWND hDlg, UINT msg, WPARAM wParam
                 if (!d.manufacturer.empty() && !d.productName.empty()) {
                     d.defaultSubdir = d.manufacturer + "\\" + d.productName;
                 }
+                if (d.modeIdx == 1 && prevMode != 1) {
+                    // Preset sensible defaults for Software Installation `%TEMP%` Self-Extractor!
+                    d.extractToTemp       = true;
+                    d.allowChangeDir      = false;
+                    d.cleanupTempAfterRun = true;
+                    d.autoStartExtract    = true;
+                }
             } else if (ctx->pageIndex == 1) {
                 d.execLevelIdx   = GetComboIndex(hDlg, 961);
                 d.perUserScope   = (GetComboIndex(hDlg, 962) == 0);
@@ -1684,11 +1710,14 @@ inline INT_PTR CALLBACK SfxSimpleAeroPageProc(HWND hDlg, UINT msg, WPARAM wParam
                 d.extractToTemp  = IsDlgItemChecked(hDlg, 964);
                 d.allowChangeDir = IsDlgItemChecked(hDlg, 965);
             } else {
-                d.postRunOrMainExe = ReadDlgItemUtf8(hDlg, 971);
-                d.postOpenDoc      = ReadDlgItemUtf8(hDlg, 972);
-                d.addShortcuts     = IsDlgItemChecked(hDlg, 973);
-                d.autoValidate     = IsDlgItemChecked(hDlg, 974);
-                d.completed        = true;
+                d.postRunOrMainExe    = ReadDlgItemUtf8(hDlg, 971);
+                d.waitForProcess      = ReadDlgItemUtf8(hDlg, 975);
+                d.postOpenDoc         = ReadDlgItemUtf8(hDlg, 972);
+                d.cleanupTempAfterRun = IsDlgItemChecked(hDlg, 976);
+                d.autoStartExtract    = IsDlgItemChecked(hDlg, 977);
+                d.addShortcuts        = IsDlgItemChecked(hDlg, 973);
+                d.autoValidate        = IsDlgItemChecked(hDlg, 974);
+                d.completed           = true;
             }
             ::SetWindowLongPtrW(hDlg, DWLP_MSGRESULT, 0);
             return TRUE;
@@ -1705,9 +1734,9 @@ inline bool RunSfxAndSimpleSetupAeroWizard(
 {
     SfxSimpleWizardData data{};
     const wchar_t* headers[3] = {
-        L"Step 1 of 3 — Self-Extracting .EXE or Simple Native Setup",
-        L"Step 2 of 3 — Selectable UAC Execution Level & Destination",
-        L"Step 3 of 3 — Post-Extract Launch, Document Open & Shortcuts"
+        L"Step 1 of 3 — Self-Extractor or Simple Native Setup",
+        L"Step 2 of 3 — UAC Execution Level & %TEMP% Staging",
+        L"Step 3 of 3 — Setup Launch, Wait Process & Auto-Cleanup"
     };
     SfxSimplePageCtx ctxs[3]{};
     LPARAM lParams[3]{};
@@ -1721,7 +1750,7 @@ inline bool RunSfxAndSimpleSetupAeroWizard(
         ui::GlassGlyph::Cube, ui::brand::kRaggieBlue, exportShotPath);
     if (!data.completed) return false;
 
-    const bool isSfx = (data.modeIdx == 0);
+    const bool isSfx = (data.modeIdx != 2);
     const char* execToks[] = {"asInvoker", "highestAvailable", "requireAdministrator"};
     const char* execLvl = execToks[std::clamp(data.execLevelIdx, 0, 2)];
 
@@ -1754,10 +1783,21 @@ inline bool RunSfxAndSimpleSetupAeroWizard(
         }
         s << "\r\n";
     } else {
-        s << "[SFX]\r\n"
-          << "DefaultExtractSubdir    = " << data.defaultSubdir << "\r\n"
-          << "ExtractToTemp           = " << (data.extractToTemp ? "true" : "false") << "\r\n"
-          << "AllowChangeFolder       = " << (data.allowChangeDir ? "true" : "false") << "\r\n";
+        const bool effTemp = data.extractToTemp || data.cleanupTempAfterRun;
+        s << "[SFX]\r\n";
+        if (!effTemp && !data.defaultSubdir.empty()) {
+            s << "DefaultExtractSubdir    = " << data.defaultSubdir << "\r\n";
+        }
+        s << "ExtractToTemp           = " << (effTemp ? "true" : "false") << "\r\n"
+          << "AllowChangeFolder       = " << (data.allowChangeDir ? "true" : "false") << "\r\n"
+          << "CleanupTempAfterRun     = " << (data.cleanupTempAfterRun ? "true" : "false") << "\r\n"
+          << "AutoStartExtract        = " << (data.autoStartExtract ? "true" : "false") << "\r\n";
+        if (data.cleanupTempAfterRun || !data.waitForProcess.empty()) {
+            s << "WaitMode                = " << (!data.waitForProcess.empty() ? "job_tree" : "auto") << "\r\n";
+        }
+        if (!data.waitForProcess.empty()) {
+            s << "WaitForProcess          = " << data.waitForProcess << "\r\n";
+        }
         if (!data.postRunOrMainExe.empty()) {
             s << "PostExtractRun          = " << data.postRunOrMainExe << "\r\n";
         }

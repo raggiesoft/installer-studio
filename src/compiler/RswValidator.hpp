@@ -571,6 +571,35 @@ inline ValidationReport ValidateManifestDocument(
                "MaxCabinetSizeKB must be 0 or >= 16 KB.");
     }
 
+    // Validate `[SFX]` Software Installation `%TEMP%` Auto-Cleanup & Companion Process Wait rules
+    const bool sfxCleanupTemp = doc.GetBool("SFX", "", "CleanupTempAfterRun", false);
+    const bool sfxExtractTemp = doc.GetBool("SFX", "", "ExtractToTemp", false);
+    const std::string sfxRun  = TrimAscii(doc.GetString("SFX", "", "PostExtractRun"));
+    const std::string sfxWaitMode = AsciiLower(TrimAscii(doc.GetString("SFX", "", "WaitMode", "auto")));
+    const std::string sfxWaitProc = TrimAscii(doc.GetString("SFX", "", "WaitForProcess"));
+    const int sfxGraceMs = doc.GetInt("SFX", "", "WaitSpawnGraceMs", 1500);
+
+    if (sfxCleanupTemp && !sfxExtractTemp) {
+        addErr("RSW061", 1, "SFX", "CleanupTempAfterRun",
+               "CleanupTempAfterRun = true requires ExtractToTemp = true so only an isolated %TEMP% staging directory is ever auto-deleted.");
+    }
+    if (sfxCleanupTemp && sfxRun.empty()) {
+        addErr("RSW062", 1, "SFX", "CleanupTempAfterRun",
+               "CleanupTempAfterRun = true requires a non-empty [SFX] PostExtractRun installer/executable to run before cleaning %TEMP%.");
+    }
+    if (sfxCleanupTemp && sfxWaitMode == "none") {
+        addErr("RSW063", 1, "SFX", "WaitMode",
+               "CleanupTempAfterRun = true cannot use WaitMode = none (temporary files would be deleted before PostExtractRun starts). Use 'auto', 'job_tree', 'process_name', or 'direct'.");
+    }
+    if (sfxWaitMode == "process_name" && sfxWaitProc.empty()) {
+        addErr("RSW064", 1, "SFX", "WaitForProcess",
+               "WaitMode = process_name requires [SFX] WaitForProcess (e.g. '_ISDEL.EXE; _INS*._MP').");
+    }
+    if (sfxGraceMs < 0 || sfxGraceMs > 60000) {
+        addErr("RSW065", 1, "SFX", "WaitSpawnGraceMs",
+               "WaitSpawnGraceMs must be between 0 and 60000 milliseconds.");
+    }
+
     // 5. WCAG 2.2 AA Brand Accent Contrast Verification (`[UI] AccentPrimaryHex`)
     const std::string rawPrimaryHex = TrimAscii(doc.GetString("UI", "", "AccentPrimaryHex"));
     if (!rawPrimaryHex.empty()) {
