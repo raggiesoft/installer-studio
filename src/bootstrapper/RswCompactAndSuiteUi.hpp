@@ -394,7 +394,7 @@ public:
                 err);
 
             if (ok && IsTempSoftwareInstallerMode() && !cancelFlag.load()) {
-                ok = ExecuteSfxSoftwareInstallWaitAndCleanup(
+                ok = ExecuteSfxLaunchWaitAndCleanup(
                     manifest,
                     targetDir,
                     &cancelFlag,
