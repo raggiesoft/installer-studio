@@ -80,6 +80,128 @@ constexpr UINT WM_RSW_REQUEST_UAC     = WM_APP + 14;
 constexpr UINT WM_RSW_LOCK_CANCEL     = WM_APP + 15;
 constexpr UINT IDM_SYS_ABOUT_SETUP    = 0x1F10u;
 
+// ============================================================================
+// WINDOWS 7+ / WINDOWS 11 TASKBAR PROGRESS CONTROLLER (`ITaskbarList3`)
+// ============================================================================
+// PLAIN-ENGLISH TEACHING OVERVIEW:
+//   Starting in Windows 7 (`explorer.exe`), every top-level taskbar button can
+//   render a native built-in progress bar (`ITaskbarList3` via `CLSID_TaskbarList`):
+//     - `TBPF_INDETERMINATE`: Pulsing marquee while preparing or awaiting UAC.
+//     - `TBPF_NORMAL`:        Smooth green fill (`0..1000` permille) during install.
+//     - `TBPF_PAUSED`:        Amber/yellow state when paused for a prompt (e.g. UAC or retry).
+//     - `TBPF_ERROR`:         Red alert state if an installation error occurs.
+//     - `TBPF_NOPROGRESS`:    Standard taskbar icon when idle or cleanly finished.
+//   Two critical Win32 details handled here:
+//     1. When Setup runs elevated (High Integrity), User Interface Privilege Isolation
+//        (UIPI) blocks `TaskbarButtonCreated` from Medium-Integrity `explorer.exe` unless
+//        we explicitly whitelist that message via `ChangeWindowMessageFilterEx(MSGFLT_ALLOW)`.
+//     2. `pList->Release()` MUST run in `WM_DESTROY` (before `CoUninitialize()`), never
+//        after the STA COM apartment has already torn down at the end of `wWinMain`!
+struct TaskbarProgressHelper {
+    ITaskbarList3* pList         = nullptr;
+    UINT           wmCreated     = 0;
+    TBPFLAG        lastState     = TBPF_NOPROGRESS;
+    ULONGLONG      lastCompleted = 0;
+    ULONGLONG      lastTotal     = 1000;
+
+    void AttachWindow(HWND hWnd) noexcept {
+        if (wmCreated == 0) {
+            wmCreated = ::RegisterWindowMessageW(L"TaskbarButtonCreated");
+        }
+        if (hWnd && wmCreated != 0) {
+            CHANGEFILTERSTRUCT cfs{sizeof(cfs), 0};
+            ::ChangeWindowMessageFilterEx(hWnd, wmCreated, MSGFLT_ALLOW, &cfs);
+        }
+    }
+
+    bool EnsureInitialized() noexcept {
+        if (pList) return true;
+        ITaskbarList3* raw = nullptr;
+        const HRESULT hr = ::CoCreateInstance(
+            CLSID_TaskbarList, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&raw));
+        if (SUCCEEDED(hr) && raw) {
+            if (SUCCEEDED(raw->HrInit())) {
+                pList = raw;
+                return true;
+            }
+            raw->Release();
+        }
+        return false;
+    }
+
+    void Release() noexcept {
+        if (pList) {
+            pList->Release();
+            pList = nullptr;
+        }
+    }
+
+    ~TaskbarProgressHelper() {
+        Release();
+    }
+
+    void ApplyCurrent(HWND hWnd) noexcept {
+        if (!hWnd || !EnsureInitialized()) return;
+        pList->SetProgressState(hWnd, lastState);
+        if (lastState == TBPF_NORMAL || lastState == TBPF_PAUSED || lastState == TBPF_ERROR) {
+            pList->SetProgressValue(hWnd, lastCompleted, std::max<ULONGLONG>(1, lastTotal));
+        }
+    }
+
+    void SetNoProgress(HWND hWnd) noexcept {
+        lastState     = TBPF_NOPROGRESS;
+        lastCompleted = 0;
+        if (hWnd && EnsureInitialized()) {
+            pList->SetProgressState(hWnd, TBPF_NOPROGRESS);
+        }
+    }
+
+    void SetIndeterminate(HWND hWnd) noexcept {
+        lastState = TBPF_INDETERMINATE;
+        if (hWnd && EnsureInitialized()) {
+            pList->SetProgressState(hWnd, TBPF_INDETERMINATE);
+        }
+    }
+
+    void SetNormalPermille(HWND hWnd, int permille) noexcept {
+        lastState     = TBPF_NORMAL;
+        lastCompleted = static_cast<ULONGLONG>(std::clamp(permille, 0, 1000));
+        lastTotal     = 1000;
+        if (hWnd && EnsureInitialized()) {
+            pList->SetProgressState(hWnd, TBPF_NORMAL);
+            pList->SetProgressValue(hWnd, lastCompleted, lastTotal);
+        }
+    }
+
+    void SetPaused(HWND hWnd) noexcept {
+        lastState = TBPF_PAUSED;
+        if (hWnd && EnsureInitialized()) {
+            const ULONGLONG shown = std::max<ULONGLONG>(40, lastCompleted);
+            pList->SetProgressValue(hWnd, shown, lastTotal);
+            pList->SetProgressState(hWnd, TBPF_PAUSED);
+        }
+    }
+
+    void SetError(HWND hWnd) noexcept {
+        lastState = TBPF_ERROR;
+        if (hWnd && EnsureInitialized()) {
+            const ULONGLONG errVal = std::max<ULONGLONG>(100, lastCompleted);
+            pList->SetProgressValue(hWnd, errVal, lastTotal);
+            pList->SetProgressState(hWnd, TBPF_ERROR);
+        }
+    }
+
+    bool HandleMessage(HWND hWnd, UINT msg) noexcept {
+        if (wmCreated != 0 && msg == wmCreated) {
+            // `explorer.exe` created or recreated our taskbar button — re-bind COM & sync state!
+            Release();
+            ApplyCurrent(hWnd);
+            return true;
+        }
+        return false;
+    }
+};
+
 // Accessible Win32 Child Control IDs (supporting `Tab`, `Arrow`, & `Alt+Mnemonic` traversal)
 enum ControlId : int {
     // `SetupType` 1..4-card radio group (`Express/Compact/Custom` OR `Typical/Compact/Complete/Custom`!)
@@ -662,6 +784,8 @@ public:
 
     WizardPage              currentPage       = WizardPage::Welcome;
     SelectedAction          selectedAction    = SelectedAction::InstallExpress;
+    bool                    isHeadlessExport  = false;
+    TaskbarProgressHelper   taskbarProgress;
     int                     selectedSetupTypeIdx = 0;
     std::string             selectedExplicitFeaturesCsv;
     std::wstring            selectedSetupTypeLabel = L"Express Setup (Recommended)";
@@ -918,11 +1042,14 @@ public:
         const UINT dpi = ::GetDpiForWindow(hWnd);
         auto S = [&](int px) { return rsw::ui::ScalePx(px, dpi, theme.textScalePercent); };
 
-        // Authentic 1995/1998 `Enable(PROGRESS)` Chrome Rule:
+        // Authentic 1995/1998 `Enable(PROGRESS)` Chrome + Mandatory Taskbar Button Rule:
         //   - During `IsRetroDockedProgressMode()` (`FullScreenBlue` & `FullScreenTeal` `Installing`),
         //     strip ALL window chrome (`WS_CAPTION`, `WS_SYSMENU`, `WS_MINIMIZEBOX`) so the docked
         //     progress meter is a pure, titlebar-free 3D `#C0C0C0` beveled panel!
-        //   - On all interactive wizard steps (`Welcome`, `SetupType`, `Finished`, etc.), restore standard chrome!
+        //   - Simultaneously keep `WS_EX_APPWINDOW` set on `GWL_EXSTYLE` (unless running headless
+        //     `--export-screenshots`) so Windows Explorer ALWAYS displays Setup's taskbar icon and
+        //     live `ITaskbarList3` progress bar—even when `hWnd` is owned by `WS_EX_TOOLWINDOW`
+        //     `hBackdropWnd` or docked as a captionless `WS_POPUP` meter!
         const DWORD curStyle  = static_cast<DWORD>(::GetWindowLongW(hWnd, GWL_STYLE));
         const DWORD visBit    = (curStyle & WS_VISIBLE);
         const DWORD wantStyle = IsRetroDockedProgressMode()
@@ -931,6 +1058,17 @@ public:
         const bool styleChanged = ((curStyle & ~WS_CLIPSIBLINGS) != wantStyle);
         if (styleChanged) {
             ::SetWindowLongW(hWnd, GWL_STYLE, static_cast<LONG>(wantStyle));
+        }
+
+        DWORD curExStyle = static_cast<DWORD>(::GetWindowLongW(hWnd, GWL_EXSTYLE));
+        bool exStyleChanged = false;
+        if (!isHeadlessExport) {
+            const DWORD wantExStyle = (curExStyle | WS_EX_APPWINDOW) & ~static_cast<DWORD>(WS_EX_TOOLWINDOW);
+            if (wantExStyle != curExStyle) {
+                ::SetWindowLongW(hWnd, GWL_EXSTYLE, static_cast<LONG>(wantExStyle));
+                curExStyle     = wantExStyle;
+                exStyleChanged = true;
+            }
         }
 
         // Enforce sharp 90-degree corners (`DWMWCP_DONOTROUND = 1`) and suppress Windows 11 DWM border
@@ -949,7 +1087,7 @@ public:
         int logW = 620, logH = 490;
         ComputeLogicalDialogSize(logW, logH);
         RECT winRc{0, 0, S(logW), S(logH)};
-        ::AdjustWindowRectExForDpi(&winRc, wantStyle, FALSE, 0, dpi);
+        ::AdjustWindowRectExForDpi(&winRc, wantStyle, FALSE, curExStyle, dpi);
         const int totalW = winRc.right - winRc.left;
         const int totalH = winRc.bottom - winRc.top;
 
@@ -970,7 +1108,17 @@ public:
         }
         ::SetWindowPos(
             hWnd, nullptr, posX, posY, totalW, totalH,
-            SWP_NOZORDER | SWP_NOACTIVATE | (styleChanged ? SWP_FRAMECHANGED : 0));
+            SWP_NOZORDER | SWP_NOACTIVATE | ((styleChanged || exStyleChanged) ? SWP_FRAMECHANGED : 0));
+        if ((styleChanged || exStyleChanged) && !isHeadlessExport) {
+            if (hAppIconBig) {
+                ::SendMessageW(hWnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(hAppIconBig));
+            }
+            HICON hSm = hAppIconSmall ? hAppIconSmall : hAppIconBig;
+            if (hSm) {
+                ::SendMessageW(hWnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(hSm));
+            }
+            taskbarProgress.ApplyCurrent(hWnd);
+        }
         ApplyFontsAndLayout();
     }
 
@@ -1762,8 +1910,9 @@ public:
             const int cardW   = W - cardX - S(18);
 
             // `SetupType`: 1..4 Full-Row Vector Option Cards (`Express/Compact/Custom` or `Typical/Compact/Complete/Custom`!)
+            // Reserve `S(38)..S(42)` above the first card so 2-line wrapped product prompts NEVER clip!
             const int nCards   = std::clamp<int>(static_cast<int>(cfg.setupTypes.size()), 1, 4);
-            const int optStart = bodyTop + ((nCards >= 4) ? S(26) : S(36));
+            const int optStart = bodyTop + (isWin95Sheet ? S(42) : ((nCards >= 4) ? S(38) : S(42)));
             const int optH     = (nCards >= 4) ? (isWin95Sheet ? S(74) : S(64)) : S(74);
             const int optGap   = (nCards >= 4) ? S(6)  : S(10);
             for (int i = 0; i < 4; ++i) {
@@ -1773,7 +1922,7 @@ public:
             }
 
             // `Maintenance`: 3 Option Cards (no glass HeroBrandCard on `Wizard95`!)
-            const int mntStart = bodyTop + (isWin95Sheet ? S(34) : S(74));
+            const int mntStart = bodyTop + (isWin95Sheet ? S(40) : S(74));
             const int mntH     = S(68);
             const int mntGap   = S(8);
             ::MoveWindow(hMaintModify, cardX, mntStart,                      cardW, mntH, TRUE);
@@ -1786,25 +1935,25 @@ public:
             ::MoveWindow(hRepairQuick, cardX, repStart,               cardW, repH, TRUE);
             ::MoveWindow(hRepairFull,  cardX, repStart + repH + S(12),cardW, repH, TRUE);
 
-            // `SafeUninstall`: 2 safe unchecked checkboxes
-            const int unChkBase = bodyTop + (isWin95Sheet ? S(112) : S(162));
+            // `SafeUninstall`: 2 safe unchecked checkboxes positioned below 2-line wrapped header + body!
+            const int unChkBase = bodyTop + (isWin95Sheet ? S(130) : S(198));
             ::MoveWindow(hUninstCache, cardX + S(10), unChkBase,         cardW - S(20), S(26), TRUE);
             ::MoveWindow(hUninstPrefs, cardX + S(10), unChkBase + S(34), cardW - S(20), S(26), TRUE);
 
-            // `License`: Step intro + High-Contrast RichEdit + Accept checkbox
-            ::MoveWindow(hLicRich,   cardX, bodyTop + S(28), cardW, footerY - bodyTop - S(72), TRUE);
+            // `License`: 2-line wrapped step intro + High-Contrast RichEdit + Accept checkbox
+            ::MoveWindow(hLicRich,   cardX, bodyTop + S(38), cardW, footerY - bodyTop - S(82), TRUE);
             ::MoveWindow(hLicAccept, cardX, footerY - S(36), cardW, S(26), TRUE);
 
-            // `CustomFeatures`: Stacked full-width `SelectionTree` + `Feature Details` on `Wizard95`
-            // (so the right-hand column beside the `164px` rail never looks cramped!), or side-by-side on wide sheets!
+            // `CustomFeatures`: Reserve `S(40)` at top for 2-line wrapped prompt, then stack full-width
+            // `SelectionTree` + `144px` `Feature Details` card on `Wizard95` (or side-by-side on wide sheets)!
             if (isWin95Sheet) {
-                ::MoveWindow(hFeatTree,     cardX, bodyTop + S(28),  cardW,  S(172), TRUE);
-                ::MoveWindow(hFeatResetBtn, cardX, bodyTop + S(336), S(136), S(28),  TRUE);
+                ::MoveWindow(hFeatTree,     cardX, bodyTop + S(40),  cardW,  S(150), TRUE);
+                ::MoveWindow(hFeatResetBtn, cardX, bodyTop + S(346), S(136), S(28),  TRUE);
             } else {
                 const int treeW = (cardW * 58) / 100;
-                const int treeH = footerY - bodyTop - S(78);
-                ::MoveWindow(hFeatTree,     cardX, bodyTop + S(32), treeW, treeH, TRUE);
-                ::MoveWindow(hFeatResetBtn, cardX, bodyTop + S(38) + treeH, S(132), S(28), TRUE);
+                const int treeH = footerY - bodyTop - S(84);
+                ::MoveWindow(hFeatTree,     cardX, bodyTop + S(40), treeW, treeH, TRUE);
+                ::MoveWindow(hFeatResetBtn, cardX, bodyTop + S(46) + treeH, S(132), S(28), TRUE);
             }
 
             // `CustomFolder`: Path `EDIT` + `&Browse...` (Disk Space Card painted below!)
@@ -1825,7 +1974,7 @@ public:
             ::MoveWindow(hFileAssocChk, cardX, bodyTop + flAscOff, cardW, S(28), TRUE);
 
             // `Installing`: Detailed Progress Card (`ActionText` + multiline `File / Directory / Size` + `ProgressBar` + `TimeRemaining`)
-            const int progTopOff = isWin95Sheet ? S(56) : S(128);
+            const int progTopOff = isWin95Sheet ? S(68) : S(136);
             ::MoveWindow(hProgStatus, cardX + S(16), bodyTop + progTopOff,         cardW - S(32), S(64), TRUE);
             ::MoveWindow(hProgBar,    cardX + S(16), bodyTop + progTopOff + S(68), cardW - S(32), S(22), TRUE);
 
@@ -2221,6 +2370,9 @@ public:
         awaitingUacElevation.store(willNeedUac);
 
         currentPage = WizardPage::Installing;
+        if (!isHeadlessExport) {
+            taskbarProgress.SetIndeterminate(hWnd);
+        }
         ResizeDialogForActiveStyle();
         ::InvalidateRect(hWnd, nullptr, TRUE);
         if (hBackdropWnd) ::InvalidateRect(hBackdropWnd, nullptr, FALSE);
@@ -2544,10 +2696,21 @@ public:
     }
 
     void OnTransactionCompleted() {
+        const bool cleanOrUserExit =
+            (finalMsiResult == ERROR_SUCCESS ||
+             finalMsiResult == ERROR_SUCCESS_REBOOT_REQUIRED ||
+             finalMsiResult == ERROR_INSTALL_USEREXIT);
         currentPermille = (finalMsiResult == ERROR_SUCCESS || finalMsiResult == ERROR_SUCCESS_REBOOT_REQUIRED) ? 1000 : currentPermille;
         awaitingUacElevation.store(false);
         cancelLockedPointOfNoReturn.store(false);
         SetCloseAndCancelLocked(false);
+        if (!isHeadlessExport) {
+            if (cleanOrUserExit) {
+                taskbarProgress.SetNoProgress(hWnd);
+            } else {
+                taskbarProgress.SetError(hWnd);
+            }
+        }
         if (IsPassiveToastMode()) {
             ::DestroyWindow(hWnd);
             return;
@@ -2565,6 +2728,9 @@ public:
     void NavigateTo(WizardPage target, HWND initialFocus = nullptr) {
         SyncEditableFieldsFromControls();
         currentPage = target;
+        if (!isHeadlessExport && target != WizardPage::Installing && target != WizardPage::Finished) {
+            taskbarProgress.SetNoProgress(hWnd);
+        }
         if (rsw::UsesClassic3dDialogSheet(cfg.wizardStyle) || cfg.wizardStyle == rsw::WizardStyleKind::Wizard97) {
             ApplyFontsAndLayout();
         } else {
@@ -3075,10 +3241,10 @@ public:
                     textLeft = cardX + S(152);
                 }
 
-                ::SelectObject(memDc, hFontHeadline);
+                ::SelectObject(memDc, (cfg.welcomeHeadline.size() > 36) ? hFontSection : hFontHeadline);
                 ::SetTextColor(memDc, theme.textPrimary);
-                RECT headRc{textLeft, bodyTop + S(84), W - S(22), bodyTop + S(120)};
-                ::DrawTextW(memDc, cfg.welcomeHeadline.c_str(), -1, &headRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                RECT headRc{textLeft, bodyTop + S(80), W - S(22), bodyTop + S(134)};
+                ::DrawTextW(memDc, cfg.welcomeHeadline.c_str(), -1, &headRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
 
                 // Bottom Trust & Fictitious Disclaimer Strip (`S(66)` tall so 3-line disclaimer never clips!)
                 RECT tipCard{cardX, footerY - S(74), cardX + cardW, footerY - S(8)};
@@ -3091,7 +3257,7 @@ public:
                     : (L"This wizard installs " + cfg.productName + L" (v" + cfg.version +
                        L") on your computer using native Windows Installer transaction safety.\r\n\r\n"
                        L"Click Next to choose Express Setup for one-click installation, or Custom Setup to choose your destination folder and shortcuts.");
-                RECT introRc{textLeft, bodyTop + S(122), W - S(22), tipCard.top - S(8)};
+                RECT introRc{textLeft, bodyTop + S(138), W - S(22), tipCard.top - S(8)};
                 ::DrawTextW(memDc, introCopy.c_str(), -1, &introRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
 
                 ::SelectObject(memDc, hFontSmall);
@@ -3109,33 +3275,33 @@ public:
                 if (!cfg.isAutorun16x9) {
                     ::SelectObject(memDc, hFontBold);
                     ::SetTextColor(memDc, theme.textPrimary);
-                    RECT pRc{cardX, bodyTop, cardX + cardW, bodyTop + S(26)};
-                    ::DrawTextW(memDc, L"Please review the software license agreement below before continuing:", -1, &pRc, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+                    RECT pRc{cardX, bodyTop, cardX + cardW, bodyTop + S(36)};
+                    ::DrawTextW(memDc, L"Please review the software license agreement below before continuing:", -1, &pRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
                 }
                 break;
             }
 
             case WizardPage::SetupType: {
-                ::SelectObject(memDc, hFontSection);
+                ::SelectObject(memDc, hFontBold);
                 ::SetTextColor(memDc, theme.textPrimary);
                 const std::wstring prompt = L"Choose how you would like to install " + cfg.productName + L":";
-                RECT pRc{cardX, bodyTop + S(2), cardX + cardW, bodyTop + S(32)};
-                ::DrawTextW(memDc, prompt.c_str(), -1, &pRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                RECT pRc{cardX, bodyTop, cardX + cardW, bodyTop + S(38)};
+                ::DrawTextW(memDc, prompt.c_str(), -1, &pRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
                 break;
             }
 
             case WizardPage::CustomFeatures: {
                 ::SelectObject(memDc, hFontBold);
                 ::SetTextColor(memDc, theme.textPrimary);
-                RECT pRc{cardX, bodyTop + S(2), cardX + cardW, bodyTop + S(26)};
-                ::DrawTextW(memDc, L"Click any feature's drive icon (or press Space) to choose how it is installed:", -1, &pRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                RECT pRc{cardX, bodyTop, cardX + cardW, bodyTop + S(38)};
+                ::DrawTextW(memDc, L"Click any feature's drive icon (or press Space) to choose how it is installed:", -1, &pRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
 
                 // `Feature Details` + Live Byte Cost Card (stacked below `SelectionTree` on `Wizard95` so both get full width, or side-by-side on wide sheets!)
                 const int treeW  = (cardW * 58) / 100;
                 const int detX   = cardX + treeW + S(12);
                 RECT detCard = isWin95Sheet
-                    ? RECT{cardX, bodyTop + S(208), cardX + cardW, bodyTop + S(328)}
-                    : RECT{detX,  bodyTop + S(32),  cardX + cardW, footerY - S(14)};
+                    ? RECT{cardX, bodyTop + S(196), cardX + cardW, bodyTop + S(340)}
+                    : RECT{detX,  bodyTop + S(40),  cardX + cardW, footerY - S(14)};
                 DrawPanelSurface(memDc, g, detCard, S(10));
 
                 if (!featureNodes.empty() && selectedFeatureIdx < featureNodes.size()) {
@@ -3151,20 +3317,20 @@ public:
                     if (isWin95Sheet) {
                         ::SelectObject(memDc, hFontBold);
                         ::SetTextColor(memDc, theme.textPrimary);
-                        RECT tRc{detCard.left + S(12), detCard.top + S(8), detCard.right - S(12), detCard.top + S(30)};
+                        RECT tRc{detCard.left + S(12), detCard.top + S(7), detCard.right - S(12), detCard.top + S(27)};
                         ::DrawTextW(memDc, fn.title.c_str(), -1, &tRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
                         rsw::PaintSingleMsiStateCell(
-                            g, static_cast<float>(detCard.left + S(12)), static_cast<float>(detCard.top + S(32)),
+                            g, static_cast<float>(detCard.left + S(12)), static_cast<float>(detCard.top + S(31)),
                             static_cast<float>(S(30)), static_cast<float>(S(18)), fn.currentState, theme);
                         ::SelectObject(memDc, hFontSmall);
                         ::SetTextColor(memDc, stateTextCol);
-                        RECT stRc{detCard.left + S(48), detCard.top + S(32), detCard.right - S(12), detCard.top + S(52)};
-                        ::DrawTextW(memDc, stTxt.c_str(), -1, &stRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                        RECT stRc{detCard.left + S(48), detCard.top + S(29), detCard.right - S(12), detCard.top + S(63)};
+                        ::DrawTextW(memDc, stTxt.c_str(), -1, &stRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
 
                         ::SelectObject(memDc, hFontBody);
                         ::SetTextColor(memDc, theme.textSecondary);
-                        RECT dRc{detCard.left + S(12), detCard.top + S(54), detCard.right - S(12), detCard.bottom - S(28)};
+                        RECT dRc{detCard.left + S(12), detCard.top + S(65), detCard.right - S(12), detCard.bottom - S(28)};
                         ::DrawTextW(memDc, fn.description.c_str(), -1, &dRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
 
                         ::SelectObject(memDc, hFontSmall);
@@ -3172,7 +3338,7 @@ public:
                         std::wstring costLine = L"Feature: " + FormatByteSizeFriendly(fn.ownBytes) +
                                                 L"  •  Selected: " + FormatByteSizeFriendly(estimatedReqBytes);
                         if (hasVol) costLine += L"  •  Free: " + FormatByteSizeFriendly(freeB);
-                        RECT cRc{detCard.left + S(12), detCard.bottom - S(24), detCard.right - S(12), detCard.bottom - S(6)};
+                        RECT cRc{detCard.left + S(12), detCard.bottom - S(24), detCard.right - S(12), detCard.bottom - S(5)};
                         ::DrawTextW(memDc, costLine.c_str(), -1, &cRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
                     } else {
                         ::SelectObject(memDc, hFontSection);
@@ -3362,17 +3528,17 @@ public:
                 } else {
                     ::SelectObject(memDc, hFontBody);
                     ::SetTextColor(memDc, theme.textPrimary);
-                    RECT m95{cardX, bodyTop + S(4), cardX + cardW, bodyTop + S(30)};
-                    ::DrawTextW(memDc, L"Modify, repair, or remove installed program components:", -1, &m95, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+                    RECT m95{cardX, bodyTop, cardX + cardW, bodyTop + S(36)};
+                    ::DrawTextW(memDc, L"Modify, repair, or remove installed program components:", -1, &m95, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
                 }
                 break;
             }
 
             case WizardPage::RepairMode: {
-                ::SelectObject(memDc, hFontSection);
+                ::SelectObject(memDc, hFontBold);
                 ::SetTextColor(memDc, theme.textPrimary);
-                RECT hRc{cardX, bodyTop + S(4), cardX + cardW, bodyTop + S(34)};
-                ::DrawTextW(memDc, L"Choose how you would like Setup to repair your installation:", -1, &hRc, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+                RECT hRc{cardX, bodyTop, cardX + cardW, bodyTop + S(40)};
+                ::DrawTextW(memDc, L"Choose how you would like Setup to repair your installation:", -1, &hRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
                 break;
             }
 
@@ -3398,13 +3564,13 @@ public:
                 ::SelectObject(memDc, hFontSection);
                 ::SetTextColor(memDc, theme.textPrimary);
                 const std::wstring uHead = L"Remove " + cfg.productName + L" from Your Computer?";
-                RECT uhRc{boxRc.left + S(16), boxRc.top + S(14), boxRc.right - S(16), boxRc.top + S(42)};
-                ::DrawTextW(memDc, uHead.c_str(), -1, &uhRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                RECT uhRc{boxRc.left + S(16), boxRc.top + S(12), boxRc.right - S(16), boxRc.top + S(60)};
+                ::DrawTextW(memDc, uHead.c_str(), -1, &uhRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
 
                 ::SelectObject(memDc, hFontBody);
                 ::SetTextColor(memDc, theme.textSecondary);
                 const std::wstring uSub = L"Your personal documents and projects are NEVER deleted. Optional cleanup items below are left unchecked by default for safety:";
-                RECT usRc{boxRc.left + S(16), boxRc.top + S(42), boxRc.right - S(16), boxRc.top + S(80)};
+                RECT usRc{boxRc.left + S(16), boxRc.top + S(62), boxRc.right - S(16), boxRc.top + S(114)};
                 ::DrawTextW(memDc, uSub.c_str(), -1, &usRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
                 break;
             }
@@ -3421,7 +3587,7 @@ public:
                     progTop = bodyTop + S(10);
                 }
 
-                RECT progCard{cardX, progTop, cardX + cardW, progTop + S(194)};
+                RECT progCard{cardX, progTop, cardX + cardW, progTop + S(206)};
                 DrawPanelSurface(memDc, g, progCard, S(10));
 
                 ::SelectObject(memDc, hFontSection);
@@ -3431,12 +3597,12 @@ public:
                 if (selectedAction == SelectedAction::MaintQuickRepair ||
                     selectedAction == SelectedAction::MaintFullReinstall) phaseTitle = L"Repairing " + cfg.productName + L"...";
 
-                RECT ptRc{progCard.left + S(16), progCard.top + S(14), progCard.right - S(84), progCard.top + S(42)};
-                ::DrawTextW(memDc, phaseTitle.c_str(), -1, &ptRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                RECT ptRc{progCard.left + S(16), progCard.top + S(12), progCard.right - S(76), progCard.top + S(58)};
+                ::DrawTextW(memDc, phaseTitle.c_str(), -1, &ptRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
 
                 const int pct = std::clamp(currentPermille / 10, 0, 100);
                 const std::wstring pctStr = std::to_wstring(pct) + L"%";
-                RECT pctRc{progCard.right - S(80), progCard.top + S(14), progCard.right - S(16), progCard.top + S(42)};
+                RECT pctRc{progCard.right - S(74), progCard.top + S(12), progCard.right - S(16), progCard.top + S(40)};
                 ::DrawTextW(memDc, pctStr.c_str(), -1, &pctRc, DT_RIGHT | DT_SINGLELINE | DT_NOPREFIX);
 
                 const std::wstring etaStr = FormatEstimatedTimeRemaining(installStartTickMs, currentPermille);
@@ -3464,14 +3630,14 @@ public:
                 RECT finCard{cardX, bodyTop + S(80), cardX + cardW, footerY - S(64)};
                 DrawGlassPanelBox(g, finCard, S(10));
 
-                ::SelectObject(memDc, hFontHeadline);
-                ::SetTextColor(memDc, theme.textPrimary);
                 std::wstring finHead = okDone ? (cfg.productName + L" Is Ready!") : L"Setup Did Not Complete";
                 if (okDone && selectedAction == SelectedAction::MaintUninstall) {
                     finHead = cfg.productName + L" Was Removed";
                 }
-                RECT fhRc{finCard.left + S(18), finCard.top + S(16), finCard.right - S(18), finCard.top + S(52)};
-                ::DrawTextW(memDc, finHead.c_str(), -1, &fhRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                ::SelectObject(memDc, (finHead.size() > 34) ? hFontSection : hFontHeadline);
+                ::SetTextColor(memDc, theme.textPrimary);
+                RECT fhRc{finCard.left + S(18), finCard.top + S(12), finCard.right - S(18), finCard.top + S(68)};
+                ::DrawTextW(memDc, finHead.c_str(), -1, &fhRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
 
                 ::SelectObject(memDc, hFontBody);
                 ::SetTextColor(memDc, theme.textSecondary);
@@ -3491,7 +3657,7 @@ public:
                     finBody = L"Windows Installer returned status code " + std::to_wstring(finalMsiResult) + L".\r\n" +
                               (capturedErrorText.empty() ? L"Click View Setup Log to inspect diagnostic details." : capturedErrorText);
                 }
-                RECT fbRc{finCard.left + S(18), finCard.top + S(54), finCard.right - S(18), finCard.bottom - S(14)};
+                RECT fbRc{finCard.left + S(18), finCard.top + S(70), finCard.right - S(18), finCard.bottom - S(12)};
                 ::DrawTextW(memDc, finBody.c_str(), -1, &fbRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
                 break;
             }
@@ -3704,9 +3870,15 @@ public:
         }
 
         if (!self) return ::DefWindowProcW(hWnd, msg, wParam, lParam);
+        if (!self->isHeadlessExport && self->taskbarProgress.HandleMessage(hWnd, msg)) {
+            return 0;
+        }
 
         switch (msg) {
             case WM_CREATE:
+                if (!self->isHeadlessExport) {
+                    self->taskbarProgress.AttachWindow(hWnd);
+                }
                 self->CreateControls();
                 self->EnsureCustomSystemMenuAbout();
                 self->RefreshEffectiveThemeAndChrome();
@@ -3974,6 +4146,9 @@ public:
                 const int perm = static_cast<int>(wParam);
                 self->currentPermille = perm;
                 ::SendMessageW(self->hProgBar, PBM_SETPOS, wParam, 0);
+                if (!self->isHeadlessExport) {
+                    self->taskbarProgress.SetNormalPermille(hWnd, perm);
+                }
                 const int decile = perm / 100;
                 if (decile != self->lastAnnouncedDecile) {
                     self->lastAnnouncedDecile = decile;
@@ -4001,6 +4176,9 @@ public:
             case WM_RSW_ASK_RETRY_DL: {
                 auto* p = reinterpret_cast<RetryDownloadPromptCtx*>(wParam);
                 if (!p) return 0;
+                if (!self->isHeadlessExport) {
+                    self->taskbarProgress.SetPaused(hWnd);
+                }
                 const TASKDIALOG_BUTTON btns[2] = {
                     {101, L"Retry Download\nCheck your Internet connection and try downloading again"},
                     {102, L"Exit Setup\nClose Setup without making changes"}
@@ -4025,12 +4203,18 @@ public:
                 int chosenBtn = 102;
                 ::TaskDialogIndirect(&tdc, &chosenBtn, nullptr, nullptr);
                 p->retryChosen = (chosenBtn == 101);
+                if (p->retryChosen && !self->isHeadlessExport) {
+                    self->taskbarProgress.SetIndeterminate(hWnd);
+                }
                 return 0;
             }
 
             case WM_RSW_REQUEST_UAC: {
                 auto* u = reinterpret_cast<UacLaunchPromptCtx*>(wParam);
                 if (!u) return 0;
+                if (!self->isHeadlessExport) {
+                    self->taskbarProgress.SetPaused(hWnd);
+                }
                 wchar_t selfExe[MAX_PATH * 4]{};
                 ::GetModuleFileNameW(nullptr, selfExe, static_cast<DWORD>(std::size(selfExe)));
                 const std::wstring workerParams = L"--elevated-msi-worker \"" + u->jobFilePath + L"\"";
@@ -4052,8 +4236,11 @@ public:
                     u->canceledByUser = (u->win32Error == ERROR_CANCELLED);
                 } else {
                     u->hChildProcess = sei.hProcess;
-                    // UAC approved! Now transition smoothly into the docked 3D progress meter + centered Billboard!
+                    // UAC approved! Transition smoothly into the docked 3D progress meter + live taskbar bar!
                     self->awaitingUacElevation.store(false);
+                    if (!self->isHeadlessExport) {
+                        self->taskbarProgress.SetIndeterminate(hWnd);
+                    }
                     self->ResizeDialogForActiveStyle();
                     if (self->hBackdropWnd) ::InvalidateRect(self->hBackdropWnd, nullptr, FALSE);
                 }
@@ -4067,10 +4254,13 @@ public:
             case WM_RSW_INSTALL_DONE:
                 self->awaitingUacElevation.store(false);
                 if (static_cast<UINT>(wParam) == kSentinelUacDeclined) {
-                    // User clicked "No" on UAC — restore dialog geometry and return calmly to `pageBeforeInstall`!
+                    // User clicked "No" on UAC — clear taskbar bar, restore dialog geometry, and return to `pageBeforeInstall`!
                     self->installRunning.store(false);
                     self->cancelLockedPointOfNoReturn.store(false);
                     self->SetCloseAndCancelLocked(false);
+                    if (!self->isHeadlessExport) {
+                        self->taskbarProgress.SetNoProgress(hWnd);
+                    }
                     self->currentPage = self->pageBeforeInstall;
                     self->ResizeDialogForActiveStyle();
                     if (self->hBtnPrimary) ::SetFocus(self->hBtnPrimary);
@@ -4092,6 +4282,7 @@ public:
                 return 0;
 
             case WM_DESTROY:
+                self->taskbarProgress.Release();
                 if (self->hBackdropWnd && ::IsWindow(self->hBackdropWnd)) {
                     HWND hBack = self->hBackdropWnd;
                     self->hBackdropWnd = nullptr;
@@ -4468,6 +4659,7 @@ public:
     std::string             errorUtf8;
     bool                    downloadSucceeded = false;
     std::thread             dlThread;
+    TaskbarProgressHelper   taskbarProgress;
 
     ~UniversalWebDownloaderUi() {
         cancelFlag.store(true);
@@ -4515,6 +4707,7 @@ public:
             statusLine = std::wstring(L"Downloading native ") + (targetArm64 ? L"ARM64" : L"x64") + L" installer...";
         }
         if (hProgBar) ::SendMessageW(hProgBar, PBM_SETPOS, 0, 0);
+        taskbarProgress.SetIndeterminate(hWnd);
         ::InvalidateRect(hWnd, nullptr, FALSE);
 
         dlThread = std::thread([this]() {
@@ -4665,9 +4858,13 @@ public:
             rsw::ui::ApplyWindowChromeAndA11y(hWnd, self->theme);
         }
         if (!self) return ::DefWindowProcW(hWnd, msg, wParam, lParam);
+        if (self->taskbarProgress.HandleMessage(hWnd, msg)) {
+            return 0;
+        }
 
         switch (msg) {
             case WM_CREATE: {
+                self->taskbarProgress.AttachWindow(hWnd);
                 HINSTANCE hInst = ::GetModuleHandleW(nullptr);
                 self->hProgBar = ::CreateWindowExW(
                     0, PROGRESS_CLASSW, L"Installer Download Progress",
@@ -4718,21 +4915,25 @@ public:
                 if (self->hProgBar) {
                     ::SendMessageW(self->hProgBar, PBM_SETPOS, wParam, 0);
                 }
+                self->taskbarProgress.SetNormalPermille(hWnd, static_cast<int>(wParam));
                 ::InvalidateRect(hWnd, nullptr, FALSE);
                 return 0;
             }
             case WM_UNIV_FINISHED: {
                 if (wParam == 1) {
                     if (self->hProgBar) ::SendMessageW(self->hProgBar, PBM_SETPOS, 1000, 0);
+                    self->taskbarProgress.SetNoProgress(hWnd);
                     self->downloadSucceeded = true;
                     ::DestroyWindow(hWnd);
                     return 0;
                 }
                 if (self->cancelFlag.load()) {
+                    self->taskbarProgress.SetNoProgress(hWnd);
                     self->downloadSucceeded = false;
                     ::DestroyWindow(hWnd);
                     return 0;
                 }
+                self->taskbarProgress.SetError(hWnd);
                 std::wstring errW;
                 {
                     std::lock_guard<std::mutex> lk(self->mtx);
@@ -4772,6 +4973,7 @@ public:
                 return 0;
             }
             case WM_DESTROY: {
+                self->taskbarProgress.Release();
                 ::PostQuitMessage(0);
                 return 0;
             }
@@ -4904,8 +5106,9 @@ int RunUniversalInstallerDispatcher(
                 RECT wRc{0, 0,
                          rsw::ui::ScalePx(540, dpi, ui.theme.textScalePercent),
                          rsw::ui::ScalePx(256, dpi, ui.theme.textScalePercent)};
-                constexpr DWORD kStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
-                ::AdjustWindowRectExForDpi(&wRc, kStyle, FALSE, 0, dpi);
+                constexpr DWORD kStyle   = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+                constexpr DWORD kExStyle = WS_EX_APPWINDOW;
+                ::AdjustWindowRectExForDpi(&wRc, kStyle, FALSE, kExStyle, dpi);
                 const int wW = wRc.right - wRc.left;
                 const int wH = wRc.bottom - wRc.top;
                 const int wX = std::max(0, (::GetSystemMetrics(SM_CXSCREEN) - wW) / 2);
@@ -4913,8 +5116,15 @@ int RunUniversalInstallerDispatcher(
 
                 const std::wstring wTitle = ucfg.productName + L" Setup";
                 HWND hUnivWnd = ::CreateWindowExW(
-                    0, kUnivWndClass, wTitle.c_str(), kStyle, wX, wY, wW, wH, nullptr, nullptr, hInstance, &ui);
+                    kExStyle, kUnivWndClass, wTitle.c_str(), kStyle, wX, wY, wW, wH, nullptr, nullptr, hInstance, &ui);
                 if (hUnivWnd) {
+                    if (ui.hIconBig) {
+                        ::SendMessageW(hUnivWnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(ui.hIconBig));
+                    }
+                    HICON hSm = ui.hIconSmall ? ui.hIconSmall : ui.hIconBig;
+                    if (hSm) {
+                        ::SendMessageW(hUnivWnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(hSm));
+                    }
                     ::ShowWindow(hUnivWnd, nCmdShow);
                     ::UpdateWindow(hUnivWnd);
                     MSG msg{};
@@ -5203,6 +5413,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         }
     }
 
+    app.isHeadlessExport = !exportShotDir.empty();
     const UINT screenDpi = ::GetDpiForSystem();
     int logW = 620, logH = 490;
     app.ComputeLogicalDialogSize(logW, logH);
@@ -5210,7 +5421,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
                rsw::ui::ScalePx(logW, screenDpi, app.theme.textScalePercent),
                rsw::ui::ScalePx(logH, screenDpi, app.theme.textScalePercent)};
     constexpr DWORD kWinStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
-    ::AdjustWindowRectExForDpi(&winRc, kWinStyle, FALSE, 0, screenDpi);
+    const DWORD winExStyle    = app.isHeadlessExport ? 0u : WS_EX_APPWINDOW;
+    ::AdjustWindowRectExForDpi(&winRc, kWinStyle, FALSE, winExStyle, screenDpi);
     const int totalW = winRc.right - winRc.left;
     const int totalH = winRc.bottom - winRc.top;
     const int posX   = std::max(0, (::GetSystemMetrics(SM_CXSCREEN) - totalW) / 2);
@@ -5218,7 +5430,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
 
     const std::wstring winTitle = app.cfg.productName + L" Setup";
     HWND hWnd = ::CreateWindowExW(
-        0, kWndClass, winTitle.c_str(), kWinStyle,
+        winExStyle /* `WS_EX_APPWINDOW` guarantees a taskbar icon even when owned by `hBackdropWnd`! */,
+        kWndClass, winTitle.c_str(), kWinStyle,
         posX, posY, totalW, totalH,
         app.hBackdropWnd /* Owned by full-screen backdrop so Z-order never hides dialog! */,
         nullptr, hInstance, &app);
@@ -5227,6 +5440,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         if (app.hBackdropWnd) ::DestroyWindow(app.hBackdropWnd);
         ::CoUninitialize();
         return 1;
+    }
+
+    if (app.hAppIconBig) {
+        ::SendMessageW(hWnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(app.hAppIconBig));
+    }
+    if (HICON hSm = app.hAppIconSmall ? app.hAppIconSmall : app.hAppIconBig) {
+        ::SendMessageW(hWnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(hSm));
     }
 
     ::ShowWindow(hWnd, nCmdShow);
@@ -5299,6 +5519,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         const bool okTeal = app.CaptureRetroFullScreenCompositePng(exportShotDir / L"setupwizard-fullscreen-teal.png");
 
         ::DestroyWindow(hWnd);
+        app.taskbarProgress.Release();
         ::CoUninitialize();
         return (okType && okTree && okUacDark && okUacLight && okLight && okMica && okWiz95 && okBlue && okTeal) ? 0 : 2;
     }
@@ -5313,6 +5534,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         }
     }
 
+    app.taskbarProgress.Release();
     ::CoUninitialize();
     return 0;
 }
