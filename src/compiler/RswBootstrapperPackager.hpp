@@ -286,6 +286,84 @@ inline std::uint16_t ReadPeMachineArchitecture(const std::filesystem::path& pePa
     return fh.Machine;
 }
 
+/// Synthesizes a complete UTF-8 Win32 Side-by-Side Application Manifest (`RT_MANIFEST` `#1`)
+/// stamping the author's chosen `requestedExecutionLevel` (`asInvoker`, `highestAvailable`, or
+/// `requireAdministrator`) while preserving Common Controls v6, Windows 11 `<supportedOS>`,
+/// Per-Monitor V2 DPI scaling, and `longPathAware`!
+inline std::string BuildSetupApplicationManifestXml(std::string_view rawExecLevel) {
+    const std::string_view level = NormalizeRequestedExecutionLevel(rawExecLevel);
+    std::ostringstream xml;
+    xml << "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n"
+        << "<assembly xmlns=\"urn:schemas-microsoft-com:asm.v1\" manifestVersion=\"1.0\">\r\n"
+        << "  <assemblyIdentity version=\"0.5.1.0\" name=\"RaggieSoft.SetupWizard.Bootstrapper\" type=\"win32\"/>\r\n"
+        << "  <dependency>\r\n"
+        << "    <dependentAssembly>\r\n"
+        << "      <assemblyIdentity type=\"win32\" name=\"Microsoft.Windows.Common-Controls\" version=\"6.0.0.0\" processorArchitecture=\"*\" publicKeyToken=\"6595b64144ccf1df\" language=\"*\"/>\r\n"
+        << "    </dependentAssembly>\r\n"
+        << "  </dependency>\r\n"
+        << "  <trustInfo xmlns=\"urn:schemas-microsoft-com:asm.v3\">\r\n"
+        << "    <security>\r\n"
+        << "      <requestedPrivileges>\r\n"
+        << "        <requestedExecutionLevel level=\"" << level << "\" uiAccess=\"false\"/>\r\n"
+        << "      </requestedPrivileges>\r\n"
+        << "    </security>\r\n"
+        << "  </trustInfo>\r\n"
+        << "  <compatibility xmlns=\"urn:schemas-microsoft-com:compatibility.v1\">\r\n"
+        << "    <application>\r\n"
+        << "      <supportedOS Id=\"{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}\"/>\r\n"
+        << "    </application>\r\n"
+        << "  </compatibility>\r\n"
+        << "  <application xmlns=\"urn:schemas-microsoft-com:asm.v3\">\r\n"
+        << "    <windowsSettings>\r\n"
+        << "      <dpiAware xmlns=\"http://schemas.microsoft.com/SMI/2005/WindowsSettings\">true/pm</dpiAware>\r\n"
+        << "      <dpiAwareness xmlns=\"http://schemas.microsoft.com/SMI/2016/WindowsSettings\">PerMonitorV2, PerMonitor</dpiAwareness>\r\n"
+        << "      <longPathAware xmlns=\"http://schemas.microsoft.com/SMI/2016/WindowsSettings\">true</longPathAware>\r\n"
+        << "    </windowsSettings>\r\n"
+        << "  </application>\r\n"
+        << "</assembly>\r\n";
+    return xml.str();
+}
+
+/// Enumerates existing language IDs on `RT_MANIFEST` `#1` inside a staged PE file BEFORE
+/// calling `BeginUpdateResourceW` so we can replace/prune any alternate LCID (`0` vs `1033`)
+/// and guarantee strictly ONE `RT_MANIFEST` `#1` resource (preventing `ERROR_SXS_CANT_GEN_ACTCTX`!).
+inline std::vector<WORD> QueryExistingPeManifestLangIds(const std::filesystem::path& exePath) noexcept {
+    std::vector<WORD> langs;
+    HMODULE hMod = ::LoadLibraryExW(
+        exePath.wstring().c_str(), nullptr,
+        LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+    if (!hMod) return langs;
+    ::EnumResourceLanguagesW(
+        hMod, RT_MANIFEST, MAKEINTRESOURCEW(1),
+        [](HMODULE, LPCWSTR, LPCWSTR, WORD wLang, LONG_PTR lParam) -> BOOL {
+            auto* vec = reinterpret_cast<std::vector<WORD>*>(lParam);
+            vec->push_back(wLang);
+            return TRUE;
+        },
+        reinterpret_cast<LONG_PTR>(&langs));
+    ::FreeLibrary(hMod);
+    return langs;
+}
+
+inline bool StampExecutionLevelManifestOnResource(
+    HANDLE hRes,
+    const std::vector<WORD>& existingManifestLangs,
+    std::string_view rawExecLevel) noexcept
+{
+    constexpr WORD kLangEnUs = MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US);
+    bool ok = true;
+    for (WORD oldLang : existingManifestLangs) {
+        if (oldLang != kLangEnUs) {
+            ok = ok && ::UpdateResourceW(hRes, RT_MANIFEST, MAKEINTRESOURCEW(1), oldLang, nullptr, 0);
+        }
+    }
+    const std::string xml = BuildSetupApplicationManifestXml(rawExecLevel);
+    ok = ok && ::UpdateResourceW(
+        hRes, RT_MANIFEST, MAKEINTRESOURCEW(1), kLangEnUs,
+        const_cast<char*>(xml.data()), static_cast<DWORD>(xml.size()));
+    return ok;
+}
+
 /// Strips any existing Authenticode `WIN_CERTIFICATE` entries (`IMAGE_DIRECTORY_ENTRY_SECURITY`)
 /// from a copied PE template BEFORE calling `BeginUpdateResourceW` / `EndUpdateResourceW`.
 /// Why is this essential?
@@ -640,6 +718,9 @@ inline bool PackageSelfExtractingBootstrapper(
         return out;
     };
 
+    const std::string requestedExecLvl = std::string(
+        NormalizeRequestedExecutionLevel(doc.GetString("Package", "", "RequestedExecutionLevel", "asInvoker")));
+
     std::ostringstream brandIni;
     brandIni << "[Branding]\n"
              << "ProductName="        << sanitizeSingleLine(msiSummary.productName) << "\n"
@@ -650,6 +731,7 @@ inline bool PackageSelfExtractingBootstrapper(
              << "Architecture="       << sanitizeSingleLine(msiSummary.architecture) << "\n"
              << "ProductCode="        << sanitizeSingleLine(msiSummary.productCode) << "\n"
              << "UpgradeCode="        << sanitizeSingleLine(msiSummary.upgradeCode) << "\n"
+             << "RequestedExecutionLevel=" << requestedExecLvl << "\n"
              << "DefaultSubdir="      << sanitizeSingleLine(msiSummary.defaultSubdir) << "\n"
              << "StartMenuFolder="    << sanitizeSingleLine(doc.GetString("Install", "", "StartMenuFolder", msiSummary.manufacturer)) << "\n"
              << "MainExecutable="     << sanitizeSingleLine(msiSummary.mainExeRel) << "\n"
@@ -715,7 +797,8 @@ inline bool PackageSelfExtractingBootstrapper(
         ReadBinaryFileBytes(artworkPath, artworkBytes, outError);
     }
 
-    // 4. Open PE resource table on local NTFS `stageSetupPath` and stamp all resources atomically!
+    // 4. Inspect existing `RT_MANIFEST` `#1` languages, then open PE resource table on local NTFS `stageSetupPath`!
+    const auto existingManifestLangs = QueryExistingPeManifestLangIds(stageSetupPath);
     HANDLE hRes = ::BeginUpdateResourceW(stageSetupPath.wstring().c_str(), FALSE);
     if (!hRes) {
         const DWORD gle = ::GetLastError();
@@ -815,6 +898,7 @@ inline bool PackageSelfExtractingBootstrapper(
     ok = ok && ::UpdateResourceW(
         hRes, RT_VERSION, MAKEINTRESOURCEW(1), kLangEnUs,
         verBytes.data(), static_cast<DWORD>(verBytes.size()));
+    ok = ok && StampExecutionLevelManifestOnResource(hRes, existingManifestLangs, requestedExecLvl);
 
     if (!::EndUpdateResourceW(hRes, !ok) || !ok) {
         const DWORD gle = ::GetLastError();
@@ -1062,6 +1146,9 @@ inline bool PackageUniversalInstallers(
         return out;
     };
 
+    const std::string requestedExecLvl = std::string(
+        NormalizeRequestedExecutionLevel(doc.GetString("Package", "", "RequestedExecutionLevel", "asInvoker")));
+
     auto buildUniversalIni = [&](std::string_view mode, std::string_view urlX64, std::string_view urlArm64) {
         std::ostringstream ini;
         ini << "[Universal]\n"
@@ -1071,6 +1158,8 @@ inline bool PackageUniversalInstallers(
             << "WebsiteLabel="       << sanitizeLine(doc.GetString("Package", "", "WebsiteLabel", "")) << "\n"
             << "Version="            << sanitizeLine(x64Summary.productVersion) << "\n"
             << "Manufacturer="       << sanitizeLine(x64Summary.manufacturer) << "\n"
+            << "UpgradeCode="        << sanitizeLine(x64Summary.upgradeCode) << "\n"
+            << "RequestedExecutionLevel=" << requestedExecLvl << "\n"
             << "MinWindowsBuild="    << x64Summary.minWindowsBuild << "\n"
             << "OsLaunchMessage="    << sanitizeLine(x64Summary.osLaunchMessage) << "\n"
             << "AccentPrimaryHex="   << sanitizeLine(doc.GetString("UI", "", "AccentPrimaryHex", "#2563EB")) << "\n"
@@ -1097,6 +1186,7 @@ inline bool PackageUniversalInstallers(
             return false;
         }
         StripExistingPeCertificates(offlinePath);
+        const auto offlineManifestLangs     = QueryExistingPeManifestLangIds(offlinePath);
 
         std::vector<std::uint8_t> compX64   = CompressWithLzmsIfSmaller(rawX64Bytes);
         std::vector<std::uint8_t> compArm64 = CompressWithLzmsIfSmaller(rawArm64Bytes);
@@ -1123,6 +1213,7 @@ inline bool PackageUniversalInstallers(
         ok = ok && StampIconAndVersionOnExeResource(
             hRes, x64Summary.iconFilePath, x64Summary.manufacturer, desc,
             x64Summary.productVersion, univStem + "-offline", origName, x64Summary.productName, outError);
+        ok = ok && StampExecutionLevelManifestOnResource(hRes, offlineManifestLangs, requestedExecLvl);
 
         if (!::EndUpdateResourceW(hRes, !ok) || !ok) {
             outError = "EndUpdateResourceW failed while stamping '" + origName + "'.";
@@ -1147,6 +1238,7 @@ inline bool PackageUniversalInstallers(
                 return false;
             }
             StripExistingPeCertificates(webStubPath);
+            const auto webManifestLangs = QueryExistingPeManifestLangIds(webStubPath);
 
             const std::string urlX64   = baseUrl + "/" + x64FileName;
             const std::string urlArm64 = baseUrl + "/" + arm64FileName;
@@ -1166,6 +1258,7 @@ inline bool PackageUniversalInstallers(
             ok = ok && StampIconAndVersionOnExeResource(
                 hRes, x64Summary.iconFilePath, x64Summary.manufacturer, desc,
                 x64Summary.productVersion, univStem + "-setup", origName, x64Summary.productName, outError);
+            ok = ok && StampExecutionLevelManifestOnResource(hRes, webManifestLangs, requestedExecLvl);
 
             if (!::EndUpdateResourceW(hRes, !ok) || !ok) {
                 outError = "EndUpdateResourceW failed while stamping '" + origName + "'.";

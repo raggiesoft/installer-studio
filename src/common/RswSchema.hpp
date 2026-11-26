@@ -250,6 +250,8 @@ inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>
     // --- Extended [Package], [Requirements], [UI], [SetupType], [Billboard], [Feature], [Payload], [Shortcut], [Registry] ---
     {"Package",  "PackageKind",          FieldValueKind::EnumChoice,  false, "msi",               "msi|msm",
      "`msi` builds a standalone Enterprise `.msi` (+ optional `-setup.exe`); `msm` builds a reusable Merge Module (`.msm`)."},
+    {"Package",  "RequestedExecutionLevel", FieldValueKind::EnumChoice, false, "asInvoker",       "asInvoker|highestAvailable|requireAdministrator",
+     "Controls when Windows UAC prompts on outer `Setup.exe` (`RT_MANIFEST` `#1`): `asInvoker` (default — wizard starts un-elevated and prompts for UAC only when clicking Install, keeping Finish app launches & Browse dialogs un-elevated), `highestAvailable` (elevates upfront for Admin accounts while allowing Standard Users to open Setup), or `requireAdministrator` (requires Admin UAC immediately at `0.0s` launch with Explorer shell-token de-elevation on Finish launch)."},
     {"Package",  "BuildUniversal",       FieldValueKind::Boolean,     false, "false",             "",
      "When `true` (or when `--universal` is passed to `instbuild.exe`), compiles both `x64` and `arm64` editions and emits `<UniversalOutputName>-offline-setup.exe` plus `<UniversalOutputName>-setup.exe`."},
     {"Package",  "UniversalOutputName",  FieldValueKind::String,      false, "",                  "",

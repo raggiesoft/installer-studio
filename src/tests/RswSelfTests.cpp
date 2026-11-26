@@ -955,6 +955,110 @@ int wmain() {
               "Compiled .msi populates UIText, non-flat ProgressBar (0x10000), EnableRollback Cancel lock, and 100% closed Control_Next cycles (zero Error 2809)",
               uiDiag);
 
+        // 5H. `v0.5.1` Verification:
+        //     - `[Package] RequestedExecutionLevel` validator (`asInvoker | highestAvailable | requireAdministrator`)
+        //     - Exact single-language PE `RT_MANIFEST` `#1` stamping across all 3 execution levels
+        //     - `QueryProcessPrivilegeState` (`EnableLUA` + `CheckTokenMembership` UAC-off Admin verification)
+        //     - Per-product (`UpgradeCode`) single-instance mutex isolation + cross-product `ScopedActiveMsiBeacon`
+        //       & non-destructive `IsSystemMsiExecuteMutexBusy` probe!
+        {
+            auto badExecDoc = rsw::ParseManifestText(v1Text.str(), testWorkDir / L"v1.rsip");
+            badExecDoc.SetString("Package", "", "RequestedExecutionLevel", "invalidSuperAdmin");
+            const auto badExecRep = rsw::ValidateManifestDocument(badExecDoc, hostArch);
+
+            auto readStampedManifestXml = [](const std::filesystem::path& exePath, std::size_t& outLangCount) -> std::string {
+                const auto langs = rsw::QueryExistingPeManifestLangIds(exePath);
+                outLangCount = langs.size();
+                HMODULE hMod = ::LoadLibraryExW(
+                    exePath.wstring().c_str(), nullptr,
+                    LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+                if (!hMod) return {};
+                HRSRC hRes = ::FindResourceW(hMod, MAKEINTRESOURCEW(1), RT_MANIFEST);
+                std::string xml;
+                if (hRes) {
+                    const DWORD sz = ::SizeofResource(hMod, hRes);
+                    HGLOBAL hGlb   = ::LoadResource(hMod, hRes);
+                    if (hGlb && sz > 0) {
+                        const auto* p = static_cast<const char*>(::LockResource(hGlb));
+                        if (p) xml.assign(p, sz);
+                    }
+                }
+                ::FreeLibrary(hMod);
+                return xml;
+            };
+
+            std::size_t invLangs = 0, highLangs = 0, reqLangs = 0;
+            const std::string invXml = readStampedManifestXml(v1SetupExe, invLangs);
+
+            auto highDoc = rsw::ParseManifestText(v1Text.str(), testWorkDir / L"v1.rsip");
+            highDoc.SetString("Package", "", "RequestedExecutionLevel", "highestAvailable");
+            highDoc.SetString("Package", "", "OutputName", "v051-high-$(ARCH)");
+            rsw::CompiledMsiSummary highSum = v1Sum;
+            highSum.msiPath = testWorkDir / L"v051-high.msi";
+            std::filesystem::copy_file(v1Sum.msiPath, highSum.msiPath, std::filesystem::copy_options::overwrite_existing, ec);
+            std::filesystem::path highExe;
+            std::string highErr;
+            const bool okHighPkg = rsw::PackageSelfExtractingBootstrapper(highDoc, highSum, binDir, highExe, highErr, true);
+            const std::string highXml = okHighPkg ? readStampedManifestXml(highExe, highLangs) : std::string{};
+
+            auto reqDoc = rsw::ParseManifestText(v1Text.str(), testWorkDir / L"v1.rsip");
+            reqDoc.SetString("Package", "", "RequestedExecutionLevel", "requireAdministrator");
+            reqDoc.SetString("Package", "", "OutputName", "v051-reqadmin-$(ARCH)");
+            rsw::CompiledMsiSummary reqSum = v1Sum;
+            reqSum.msiPath = testWorkDir / L"v051-reqadmin.msi";
+            std::filesystem::copy_file(v1Sum.msiPath, reqSum.msiPath, std::filesystem::copy_options::overwrite_existing, ec);
+            std::filesystem::path reqExe;
+            std::string reqErr;
+            const bool okReqPkg = rsw::PackageSelfExtractingBootstrapper(reqDoc, reqSum, binDir, reqExe, reqErr, true);
+            const std::string reqXml = okReqPkg ? readStampedManifestXml(reqExe, reqLangs) : std::string{};
+
+            const bool manifestOk =
+                !badExecRep.IsOk() &&
+                invLangs == 1 && invXml.find("level=\"asInvoker\"") != std::string::npos &&
+                okHighPkg && highLangs == 1 && highXml.find("level=\"highestAvailable\"") != std::string::npos &&
+                okReqPkg && reqLangs == 1 && reqXml.find("level=\"requireAdministrator\"") != std::string::npos;
+            Check(manifestOk,
+                  "v0.5.1 RequestedExecutionLevel validator & single-LCID PE RT_MANIFEST stamping (asInvoker / highestAvailable / requireAdministrator) pass",
+                  "invLangs=" + std::to_string(invLangs) + " highLangs=" + std::to_string(highLangs) + " reqLangs=" + std::to_string(reqLangs));
+
+            const auto priv = rsw::QueryProcessPrivilegeState();
+            const bool privConsistent =
+                (rsw::NormalizeRequestedExecutionLevel("REQUIREAdministrator") == "requireAdministrator") &&
+                (rsw::NormalizeRequestedExecutionLevel("highestavailable") == "highestAvailable") &&
+                (rsw::NormalizeRequestedExecutionLevel("") == "asInvoker") &&
+                (priv.HasEffectiveAdminRights() == (priv.isTokenElevated || priv.isAdminGroupActive)) &&
+                (priv.HasEffectiveAdminRights() || (priv.CanPromptForUacElevation() != priv.IsStandardUserWithUacDisabled()));
+
+            const std::wstring keyStoreTrainer = rsw::DeriveProductInstanceKey(
+                L"{A1111111-2222-3333-4444-555555555555}", L"RaggieSoft", L"StoreTrainer");
+            const std::wstring keyA11yStudio   = rsw::DeriveProductInstanceKey(
+                L"{B9999999-8888-7777-6666-555555555555}", L"RaggieSoft", L"Accessibility Studio");
+            const std::wstring pidSalt = std::to_wstring(::GetCurrentProcessId()) + L"_";
+            bool dupA1 = true, dupA2 = false, dupB1 = true;
+            HANDLE hMutA1 = rsw::CreatePermissiveLocalMutex(L"Local\\RaggieSoft.TestUI." + pidSalt + keyStoreTrainer, dupA1);
+            HANDLE hMutA2 = rsw::CreatePermissiveLocalMutex(L"Local\\RaggieSoft.TestUI." + pidSalt + keyStoreTrainer, dupA2);
+            HANDLE hMutB1 = rsw::CreatePermissiveLocalMutex(L"Local\\RaggieSoft.TestUI." + pidSalt + keyA11yStudio,   dupB1);
+            if (hMutA2) ::CloseHandle(hMutA2);
+            if (hMutB1) ::CloseHandle(hMutB1);
+            if (hMutA1) ::CloseHandle(hMutA1);
+
+            std::wstring beaconDuring;
+            {
+                rsw::ScopedActiveMsiBeacon testBeacon(L"RaggieSoft StoreTrainer 2.0");
+                beaconDuring = rsw::ScopedActiveMsiBeacon::ReadActiveProductName();
+            }
+            const std::wstring beaconAfter = rsw::ScopedActiveMsiBeacon::ReadActiveProductName();
+            const bool msiProbe1 = rsw::IsSystemMsiExecuteMutexBusy();
+            const bool msiProbe2 = rsw::IsSystemMsiExecuteMutexBusy();
+
+            Check(privConsistent &&
+                  !dupA1 && dupA2 && !dupB1 &&
+                  beaconDuring == L"RaggieSoft StoreTrainer 2.0" &&
+                  beaconAfter.empty() &&
+                  (msiProbe1 == msiProbe2),
+                  "v0.5.1 CheckTokenMembership UAC-off check, UpgradeCode single-instance isolation, & ScopedActiveMsiBeacon queue discovery pass");
+        }
+
         // 6a. Execute `AppSearch -> LaunchConditions -> CostInitialize -> FileCost -> CostFinalize`
         //     directly inside `System32\msi.dll` (`MsiOpenPackageExW` works even in sandboxed CI!)
         ::MsiSetInternalUI(INSTALLUILEVEL_NONE, nullptr);

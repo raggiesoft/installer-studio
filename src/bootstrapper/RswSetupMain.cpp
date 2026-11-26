@@ -52,6 +52,8 @@
 #include <msiquery.h>
 #include <richedit.h>
 #include <shellapi.h>
+#include <shldisp.h>
+#include <shlobj.h>
 #include <shobjidl.h>
 
 #include <atomic>
@@ -67,6 +69,8 @@
 #include <vector>
 
 #pragma comment(lib, "msi.lib")
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "oleaut32.lib")
 #pragma comment(lib, "shell32.lib")
 
 namespace {
@@ -78,6 +82,7 @@ constexpr UINT WM_RSW_INSTALL_DONE    = WM_APP + 12;
 constexpr UINT WM_RSW_ASK_RETRY_DL    = WM_APP + 13;
 constexpr UINT WM_RSW_REQUEST_UAC     = WM_APP + 14;
 constexpr UINT WM_RSW_LOCK_CANCEL     = WM_APP + 15;
+constexpr UINT WM_RSW_QUEUE_STATE     = WM_APP + 16;
 constexpr UINT IDM_SYS_ABOUT_SETUP    = 0x1F10u;
 
 // ============================================================================
@@ -325,6 +330,7 @@ struct BrandingConfig {
     std::wstring customDesc         = L"Choose a custom destination folder, Start Menu group, and shortcuts step by step before installing.";
     std::wstring authorOrArtist;
     std::string  setupTypePreset    = "express_custom";
+    std::string  requestedExecLevel = "asInvoker";
     bool         systemMenuAbout    = false;
     std::vector<rsw::SetupTypeOptionSpec> setupTypes;
     std::vector<rsw::BillboardSlideSpec>  billboards;
@@ -430,6 +436,9 @@ BrandingConfig LoadBrandingConfigFromResource() {
     cfg.authorOrArtist   = getW("AuthorOrArtist", L"");
     if (!kv["SetupTypePreset"].empty()) {
         cfg.setupTypePreset = rsw::TrimAscii(kv["SetupTypePreset"]);
+    }
+    if (!kv["RequestedExecutionLevel"].empty()) {
+        cfg.requestedExecLevel = std::string(rsw::NormalizeRequestedExecutionLevel(kv["RequestedExecutionLevel"]));
     }
 
     // Parse optional `[SetupType.<id>]` custom setup type cards (`0..4`)
@@ -711,17 +720,155 @@ std::wstring StripMnemonics(std::wstring_view s) {
     return out;
 }
 
-/// Checks whether the current process token already holds Administrator elevation (`TokenElevation`).
-bool IsCurrentProcessElevated() noexcept {
-    HANDLE hToken = nullptr;
-    if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
-        return false;
+/// Checks whether the current process already possesses active Administrator privileges—accounting
+/// for BOTH standard UAC elevation (`TokenIsElevated`) AND UAC-disabled (`EnableLUA = 0`) Admin logins
+/// via `CheckTokenMembership(BUILTIN\Administrators)`!
+bool HasCurrentProcessAdminRights() noexcept {
+    return rsw::QueryProcessPrivilegeState().HasEffectiveAdminRights();
+}
+
+/// Launches the installed application on the `Finished` page safely in the interactive user's
+/// non-elevated Explorer desktop token!
+/// Why does this matter in `v0.5.1`?
+///   - Under default `RequestedExecutionLevel = asInvoker`, `SetupWizard.exe` is already un-elevated,
+///     so `ShellExecuteW` starts the app directly as the standard user.
+///   - When an author opts into `RequestedExecutionLevel = requireAdministrator` or `highestAvailable`,
+///     `SetupWizard.exe` itself runs elevated (`isTokenElevated == true`). Delegating launch through
+///     Windows Explorer's desktop shell view (`CLSID_ShellWindows` -> `SWC_DESKTOP` -> `IShellDispatch2`)
+///     starts the user's app in their normal desktop token so drag-and-drop from Explorer works and
+///     first-run `%APPDATA%` files aren't owned by `BUILTIN\Administrators`!
+void LaunchInstalledAppDeElevated(const std::filesystem::path& exePath, const std::wstring& workDir) noexcept {
+    const auto priv = rsw::QueryProcessPrivilegeState();
+    if (!priv.isTokenElevated || !priv.isUacEnabled) {
+        ::ShellExecuteW(nullptr, L"open", exePath.wstring().c_str(), nullptr, workDir.c_str(), SW_SHOWNORMAL);
+        return;
     }
-    TOKEN_ELEVATION elev{};
-    DWORD cb = sizeof(elev);
-    const BOOL ok = ::GetTokenInformation(hToken, TokenElevation, &elev, sizeof(elev), &cb);
-    ::CloseHandle(hToken);
-    return ok && (elev.TokenIsElevated != 0);
+
+    bool delegatedViaExplorer = false;
+    IShellWindows* pShellWindows = nullptr;
+    if (SUCCEEDED(::CoCreateInstance(CLSID_ShellWindows, nullptr, CLSCTX_LOCAL_SERVER, IID_PPV_ARGS(&pShellWindows))) && pShellWindows) {
+        VARIANT vtEmpty{};
+        ::VariantInit(&vtEmpty);
+        long hwndDesktop = 0;
+        IDispatch* pDesktopDisp = nullptr;
+        if (SUCCEEDED(pShellWindows->FindWindowSW(&vtEmpty, &vtEmpty, SWC_DESKTOP, &hwndDesktop, SWFO_NEEDDISPATCH, &pDesktopDisp)) && pDesktopDisp) {
+            IServiceProvider* pSp = nullptr;
+            if (SUCCEEDED(pDesktopDisp->QueryInterface(IID_PPV_ARGS(&pSp))) && pSp) {
+                IShellBrowser* pBrowser = nullptr;
+                if (SUCCEEDED(pSp->QueryService(SID_STopLevelBrowser, IID_PPV_ARGS(&pBrowser))) && pBrowser) {
+                    IShellView* pShellView = nullptr;
+                    if (SUCCEEDED(pBrowser->QueryActiveShellView(&pShellView)) && pShellView) {
+                        IDispatch* pBgDisp = nullptr;
+                        if (SUCCEEDED(pShellView->GetItemObject(SVGIO_BACKGROUND, IID_PPV_ARGS(&pBgDisp))) && pBgDisp) {
+                            IShellFolderViewDual* pFolderView = nullptr;
+                            if (SUCCEEDED(pBgDisp->QueryInterface(IID_PPV_ARGS(&pFolderView))) && pFolderView) {
+                                IDispatch* pAppDisp = nullptr;
+                                if (SUCCEEDED(pFolderView->get_Application(&pAppDisp)) && pAppDisp) {
+                                    IShellDispatch2* pShellDisp = nullptr;
+                                    if (SUCCEEDED(pAppDisp->QueryInterface(IID_PPV_ARGS(&pShellDisp))) && pShellDisp) {
+                                        BSTR bstrFile = ::SysAllocString(exePath.wstring().c_str());
+                                        VARIANT vtArgs{}, vtDir{}, vtVerb{}, vtShow{};
+                                        ::VariantInit(&vtArgs);
+                                        ::VariantInit(&vtDir);
+                                        ::VariantInit(&vtVerb);
+                                        ::VariantInit(&vtShow);
+                                        vtDir.vt      = VT_BSTR;
+                                        vtDir.bstrVal = ::SysAllocString(workDir.c_str());
+                                        vtVerb.vt     = VT_BSTR;
+                                        vtVerb.bstrVal= ::SysAllocString(L"open");
+                                        vtShow.vt     = VT_I4;
+                                        vtShow.lVal   = SW_SHOWNORMAL;
+                                        if (bstrFile && SUCCEEDED(pShellDisp->ShellExecute(bstrFile, vtArgs, vtDir, vtVerb, vtShow))) {
+                                            delegatedViaExplorer = true;
+                                        }
+                                        if (bstrFile) ::SysFreeString(bstrFile);
+                                        ::VariantClear(&vtDir);
+                                        ::VariantClear(&vtVerb);
+                                        pShellDisp->Release();
+                                    }
+                                    pAppDisp->Release();
+                                }
+                                pFolderView->Release();
+                            }
+                            pBgDisp->Release();
+                        }
+                        pShellView->Release();
+                    }
+                    pBrowser->Release();
+                }
+                pSp->Release();
+            }
+            pDesktopDisp->Release();
+        }
+        pShellWindows->Release();
+    }
+
+    if (!delegatedViaExplorer) {
+        ::ShellExecuteW(nullptr, L"open", exePath.wstring().c_str(), nullptr, workDir.c_str(), SW_SHOWNORMAL);
+    }
+}
+
+/// Executes an MSI transaction (`MsiInstallProductW`, `MsiConfigureProductExW`, or `MsiReinstallProductW`)
+/// inside a **Polite Cross-Product Auto-Queue** on `Global\_MSIExecute`!
+/// If another installer (e.g. *StoreTrainer* or Windows Update) is actively installing, this helper
+/// pauses calmly instead of crashing with `ERROR_INSTALL_ALREADY_RUNNING` (`1618`), reports who holds
+/// the slot when it's a fellow RaggieSoft installer, keeps `Cancel` responsive, and auto-resumes!
+template <typename CancelPredFn, typename OnQueueWaitFn, typename OnQueueResumeFn, typename MsiInvokeFn>
+UINT ExecuteMsiCallWithPoliteQueue(
+    std::wstring_view myProductName,
+    CancelPredFn&& isCanceled,
+    OnQueueWaitFn&& onQueueWaiting,
+    OnQueueResumeFn&& onQueueResumed,
+    MsiInvokeFn&& invokeMsi)
+{
+    auto buildWaitMessage = [&]() -> std::wstring {
+        const std::wstring holder = rsw::ScopedActiveMsiBeacon::ReadActiveProductName();
+        if (!holder.empty() && holder != myProductName) {
+            return L"Waiting for " + holder + L" Setup to finish installing...\r\nSetup will continue automatically.";
+        }
+        return L"Waiting for another Windows installation to finish...\r\nSetup will continue automatically.";
+    };
+
+    for (int attempt = 0; attempt < 7200; ++attempt) {
+        if (isCanceled()) {
+            return ERROR_INSTALL_USEREXIT;
+        }
+
+        bool waitedBeforeCall = false;
+        while (rsw::IsSystemMsiExecuteMutexBusy()) {
+            if (isCanceled()) {
+                return ERROR_INSTALL_USEREXIT;
+            }
+            waitedBeforeCall = true;
+            onQueueWaiting(buildWaitMessage());
+            ::Sleep(250);
+        }
+        if (waitedBeforeCall) {
+            onQueueResumed();
+        }
+
+        UINT rc = ERROR_INSTALL_FAILURE;
+        {
+            rsw::ScopedActiveMsiBeacon activeBeacon(myProductName);
+            rc = invokeMsi();
+        }
+
+        if (rc != ERROR_INSTALL_ALREADY_RUNNING) {
+            return rc;
+        }
+        if (isCanceled()) {
+            return ERROR_INSTALL_USEREXIT;
+        }
+        onQueueWaiting(buildWaitMessage());
+        for (int slice = 0; slice < 4; ++slice) {
+            if (isCanceled()) {
+                return ERROR_INSTALL_USEREXIT;
+            }
+            ::Sleep(250);
+        }
+        onQueueResumed();
+    }
+    return ERROR_INSTALL_ALREADY_RUNNING;
 }
 
 /// Strips trailing path slashes (`C:\Apps\Foo\` -> `C:\Apps\Foo`) before wrapping in `"..."` on an MSI
@@ -785,6 +932,8 @@ public:
     WizardPage              currentPage       = WizardPage::Welcome;
     SelectedAction          selectedAction    = SelectedAction::InstallExpress;
     bool                    isHeadlessExport  = false;
+    std::wstring            instanceKey;
+    UINT                    wmActivateInstance = 0;
     TaskbarProgressHelper   taskbarProgress;
     int                     selectedSetupTypeIdx = 0;
     std::string             selectedExplicitFeaturesCsv;
@@ -2121,7 +2270,8 @@ public:
             ::SetWindowTextW(hBtnPrimary, L"&Finish");
             ::EnableWindow(hBtnPrimary, TRUE);
         }
-        const bool needsUac = cfg.perMachine && !IsCurrentProcessElevated();
+        const auto privState = rsw::QueryProcessPrivilegeState();
+        const bool needsUac  = cfg.perMachine && privState.CanPromptForUacElevation();
         ::SendMessageW(hBtnPrimary, BCM_SETSHIELD, 0, (showShield && needsUac) ? TRUE : FALSE);
 
         // Announce wizard stage transition to assistive technologies (`Narrator` / `NVDA` / `JAWS`)
@@ -2366,7 +2516,30 @@ public:
                 anyPendingPrereqElev = true;
             }
         }
-        const bool willNeedUac = (cfg.perMachine || anyPendingPrereqElev) && !IsCurrentProcessElevated();
+        const auto privState  = rsw::QueryProcessPrivilegeState();
+        const bool needsAdmin = (cfg.perMachine || anyPendingPrereqElev);
+
+        // Explicit Admin Rights Check When UAC Is Disabled (`EnableLUA = 0`):
+        //   If UAC is turned off on a Standard User account, Windows cannot display a `runas`
+        //   elevation prompt. Fail cleanly upfront with a clear, accessible explanation!
+        if (needsAdmin && privState.IsStandardUserWithUacDisabled()) {
+            const std::wstring cap = cfg.productName + L" Setup";
+            const std::wstring msg =
+                L"Installing " + cfg.productName + L" for all users requires Administrator privileges, "
+                L"and User Account Control (UAC) elevation prompts are turned off on this computer.\n\n"
+                L"Please sign in with an Administrator account (or re-enable UAC) and run Setup again.";
+            if (IsPassiveToastMode()) {
+                finalMsiResult = ERROR_ACCESS_DENIED;
+                ::DestroyWindow(hWnd);
+            } else {
+                ::TaskDialog(hWnd, ::GetModuleHandleW(nullptr), cap.c_str(),
+                             L"Administrator Privileges Required", msg.c_str(),
+                             TDCBF_OK_BUTTON, TD_ERROR_ICON, nullptr);
+            }
+            return;
+        }
+
+        const bool willNeedUac = needsAdmin && !privState.HasEffectiveAdminRights();
         awaitingUacElevation.store(willNeedUac);
 
         currentPage = WizardPage::Installing;
@@ -2507,7 +2680,7 @@ public:
             // -----------------------------------------------------------------
             // STEP 2: Unified Single-UAC Elevation Broker (`Prerequisites -> MSI`)
             // -----------------------------------------------------------------
-            const bool needsElevation = (cfg.perMachine || anyPrereqNeedsElevation) && !IsCurrentProcessElevated();
+            const bool needsElevation = (cfg.perMachine || anyPrereqNeedsElevation) && !HasCurrentProcessAdminRights();
             const auto statusFile = tempWorkDir / L"msi-status.txt";
             const auto cancelFile = tempWorkDir / L"msi-cancel.flag";
             std::filesystem::remove(statusFile, thEc);
@@ -2527,6 +2700,7 @@ public:
                 {
                     std::ofstream jf(jobFile, std::ios::binary | std::ios::trunc);
                     jf << "Mode="        << modeStr << "\n"
+                       << "ProductName=" << rsw::WideToUtf8(cfg.productName) << "\n"
                        << "MsiPath="     << rsw::WideToUtf8(tempMsiPath.wstring()) << "\n"
                        << "ProductCode=" << rsw::WideToUtf8(installedProductCode) << "\n"
                        << "LogPath="     << rsw::WideToUtf8(msiLogPath.wstring()) << "\n"
@@ -2566,23 +2740,31 @@ public:
                 }
 
                 HANDLE hElevatedChild = uacCtx.hChildProcess;
+                bool lastChildQueuePaused = false;
                 auto syncStatusFromDisk = [&]() {
                     std::ifstream in(statusFile, std::ios::binary);
                     if (!in) return;
-                    std::string linePerm, lineStat, lineErr, lineLock;
+                    std::string linePerm, lineStat, lineErr, lineLock, lineQueue;
                     std::getline(in, linePerm);
                     std::getline(in, lineStat);
                     std::getline(in, lineErr);
                     std::getline(in, lineLock);
-                    if (!linePerm.empty() && linePerm.back() == '\r') linePerm.pop_back();
-                    if (!lineStat.empty() && lineStat.back() == '\r') lineStat.pop_back();
-                    if (!lineErr.empty()  && lineErr.back()  == '\r') lineErr.pop_back();
-                    if (!lineLock.empty() && lineLock.back() == '\r') lineLock.pop_back();
+                    std::getline(in, lineQueue);
+                    if (!linePerm.empty()  && linePerm.back()  == '\r') linePerm.pop_back();
+                    if (!lineStat.empty()  && lineStat.back()  == '\r') lineStat.pop_back();
+                    if (!lineErr.empty()   && lineErr.back()   == '\r') lineErr.pop_back();
+                    if (!lineLock.empty()  && lineLock.back()  == '\r') lineLock.pop_back();
+                    if (!lineQueue.empty() && lineQueue.back() == '\r') lineQueue.pop_back();
 
                     if (lineLock == "1" && !cancelLockedPointOfNoReturn.exchange(true)) {
                         ::PostMessageW(hWnd, WM_RSW_LOCK_CANCEL, 0, 0);
                     }
-                    if (!linePerm.empty()) {
+                    const bool qPaused = (lineQueue == "1");
+                    if (qPaused != lastChildQueuePaused) {
+                        lastChildQueuePaused = qPaused;
+                        ::PostMessageW(hWnd, WM_RSW_QUEUE_STATE, qPaused ? 1 : 0, 0);
+                    }
+                    if (!linePerm.empty() && !qPaused) {
                         const int perm = std::clamp(std::atoi(linePerm.c_str()), 0, 1000);
                         ::PostMessageW(hWnd, WM_RSW_PROGRESS_UPDATE, static_cast<WPARAM>(perm), 0);
                     }
@@ -2661,29 +2843,41 @@ public:
             ::MsiSetExternalUIRecord(&SetupWizardApp::OnMsiExternalRecord, kFilter, this, &prevHandler);
             ::MsiEnableLogW(INSTALLLOGMODE_VERBOSE, msiLogPath.wstring().c_str(), INSTALLLOGATTRIBUTES_FLUSHEACHLINE);
 
-            UINT rc = ERROR_SUCCESS;
-            if (selectedAction == SelectedAction::MaintUninstall && !installedProductCode.empty()) {
-                std::wstring unProps;
-                if (wipeCache) unProps += L"REMOVE_CACHE=1 ";
-                if (wipePrefs) unProps += L"REMOVE_PREFS=1 ";
-                rc = ::MsiConfigureProductExW(installedProductCode.c_str(), INSTALLLEVEL_DEFAULT, INSTALLSTATE_ABSENT, unProps.c_str());
-            } else if (selectedAction == SelectedAction::MaintQuickRepair && !installedProductCode.empty()) {
-                rc = ::MsiReinstallProductW(
-                    installedProductCode.c_str(),
-                    REINSTALLMODE_FILEMISSING | REINSTALLMODE_FILEOLDERVERSION | REINSTALLMODE_FILEVERIFY |
-                    REINSTALLMODE_MACHINEDATA | REINSTALLMODE_USERDATA | REINSTALLMODE_SHORTCUT);
-            } else if (selectedAction == SelectedAction::MaintFullReinstall && !installedProductCode.empty()) {
-                std::wstring err;
-                if (EnsureTempMsiExtracted(err)) {
-                    rc = ::MsiInstallProductW(tempMsiPath.wstring().c_str(), L"REINSTALL=ALL REINSTALLMODE=vomus");
-                } else {
-                    rc = ::MsiReinstallProductW(
-                        installedProductCode.c_str(),
-                        REINSTALLMODE_FILEREPLACE | REINSTALLMODE_SHORTCUT | REINSTALLMODE_MACHINEDATA | REINSTALLMODE_USERDATA);
-                }
-            } else {
-                rc = ::MsiInstallProductW(tempMsiPath.wstring().c_str(), msiProps.c_str());
-            }
+            UINT rc = ExecuteMsiCallWithPoliteQueue(
+                cfg.productName,
+                [&]() { return cancelRequested.load(); },
+                [&](const std::wstring& waitMsg) {
+                    ::PostMessageW(hWnd, WM_RSW_QUEUE_STATE, 1, 0);
+                    postStatus(waitMsg);
+                },
+                [&]() {
+                    ::PostMessageW(hWnd, WM_RSW_QUEUE_STATE, 0, 0);
+                    postStatus(L"Starting Windows Installer transaction...");
+                },
+                [&]() -> UINT {
+                    if (selectedAction == SelectedAction::MaintUninstall && !installedProductCode.empty()) {
+                        std::wstring unProps;
+                        if (wipeCache) unProps += L"REMOVE_CACHE=1 ";
+                        if (wipePrefs) unProps += L"REMOVE_PREFS=1 ";
+                        return ::MsiConfigureProductExW(installedProductCode.c_str(), INSTALLLEVEL_DEFAULT, INSTALLSTATE_ABSENT, unProps.c_str());
+                    }
+                    if (selectedAction == SelectedAction::MaintQuickRepair && !installedProductCode.empty()) {
+                        return ::MsiReinstallProductW(
+                            installedProductCode.c_str(),
+                            REINSTALLMODE_FILEMISSING | REINSTALLMODE_FILEOLDERVERSION | REINSTALLMODE_FILEVERIFY |
+                            REINSTALLMODE_MACHINEDATA | REINSTALLMODE_USERDATA | REINSTALLMODE_SHORTCUT);
+                    }
+                    if (selectedAction == SelectedAction::MaintFullReinstall && !installedProductCode.empty()) {
+                        std::wstring err;
+                        if (EnsureTempMsiExtracted(err)) {
+                            return ::MsiInstallProductW(tempMsiPath.wstring().c_str(), L"REINSTALL=ALL REINSTALLMODE=vomus");
+                        }
+                        return ::MsiReinstallProductW(
+                            installedProductCode.c_str(),
+                            REINSTALLMODE_FILEREPLACE | REINSTALLMODE_SHORTCUT | REINSTALLMODE_MACHINEDATA | REINSTALLMODE_USERDATA);
+                    }
+                    return ::MsiInstallProductW(tempMsiPath.wstring().c_str(), msiProps.c_str());
+                });
 
             ::MsiSetExternalUIRecord(prevHandler, 0, nullptr, nullptr);
             if (rc == ERROR_SUCCESS && anyPrereqRequestedReboot) {
@@ -2863,8 +3057,9 @@ public:
                     cfg.offerLaunch && !cfg.mainExecutable.empty() &&
                     ::SendMessageW(hFinLaunch, BM_GETCHECK, 0, 0) == BST_CHECKED) {
                     const std::filesystem::path exePath = std::filesystem::path(installDir) / cfg.mainExecutable;
-                    // Safely launched from our `asInvoker` process so user apps never run elevated!
-                    ::ShellExecuteW(nullptr, L"open", exePath.wstring().c_str(), nullptr, installDir.c_str(), SW_SHOWNORMAL);
+                    // De-elevate automatically through Explorer's desktop shell token when Setup ran as
+                    // `requireAdministrator` or `highestAvailable` so the user's app never runs as Admin!
+                    LaunchInstalledAppDeElevated(exePath, installDir);
                 }
                 ::DestroyWindow(hWnd);
                 break;
@@ -3873,11 +4068,26 @@ public:
         if (!self->isHeadlessExport && self->taskbarProgress.HandleMessage(hWnd, msg)) {
             return 0;
         }
+        if (!self->isHeadlessExport && self->wmActivateInstance != 0 && msg == self->wmActivateInstance) {
+            if (::IsIconic(hWnd)) {
+                ::ShowWindow(hWnd, SW_RESTORE);
+            }
+            if (self->hBackdropWnd && ::IsWindow(self->hBackdropWnd)) {
+                ::ShowWindow(self->hBackdropWnd, SW_SHOWNOACTIVATE);
+            }
+            ::SetForegroundWindow(hWnd);
+            ::BringWindowToTop(hWnd);
+            if (self->hBtnPrimary && ::IsWindowVisible(self->hBtnPrimary) && ::IsWindowEnabled(self->hBtnPrimary)) {
+                ::SetFocus(self->hBtnPrimary);
+            }
+            return 0;
+        }
 
         switch (msg) {
             case WM_CREATE:
                 if (!self->isHeadlessExport) {
                     self->taskbarProgress.AttachWindow(hWnd);
+                    self->wmActivateInstance = rsw::RegisterSingleInstanceWindowTag(hWnd, self->instanceKey);
                 }
                 self->CreateControls();
                 self->EnsureCustomSystemMenuAbout();
@@ -4251,6 +4461,16 @@ public:
                 self->SetCloseAndCancelLocked(true);
                 return 0;
 
+            case WM_RSW_QUEUE_STATE:
+                if (!self->isHeadlessExport) {
+                    if (wParam != 0) {
+                        self->taskbarProgress.SetPaused(hWnd);
+                    } else {
+                        self->taskbarProgress.SetIndeterminate(hWnd);
+                    }
+                }
+                return 0;
+
             case WM_RSW_INSTALL_DONE:
                 self->awaitingUacElevation.store(false);
                 if (static_cast<UINT>(wParam) == kSentinelUacDeclined) {
@@ -4282,6 +4502,7 @@ public:
                 return 0;
 
             case WM_DESTROY:
+                rsw::UnregisterSingleInstanceWindowTag(hWnd, self->instanceKey);
                 self->taskbarProgress.Release();
                 if (self->hBackdropWnd && ::IsWindow(self->hBackdropWnd)) {
                     HWND hBack = self->hBackdropWnd;
@@ -4307,6 +4528,7 @@ struct ElevatedWorkerProgressState {
     long long             stepTicks    = 1;
     bool                  forward      = true;
     bool                  cancelLocked = false;
+    bool                  queuePaused  = false;
     int                   permille     = 0;
     std::string           statusUtf8   = "Applying Windows Installer changes...";
     std::string           errorUtf8;
@@ -4329,7 +4551,8 @@ struct ElevatedWorkerProgressState {
         out << permille << "\n"
             << encodeLines(statusUtf8) << "\n"
             << encodeLines(errorUtf8)  << "\n"
-            << (cancelLocked ? "1" : "0") << "\n";
+            << (cancelLocked ? "1" : "0") << "\n"
+            << (queuePaused  ? "1" : "0") << "\n";
     }
 };
 
@@ -4443,6 +4666,7 @@ int RunElevatedMsiWorkerFromJobFile(const std::filesystem::path& jobFile) {
     }
 
     const std::string mode        = kv["Mode"];
+    const std::wstring prodName   = rsw::Utf8ToWide(kv["ProductName"].empty() ? "Application" : kv["ProductName"]);
     const std::wstring msiPath    = rsw::Utf8ToWide(kv["MsiPath"]);
     const std::wstring prodCode   = rsw::Utf8ToWide(kv["ProductCode"]);
     const std::wstring logPath    = rsw::Utf8ToWide(kv["LogPath"]);
@@ -4498,25 +4722,44 @@ int RunElevatedMsiWorkerFromJobFile(const std::filesystem::path& jobFile) {
         ::MsiEnableLogW(INSTALLLOGMODE_VERBOSE, logPath.c_str(), INSTALLLOGATTRIBUTES_FLUSHEACHLINE);
     }
 
-    UINT rc = ERROR_SUCCESS;
-    if (mode == "uninstall" && !prodCode.empty()) {
-        rc = ::MsiConfigureProductExW(prodCode.c_str(), INSTALLLEVEL_DEFAULT, INSTALLSTATE_ABSENT, props.c_str());
-    } else if (mode == "quickrepair" && !prodCode.empty()) {
-        rc = ::MsiReinstallProductW(
-            prodCode.c_str(),
-            REINSTALLMODE_FILEMISSING | REINSTALLMODE_FILEOLDERVERSION | REINSTALLMODE_FILEVERIFY |
-            REINSTALLMODE_MACHINEDATA | REINSTALLMODE_USERDATA | REINSTALLMODE_SHORTCUT);
-    } else if (mode == "fullreinstall") {
-        if (!msiPath.empty() && std::filesystem::exists(msiPath)) {
-            rc = ::MsiInstallProductW(msiPath.c_str(), L"REINSTALL=ALL REINSTALLMODE=vomus");
-        } else if (!prodCode.empty()) {
-            rc = ::MsiReinstallProductW(
-                prodCode.c_str(),
-                REINSTALLMODE_FILEREPLACE | REINSTALLMODE_SHORTCUT | REINSTALLMODE_MACHINEDATA | REINSTALLMODE_USERDATA);
-        }
-    } else {
-        rc = ::MsiInstallProductW(msiPath.c_str(), props.c_str());
-    }
+    UINT rc = ExecuteMsiCallWithPoliteQueue(
+        prodName,
+        [&]() {
+            std::error_code cEc;
+            return !st.cancelFile.empty() && std::filesystem::exists(st.cancelFile, cEc);
+        },
+        [&](const std::wstring& waitMsg) {
+            st.queuePaused = true;
+            st.statusUtf8  = rsw::WideToUtf8(waitMsg);
+            st.FlushToDisk();
+        },
+        [&]() {
+            st.queuePaused = false;
+            st.statusUtf8  = "Starting Windows Installer transaction...";
+            st.FlushToDisk();
+        },
+        [&]() -> UINT {
+            if (mode == "uninstall" && !prodCode.empty()) {
+                return ::MsiConfigureProductExW(prodCode.c_str(), INSTALLLEVEL_DEFAULT, INSTALLSTATE_ABSENT, props.c_str());
+            }
+            if (mode == "quickrepair" && !prodCode.empty()) {
+                return ::MsiReinstallProductW(
+                    prodCode.c_str(),
+                    REINSTALLMODE_FILEMISSING | REINSTALLMODE_FILEOLDERVERSION | REINSTALLMODE_FILEVERIFY |
+                    REINSTALLMODE_MACHINEDATA | REINSTALLMODE_USERDATA | REINSTALLMODE_SHORTCUT);
+            }
+            if (mode == "fullreinstall") {
+                if (!msiPath.empty() && std::filesystem::exists(msiPath)) {
+                    return ::MsiInstallProductW(msiPath.c_str(), L"REINSTALL=ALL REINSTALLMODE=vomus");
+                }
+                if (!prodCode.empty()) {
+                    return ::MsiReinstallProductW(
+                        prodCode.c_str(),
+                        REINSTALLMODE_FILEREPLACE | REINSTALLMODE_SHORTCUT | REINSTALLMODE_MACHINEDATA | REINSTALLMODE_USERDATA);
+                }
+            }
+            return ::MsiInstallProductW(msiPath.c_str(), props.c_str());
+        });
 
     ::MsiSetExternalUIRecord(prevHandler, 0, nullptr, nullptr);
     if (rc == ERROR_SUCCESS && anyPrereqReboot) {
@@ -4549,6 +4792,8 @@ struct UniversalLauncherConfig {
     std::wstring  websiteLabel;
     std::wstring  version           = L"1.0.0";
     std::wstring  manufacturer      = L"RaggieSoft";
+    std::wstring  upgradeCode;
+    std::string   requestedExecLevel = "asInvoker";
     int           minWindowsBuild   = 22000;
     std::wstring  osLaunchMessage   = L"This application requires Windows 11 (Build 22000) or later.";
     COLORREF      accentPrimary     = RGB(37, 99, 235);
@@ -4588,6 +4833,10 @@ UniversalLauncherConfig ParseUniversalLauncherConfig(std::string_view text) {
     cfg.websiteLabel    = getW("WebsiteLabel", L"");
     cfg.version         = getW("Version", cfg.version);
     cfg.manufacturer    = getW("Manufacturer", cfg.manufacturer);
+    cfg.upgradeCode     = getW("UpgradeCode", L"");
+    if (!kv["RequestedExecutionLevel"].empty()) {
+        cfg.requestedExecLevel = std::string(rsw::NormalizeRequestedExecutionLevel(kv["RequestedExecutionLevel"]));
+    }
     if (!kv["MinWindowsBuild"].empty()) cfg.minWindowsBuild = std::atoi(kv["MinWindowsBuild"].c_str());
     cfg.osLaunchMessage = getW("OsLaunchMessage", cfg.osLaunchMessage);
     cfg.accentPrimary   = rsw::ui::ParseHexColor(kv["AccentPrimaryHex"], cfg.accentPrimary);
@@ -4659,6 +4908,8 @@ public:
     std::string             errorUtf8;
     bool                    downloadSucceeded = false;
     std::thread             dlThread;
+    std::wstring            instanceKey;
+    UINT                    wmActivateInstance = 0;
     TaskbarProgressHelper   taskbarProgress;
 
     ~UniversalWebDownloaderUi() {
@@ -4861,10 +5112,19 @@ public:
         if (self->taskbarProgress.HandleMessage(hWnd, msg)) {
             return 0;
         }
+        if (self->wmActivateInstance != 0 && msg == self->wmActivateInstance) {
+            if (::IsIconic(hWnd)) {
+                ::ShowWindow(hWnd, SW_RESTORE);
+            }
+            ::SetForegroundWindow(hWnd);
+            ::BringWindowToTop(hWnd);
+            return 0;
+        }
 
         switch (msg) {
             case WM_CREATE: {
                 self->taskbarProgress.AttachWindow(hWnd);
+                self->wmActivateInstance = rsw::RegisterSingleInstanceWindowTag(hWnd, self->instanceKey);
                 HINSTANCE hInst = ::GetModuleHandleW(nullptr);
                 self->hProgBar = ::CreateWindowExW(
                     0, PROGRESS_CLASSW, L"Installer Download Progress",
@@ -4973,6 +5233,7 @@ public:
                 return 0;
             }
             case WM_DESTROY: {
+                rsw::UnregisterSingleInstanceWindowTag(hWnd, self->instanceKey);
                 self->taskbarProgress.Release();
                 ::PostQuitMessage(0);
                 return 0;
@@ -4994,6 +5255,7 @@ int RunUniversalInstallerDispatcher(
     const auto hostOs = rsw::QueryHostPlatform();
     bool targetArm64  = (hostOs.nativeMachine == IMAGE_FILE_MACHINE_ARM64);
     bool headlessMode = false;
+    bool utilityMode  = false;
 
     std::wstring forwardedArgs;
     for (std::size_t i = 0; i < rawArgs.size(); ++i) {
@@ -5006,8 +5268,10 @@ int RunUniversalInstallerDispatcher(
             targetArm64 = false;
             continue;
         }
-        if (a == L"/s" || a == L"/S" || a == L"/qn" || a == L"/quiet" || a == L"--silent" ||
-            a == L"--extract-msi" || a == L"/extract" || a == L"--export-screenshots") {
+        if (a == L"--extract-msi" || a == L"/extract" || a == L"--export-screenshots") {
+            headlessMode = true;
+            utilityMode  = true;
+        } else if (a == L"/s" || a == L"/S" || a == L"/qn" || a == L"/quiet" || a == L"--silent") {
             headlessMode = true;
         }
         if (!forwardedArgs.empty()) forwardedArgs.push_back(L' ');
@@ -5022,6 +5286,44 @@ int RunUniversalInstallerDispatcher(
                          detail.c_str(), TDCBF_CLOSE_BUTTON, TD_WARNING_ICON, nullptr);
         }
         return 1603;
+    }
+
+    // UAC-Disabled (`EnableLUA = 0`) Admin Rights Gate when `RequestedExecutionLevel = requireAdministrator`!
+    if (!utilityMode && ucfg.requestedExecLevel == "requireAdministrator") {
+        const auto priv = rsw::QueryProcessPrivilegeState();
+        if (!priv.HasEffectiveAdminRights()) {
+            if (!headlessMode) {
+                const std::wstring title = ucfg.productName + L" Setup";
+                const std::wstring msg =
+                    ucfg.productName + L" Setup requires Administrator privileges to run, and "
+                    L"User Account Control (UAC) elevation is disabled on this computer.\n\n"
+                    L"Please sign in with an Administrator account and run Setup again.";
+                ::TaskDialog(nullptr, hInstance, title.c_str(), L"Administrator Privileges Required",
+                             msg.c_str(), TDCBF_CLOSE_BUTTON, TD_ERROR_ICON, nullptr);
+            }
+            return ERROR_ACCESS_DENIED;
+        }
+    }
+
+    // Per-Product Single-Instance Guard (`SetupStub.<Key>` + `SetupUI.<Key>`):
+    //   If either this Universal Stub OR the already-spawned native `x64`/`ARM64` `SetupWizard` UI
+    //   for this `UpgradeCode` is already running, restore its window instead of opening a duplicate!
+    const std::wstring instKey = rsw::DeriveProductInstanceKey(ucfg.upgradeCode, ucfg.manufacturer, ucfg.productName);
+    HANDLE hStubMutex = nullptr;
+    if (!utilityMode) {
+        if (rsw::DoesLocalMutexExist(L"Local\\RaggieSoft.SetupUI." + instKey)) {
+            if (headlessMode) return ERROR_INSTALL_ALREADY_RUNNING;
+            rsw::ActivateExistingProductSetupWindow(instKey);
+            return 0;
+        }
+        bool stubAlreadyRunning = false;
+        hStubMutex = rsw::CreatePermissiveLocalMutex(L"Local\\RaggieSoft.SetupStub." + instKey, stubAlreadyRunning);
+        if (stubAlreadyRunning) {
+            if (hStubMutex) ::CloseHandle(hStubMutex);
+            if (headlessMode) return ERROR_INSTALL_ALREADY_RUNNING;
+            rsw::ActivateExistingProductSetupWindow(instKey);
+            return 0;
+        }
     }
 
     std::error_code ec;
@@ -5079,6 +5381,7 @@ int RunUniversalInstallerDispatcher(
 
                 UniversalWebDownloaderUi ui{};
                 ui.cfg            = ucfg;
+                ui.instanceKey    = instKey;
                 ui.targetArm64    = targetArm64;
                 ui.targetUrl      = targetUrl;
                 ui.expectedSha256 = expectedSha;
@@ -5146,6 +5449,13 @@ int RunUniversalInstallerDispatcher(
         }
     }
 
+    // Release the outer `SetupStub` mutex right before spawning the native child installer so the
+    // child cleanly acquires `SetupUI.<Key>` and inherits foreground activation rights!
+    if (hStubMutex) {
+        ::CloseHandle(hStubMutex);
+        hStubMutex = nullptr;
+    }
+
     // Launch the verified 100% native (`ARM64` or `x64`) installer process and return its exact exit code!
     std::wstring childCmd = L"\"" + childPath.wstring() + L"\"";
     if (!forwardedArgs.empty()) {
@@ -5159,6 +5469,7 @@ int RunUniversalInstallerDispatcher(
         std::filesystem::remove_all(tmpDir, ec);
         return ERROR_INSTALL_FAILURE;
     }
+    ::AllowSetForegroundWindow(pi.dwProcessId);
     ::WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD childExitCode = 0;
     ::GetExitCodeProcess(pi.hProcess, &childExitCode);
@@ -5249,6 +5560,33 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         std::error_code ec;
         const auto silentCfg     = LoadBrandingConfigFromResource();
         const auto silentPrereqs = LoadEmbeddedPrerequisitesFromResource();
+        const auto privState     = rsw::QueryProcessPrivilegeState();
+
+        bool anyReqElev = false;
+        const std::string arch = rsw::WideToUtf8(silentCfg.architecture);
+        for (const auto& pr : silentPrereqs) {
+            if (!rsw::IsPrerequisiteSatisfied(pr, arch) && pr.requiresElevation) {
+                anyReqElev = true;
+            }
+        }
+        if ((silentCfg.requestedExecLevel == "requireAdministrator" || silentCfg.perMachine || anyReqElev) &&
+            !privState.HasEffectiveAdminRights()) {
+            return ERROR_ACCESS_DENIED;
+        }
+
+        const std::wstring silentInstKey = rsw::DeriveProductInstanceKey(
+            silentCfg.upgradeCode, silentCfg.manufacturer, silentCfg.productName);
+        if (rsw::DoesLocalMutexExist(L"Local\\RaggieSoft.SetupStub." + silentInstKey)) {
+            return ERROR_INSTALL_ALREADY_RUNNING;
+        }
+        bool sameProdRunning = false;
+        HANDLE hSilentMutex = rsw::CreatePermissiveLocalMutex(
+            L"Local\\RaggieSoft.SetupUI." + silentInstKey, sameProdRunning);
+        if (sameProdRunning) {
+            if (hSilentMutex) ::CloseHandle(hSilentMutex);
+            return ERROR_INSTALL_ALREADY_RUNNING;
+        }
+
         const auto tmpDir = std::filesystem::temp_directory_path(ec) /
                             (L"rsw-silent-" + std::to_wstring(::GetCurrentProcessId()));
         std::filesystem::create_directories(tmpDir, ec);
@@ -5256,7 +5594,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         wchar_t selfExeBuf[MAX_PATH * 4]{};
         ::GetModuleFileNameW(nullptr, selfExeBuf, static_cast<DWORD>(std::size(selfExeBuf)));
         const std::filesystem::path selfDir = std::filesystem::path(selfExeBuf).parent_path();
-        const std::string arch = rsw::WideToUtf8(silentCfg.architecture);
 
         bool anyReboot = false;
         for (const auto& pr : silentPrereqs) {
@@ -5286,6 +5623,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
             if (!okBin) {
                 if (pr.optional) continue;
                 std::filesystem::remove_all(tmpDir, ec);
+                if (hSilentMutex) ::CloseHandle(hSilentMutex);
                 return 9010;
             }
             std::uint32_t rawCode = 0;
@@ -5294,6 +5632,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
             if (outc == rsw::PrereqExitOutcome::SucceededRebootRequested) anyReboot = true;
             else if (outc == rsw::PrereqExitOutcome::Failed && !pr.optional) {
                 std::filesystem::remove_all(tmpDir, ec);
+                if (hSilentMutex) ::CloseHandle(hSilentMutex);
                 return static_cast<int>(rawCode ? rawCode : ERROR_INSTALL_FAILURE);
             }
         }
@@ -5302,11 +5641,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         std::wstring err;
         if (!ExtractEmbeddedMsiToFile(tmpMsi, err)) {
             std::filesystem::remove_all(tmpDir, ec);
+            if (hSilentMutex) ::CloseHandle(hSilentMutex);
             return 1619;
         }
         ::MsiSetInternalUI(INSTALLUILEVEL_NONE, nullptr);
-        UINT rc = ::MsiInstallProductW(tmpMsi.wstring().c_str(), silentExtraProps.c_str());
+        const UINT rc = ExecuteMsiCallWithPoliteQueue(
+            silentCfg.productName,
+            []() { return false; },
+            [](const std::wstring&) {},
+            []() {},
+            [&]() { return ::MsiInstallProductW(tmpMsi.wstring().c_str(), silentExtraProps.c_str()); });
         std::filesystem::remove_all(tmpDir, ec);
+        if (hSilentMutex) ::CloseHandle(hSilentMutex);
         if ((rc == ERROR_SUCCESS && anyReboot) || rc == ERROR_SUCCESS_REBOOT_REQUIRED) {
             return silentCfg.silentRebootCode;
         }
@@ -5322,6 +5668,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     SetupWizardApp app{};
     app.cfg         = LoadBrandingConfigFromResource();
     app.prereqSpecs = LoadEmbeddedPrerequisitesFromResource();
+    app.instanceKey = rsw::DeriveProductInstanceKey(app.cfg.upgradeCode, app.cfg.manufacturer, app.cfg.productName);
     if (!cliStyleOverride.empty()) {
         app.cfg.wizardStyle   = rsw::ParseWizardStyleKind(cliStyleOverride);
         app.cfg.isAutorun16x9 = (app.cfg.wizardStyle == rsw::WizardStyleKind::Autorun16x9);
@@ -5341,6 +5688,46 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         ::TaskDialog(nullptr, hInstance, title.c_str(), L"Unsupported Windows Version", detail.c_str(), TDCBF_CLOSE_BUTTON, TD_WARNING_ICON, nullptr);
         ::CoUninitialize();
         return 1603;
+    }
+
+    // 3B. UAC-Disabled (`EnableLUA = 0`) Admin Rights Check when `RequestedExecutionLevel = requireAdministrator`!
+    if (exportShotDir.empty() && app.cfg.requestedExecLevel == "requireAdministrator") {
+        const auto priv = rsw::QueryProcessPrivilegeState();
+        if (!priv.HasEffectiveAdminRights()) {
+            const std::wstring title = app.cfg.productName + L" Setup";
+            const std::wstring msg =
+                app.cfg.productName + L" Setup requires Administrator privileges to run, and "
+                L"User Account Control (UAC) elevation is disabled on this computer.\n\n"
+                L"Please sign in with an Administrator account and run Setup again.";
+            if (!cliPassiveMode) {
+                ::TaskDialog(nullptr, hInstance, title.c_str(), L"Administrator Privileges Required",
+                             msg.c_str(), TDCBF_CLOSE_BUTTON, TD_ERROR_ICON, nullptr);
+            }
+            ::CoUninitialize();
+            return ERROR_ACCESS_DENIED;
+        }
+    }
+
+    // 3C. Per-Product Single-Instance Guard (`Local\RaggieSoft.SetupUI.<UpgradeCode>`):
+    //     If another instance of THIS product's installer is already open, bring it back to the
+    //     foreground instead of launching a duplicate window (while allowing installers for
+    //     different products to open freely side-by-side)!
+    HANDLE hSingleInstanceMutex = nullptr;
+    if (exportShotDir.empty()) {
+        if (rsw::DoesLocalMutexExist(L"Local\\RaggieSoft.SetupStub." + app.instanceKey)) {
+            rsw::ActivateExistingProductSetupWindow(app.instanceKey);
+            ::CoUninitialize();
+            return 0;
+        }
+        bool alreadyOpen = false;
+        hSingleInstanceMutex = rsw::CreatePermissiveLocalMutex(
+            L"Local\\RaggieSoft.SetupUI." + app.instanceKey, alreadyOpen);
+        if (alreadyOpen) {
+            if (hSingleInstanceMutex) ::CloseHandle(hSingleInstanceMutex);
+            rsw::ActivateExistingProductSetupWindow(app.instanceKey);
+            ::CoUninitialize();
+            return 0;
+        }
     }
 
     app.installDir     = ComputeDefaultInstallDir(app.cfg);
@@ -5438,6 +5825,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
 
     if (!hWnd) {
         if (app.hBackdropWnd) ::DestroyWindow(app.hBackdropWnd);
+        if (hSingleInstanceMutex) ::CloseHandle(hSingleInstanceMutex);
         ::CoUninitialize();
         return 1;
     }
@@ -5535,6 +5923,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     }
 
     app.taskbarProgress.Release();
+    if (hSingleInstanceMutex) ::CloseHandle(hSingleInstanceMutex);
     ::CoUninitialize();
     return 0;
 }

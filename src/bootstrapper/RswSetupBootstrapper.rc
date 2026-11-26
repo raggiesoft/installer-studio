@@ -40,6 +40,11 @@ BEGIN
     "      </requestedPrivileges>\r\n"
     "    </security>\r\n"
     "  </trustInfo>\r\n"
+    "  <compatibility xmlns=""urn:schemas-microsoft-com:compatibility.v1"">\r\n"
+    "    <application>\r\n"
+    "      <supportedOS Id=""{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}""/>\r\n"
+    "    </application>\r\n"
+    "  </compatibility>\r\n"
     "  <application xmlns=""urn:schemas-microsoft-com:asm.v3"">\r\n"
     "    <windowsSettings>\r\n"
     "      <dpiAware xmlns=""http://schemas.microsoft.com/SMI/2005/WindowsSettings"">true/pm</dpiAware>\r\n"
@@ -51,8 +56,8 @@ BEGIN
 END
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,5,0,0
- PRODUCTVERSION 0,5,0,0
+ FILEVERSION 0,5,1,0
+ PRODUCTVERSION 0,5,1,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -65,12 +70,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "RaggieSoft"
             VALUE "FileDescription",  "RaggieSoft Setup Wizard Accessible Runtime Stub"
-            VALUE "FileVersion",      "0.5.0.0"
+            VALUE "FileVersion",      "0.5.1.0"
             VALUE "InternalName",     "SetupWizard"
             VALUE "LegalCopyright",   "Copyright (c) 2026 Michael P. Ragsdale / RaggieSoft (MIT License)"
             VALUE "OriginalFilename", "SetupWizard.exe"
             VALUE "ProductName",      "RaggieSoft Setup Wizard"
-            VALUE "ProductVersion",   "0.5.0"
+            VALUE "ProductVersion",   "0.5.1"
         END
     END
     BLOCK "VarFileInfo"

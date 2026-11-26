@@ -668,9 +668,10 @@ public:
     // View 0: Package & Identity
     static constexpr int IDC_PKG_UNIV_CHK = 2221;
     static constexpr int IDC_PKG_UNIV_URL = 2222;
+    static constexpr int IDC_PKG_EXEC_LVL = 2223;
     HWND hPkgName = nullptr, hPkgTag = nullptr, hPkgWeb = nullptr, hPkgVer = nullptr, hPkgPub = nullptr;
     HWND hPkgGuid = nullptr, hPkgBtnGuid = nullptr, hPkgSub = nullptr, hPkgExe = nullptr, hPkgScope = nullptr;
-    HWND hPkgUnivChk = nullptr, hPkgUnivUrl = nullptr, hPkgApply = nullptr;
+    HWND hPkgUnivChk = nullptr, hPkgUnivUrl = nullptr, hPkgExecLvl = nullptr, hPkgApply = nullptr;
 
     // View 1: Application Runtimes (`[Prerequisite.*]`) & Merge Modules (`[MergeModule.*]`) Tree
     HWND hPrTree = nullptr, hPrPreset = nullptr, hPrDist = nullptr, hPrSource = nullptr;
@@ -977,6 +978,12 @@ public:
         mkLbl(VIEW_PACKAGE, L"Install S&cope:");      hPkgScope   = mkCombo(VIEW_PACKAGE, IDC_PKG_SCOPE, {L"machine", L"user"}, 0);
         hPkgUnivChk = mkBtn(VIEW_PACKAGE, L"Build &Universal Combined EXE (x64+ARM64 + Web Stub)", IDC_PKG_UNIV_CHK, BS_AUTOCHECKBOX);
         mkLbl(VIEW_PACKAGE, L"Universal Web &URL:");  hPkgUnivUrl = mkEd(VIEW_PACKAGE, IDC_PKG_UNIV_URL);
+        mkLbl(VIEW_PACKAGE, L"Setup U&AC Level:");
+        hPkgExecLvl = mkCombo(VIEW_PACKAGE, IDC_PKG_EXEC_LVL, {
+            L"asInvoker (Elevate at Install — Recommended)",
+            L"highestAvailable (Elevate upfront for Admins)",
+            L"requireAdministrator (Require Admin at 0.0s)"
+        }, 0);
         hPkgApply = mkBtn(VIEW_PACKAGE, L"&Apply Package Identity to .rsip AST (Preserves Comments)", IDC_PKG_APPLY);
 
         // --- VIEW 1: Application Runtimes (`[Prerequisite.*]`) & Merge Modules (`[MergeModule.*]`) Tree ---
@@ -1296,6 +1303,11 @@ public:
                 ::MoveWindow(hPkgUnivChk, paneX + lw + S(122), y + S(1), std::max(S(240), paneW - lw - S(132)), S(24), TRUE);
                 y += S(29);
                 row(v[20], hPkgUnivUrl);
+                if (v.size() >= 25) {
+                    ::MoveWindow(v[22],       paneX,      y + S(3), lw, S(20),  TRUE);
+                    ::MoveWindow(hPkgExecLvl, paneX + lw, y,        fw, S(160), TRUE);
+                    y += S(29);
+                }
                 ::MoveWindow(hPkgApply, paneX, y + S(2), fw + lw, S(32), TRUE);
             }
         }
@@ -2267,6 +2279,10 @@ public:
         const bool isUniv = effectiveDoc.GetBool("Package", "", "BuildUniversal", false);
         ::SendMessageW(hPkgUnivChk, BM_SETCHECK, isUniv ? BST_CHECKED : BST_UNCHECKED, 0);
         ::SetWindowTextW(hPkgUnivUrl, rsw::Utf8ToWide(effectiveDoc.GetString("Package", "", "UniversalDownloadBaseUrl")).c_str());
+        const auto execLvl = rsw::NormalizeRequestedExecutionLevel(
+            effectiveDoc.GetString("Package", "", "RequestedExecutionLevel", "asInvoker"));
+        const int execIdx = (execLvl == "requireAdministrator") ? 2 : ((execLvl == "highestAvailable") ? 1 : 0);
+        ::SendMessageW(hPkgExecLvl, CB_SETCURSEL, execIdx, 0);
 
         RebuildPrerequisitesTree(effectiveDoc);
         RebuildFeaturesTree(effectiveDoc);
@@ -2486,6 +2502,11 @@ public:
         const std::string univUrl = ReadCtlUtf8(hPkgUnivUrl);
         if (!univUrl.empty() || univOn) {
             astDoc.SetString("Package", "", "UniversalDownloadBaseUrl", univUrl);
+        }
+        const LRESULT execSel = ::SendMessageW(hPkgExecLvl, CB_GETCURSEL, 0, 0);
+        const char* execTok   = (execSel == 2) ? "requireAdministrator" : ((execSel == 1) ? "highestAvailable" : "asInvoker");
+        if (execSel > 0 || astDoc.HasKey("Package", "", "RequestedExecutionLevel")) {
+            astDoc.SetString("Package", "", "RequestedExecutionLevel", execTok);
         }
         astDoc.SetString("Install", "", "DefaultSubdir",  ReadCtlUtf8(hPkgSub));
         astDoc.SetString("Install", "", "MainExecutable", ReadCtlUtf8(hPkgExe));
@@ -3442,7 +3463,8 @@ public:
                     for (HWND sc : {self->hSourceEdit, self->hConsoleEdit}) {
                         rsw::ui::ApplyDarkScrollbarTheme(sc, self->theme);
                     }
-                    for (HWND cb : {self->hArchCombo, self->hSuiteCombo, self->hPkgScope, self->hCompRoot, self->hCompKpKind,
+                    for (HWND cb : {self->hArchCombo, self->hSuiteCombo, self->hPkgScope, self->hPkgExecLvl,
+                                    self->hFtLevel, self->hFeatLevel, self->hCompRoot, self->hCompKpKind,
                                     self->hPrPreset, self->hPrDist, self->hRegFeatFilter, self->hRegRootCombo, self->hRegTypeCombo,
                                     self->hScLocCombo, self->hUiLayout, self->hUiSetupTypes, self->hUiPreviewStep,
                                     self->hMsiPreset, self->hMsiDlgSelect, self->hMsiCtrlType}) {
