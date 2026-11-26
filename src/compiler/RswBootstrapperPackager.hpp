@@ -531,13 +531,14 @@ inline bool PackageSelfExtractingBootstrapper(
     const CompiledMsiSummary& msiSummary,
     const std::filesystem::path& compilerExeDir,
     std::filesystem::path& outSetupExePath,
-    std::string& outError)
+    std::string& outError,
+    bool skipInnerMsiSign = false)
 {
     std::error_code ec;
     const std::string arch = msiSummary.architecture;
 
     // 1. Sign inner `Product.msi` BEFORE embedding it into `Setup.exe` (Dual-Layer Signing Step 1!)
-    if (!RunAuthenticodeSignTool(doc, msiSummary.msiPath, outError)) {
+    if (!skipInnerMsiSign && !RunAuthenticodeSignTool(doc, msiSummary.msiPath, outError)) {
         return false;
     }
 
@@ -566,12 +567,20 @@ inline bool PackageSelfExtractingBootstrapper(
 
     const std::string msiStem = WideToUtf8(msiSummary.msiPath.stem().wstring());
     outSetupExePath = msiSummary.msiPath.parent_path() / (msiStem + "-setup.exe");
-    std::filesystem::remove(outSetupExePath, ec);
-    if (!std::filesystem::copy_file(stubTemplate, outSetupExePath, std::filesystem::copy_options::overwrite_existing, ec)) {
-        outError = "Failed copying SetupWizard.exe template to '" + WideToUtf8(outSetupExePath.wstring()) + "'.";
+
+    // Stage PE resource injection & Authenticode signing on local NTFS `%TEMP%` first!
+    // Why? Windows `EndUpdateResourceW` creates & memory-maps a temporary `RCX*.tmp` file
+    // alongside the target EXE, which can intermittently fail over SMB / Parallels Shared
+    // Folders (`Y:\`) on >1 GB payloads. Building on local `%TEMP%` and copying out is 100% atomic!
+    const std::filesystem::path stageSetupPath =
+        std::filesystem::temp_directory_path(ec) /
+        Utf8ToWide("rsw-stage-" + std::to_string(::GetCurrentProcessId()) + "-" + msiStem + "-setup.exe");
+    std::filesystem::remove(stageSetupPath, ec);
+    if (!std::filesystem::copy_file(stubTemplate, stageSetupPath, std::filesystem::copy_options::overwrite_existing, ec)) {
+        outError = "Failed staging SetupWizard.exe template to '" + WideToUtf8(stageSetupPath.wstring()) + "'.";
         return false;
     }
-    StripExistingPeCertificates(outSetupExePath);
+    StripExistingPeCertificates(stageSetupPath);
 
     // 3. Read `Product.msi` bytes, compress with Windows `COMPRESS_ALGORITHM_LZMS` (`Cabinet.lib`),
     //    resolve `[Prerequisite.*]` runtimes, and synthesize the UTF-8 branding & layout manifest (`#202`)!
@@ -706,11 +715,13 @@ inline bool PackageSelfExtractingBootstrapper(
         ReadBinaryFileBytes(artworkPath, artworkBytes, outError);
     }
 
-    // 4. Open PE resource table on `<OutputName>-setup.exe` and stamp all resources atomically!
-    HANDLE hRes = ::BeginUpdateResourceW(outSetupExePath.wstring().c_str(), FALSE);
+    // 4. Open PE resource table on local NTFS `stageSetupPath` and stamp all resources atomically!
+    HANDLE hRes = ::BeginUpdateResourceW(stageSetupPath.wstring().c_str(), FALSE);
     if (!hRes) {
-        outError = "BeginUpdateResourceW failed on '" + WideToUtf8(outSetupExePath.wstring()) +
-                   "' (" + std::to_string(::GetLastError()) + ").";
+        const DWORD gle = ::GetLastError();
+        std::filesystem::remove(stageSetupPath, ec);
+        outError = "BeginUpdateResourceW failed on '" + WideToUtf8(stageSetupPath.wstring()) +
+                   "' (" + std::to_string(gle) + ").";
         return false;
     }
 
@@ -806,12 +817,27 @@ inline bool PackageSelfExtractingBootstrapper(
         verBytes.data(), static_cast<DWORD>(verBytes.size()));
 
     if (!::EndUpdateResourceW(hRes, !ok) || !ok) {
-        outError = "EndUpdateResourceW failed while stamping '" + WideToUtf8(outSetupExePath.wstring()) + "'.";
+        const DWORD gle = ::GetLastError();
+        std::filesystem::remove(stageSetupPath, ec);
+        outError = "EndUpdateResourceW failed while stamping '" + WideToUtf8(outSetupExePath.wstring()) +
+                   "' (Win32 error " + std::to_string(gle) + ").";
         return false;
     }
 
-    // 7. Sign outer `<OutputName>-setup.exe` (Dual-Layer Signing Step 2!)
-    return RunAuthenticodeSignTool(doc, outSetupExePath, outError);
+    // 7. Sign outer staged EXE on local NTFS, then copy atomically to `outSetupExePath`!
+    if (!RunAuthenticodeSignTool(doc, stageSetupPath, outError)) {
+        std::filesystem::remove(stageSetupPath, ec);
+        return false;
+    }
+    std::filesystem::remove(outSetupExePath, ec);
+    if (!std::filesystem::copy_file(stageSetupPath, outSetupExePath, std::filesystem::copy_options::overwrite_existing, ec)) {
+        std::filesystem::remove(stageSetupPath, ec);
+        outError = "Failed copying stamped Setup.exe to '" + WideToUtf8(outSetupExePath.wstring()) +
+                   "' (close any running Setup.exe window and retry).";
+        return false;
+    }
+    std::filesystem::remove(stageSetupPath, ec);
+    return true;
 }
 
 /// Checks whether a PE executable on disk has `IMAGE_FILE_MACHINE_AMD64` (`0x8664`) so our

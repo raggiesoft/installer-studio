@@ -297,6 +297,62 @@ int wmain(int argc, wchar_t* argv[]) {
             std::cout << "[OK] Verified MSI relational & ICE80 integrity: " << args[i + 1] << "\n";
             return 0;
         }
+        if (a == "--wrap-msi") {
+            if (i + 2 >= args.size()) {
+                std::cerr << "[ERROR] Usage: instbuild.exe --wrap-msi <project.rsip> <existing.msi> [--arch=x64|arm64]\n";
+                return 2;
+            }
+            const std::filesystem::path mPath(rsw::Utf8ToWide(args[i + 1]));
+            const std::filesystem::path existingMsi(rsw::Utf8ToWide(args[i + 2]));
+            for (std::size_t j = i + 3; j < args.size(); ++j) {
+                if (args[j].rfind("--arch=", 0) == 0) archOverride = args[j].substr(7);
+            }
+            rsw::RswManifestDocument rawDoc, doc;
+            std::string err;
+            if (!rsw::LoadManifestFile(mPath, rawDoc, err) ||
+                !rsw::ResolveManifestIncludesAndVars(rawDoc, cliVariables, doc, err)) {
+                std::cerr << "[ERROR] " << err << "\n";
+                return 1;
+            }
+            const auto val = rsw::ValidateManifestDocument(doc, archOverride);
+            const std::string arch = val.resolvedArchitecture;
+            const std::filesystem::path baseDir = doc.sourcePath.empty()
+                ? std::filesystem::current_path()
+                : doc.sourcePath.parent_path();
+            auto resolveP = [&](std::string_view raw) -> std::filesystem::path {
+                if (raw.empty()) return {};
+                std::string exp = rsw::ExpandArchToken(raw, arch);
+                std::filesystem::path p(rsw::Utf8ToWide(exp));
+                return (p.is_absolute() ? p : (baseDir / p)).lexically_normal();
+            };
+
+            rsw::CompiledMsiSummary sum{};
+            sum.msiPath             = existingMsi;
+            sum.architecture        = arch;
+            sum.productName         = rsw::ExpandArchToken(doc.GetString("Package", "", "Name"), arch);
+            sum.productVersion      = rsw::ExpandArchToken(doc.GetString("Package", "", "Version"), arch);
+            sum.manufacturer        = rsw::ExpandArchToken(doc.GetString("Package", "", "Manufacturer"), arch);
+            sum.perMachine          = rsw::EqualsIgnoreCase(doc.GetString("Package", "", "Scope", "machine"), "machine");
+            sum.minWindowsBuild     = doc.GetInt("Requirements", "", "MinWindowsBuild", 22000);
+            sum.osLaunchMessage     = doc.GetString("Requirements", "", "OsLaunchMessage", "This application requires Windows 11 (Build 22000) or later.");
+            sum.defaultSubdir       = rsw::ExpandArchToken(doc.GetString("Install", "", "DefaultSubdir"), arch);
+            sum.mainExeRel          = rsw::ExpandArchToken(doc.GetString("Install", "", "MainExecutable"), arch);
+            sum.installBtnText      = doc.GetString("UI", "", "InstallButtonText", "&Install");
+            sum.launchChkText       = doc.GetString("UI", "", "FinishLaunchCheckbox", "&Launch application when setup finishes");
+            sum.offerLaunchOnFinish = doc.GetBool("UI", "", "OfferLaunchOnFinish", true);
+            sum.licenseRtfPath      = resolveP(doc.GetString("UI", "", "LicenseRtf"));
+            sum.iconFilePath        = resolveP(doc.GetString("UI", "", "IconFile"));
+            rsw::NormalizeMsiGuid(doc.GetString("Package", "", "UpgradeCode"), sum.upgradeCode);
+            sum.productCode = rsw::ComputeDeterministicComponentGuid(sum.upgradeCode, arch, "productcode:" + sum.productVersion);
+
+            std::filesystem::path setupOut;
+            if (!rsw::PackageSelfExtractingBootstrapper(doc, sum, compilerExeDir, setupOut, err, true /* already signed */)) {
+                std::cerr << "[ERROR] " << err << "\n";
+                return 1;
+            }
+            std::cout << "[OK] Wrapped existing signed MSI into Setup.exe: " << rsw::WideToUtf8(setupOut.wstring()) << "\n";
+            return 0;
+        }
         if (a == "--generate-mst") {
             if (i + 3 >= args.size()) {
                 std::cerr << "[ERROR] Usage: instbuild.exe --generate-mst <base.msi> <target.msi> <output.mst>\n";
