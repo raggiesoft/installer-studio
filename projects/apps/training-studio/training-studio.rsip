@@ -1,0 +1,173 @@
+; ==============================================================================
+; FILE: projects/apps/training-studio/training-studio.rsip
+; APPLICATION: RaggieSoft Training Studio (v0.5.0)
+; COMPILER: RaggieSoft Installer Studio v0.5.1 (AeroWizard + 4 Setup Types!)
+; ==============================================================================
+; PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+;   Packages RaggieSoft Training Studio (`TrainingStudio.exe` Visual Courseware
+;   IDE, `rstbuild.exe` Headless SCORM 1.2 & 2004 Compiler, `< 50 KB` Learner
+;   Runtime, Auto-VPAT 2.5 Emitter, Hostile Enterprise LMS Simulator, and native
+;   `RaggieSoftHelp.exe` F1 Manual) as native Windows 11 `x64` & `ARM64` `.msi`
+;   and Universal `Setup.exe` installers!
+; ==============================================================================
+
+@include "..\..\shared\raggiesoft-defaults.rsii"
+
+[Package]
+Name                     = RaggieSoft Training Studio
+Tagline                  = Bandwidth-Resilient WCAG 2.2 AA SCORM 1.2 & 2004 Courseware IDE
+WebsiteLabel             = raggiesoftstudio.com/training-studio
+Version                  = 0.5.0
+Manufacturer             = RaggieSoft
+UpgradeCode              = {8A41F27B-6C3D-48E9-A11B-9F5C22D04E81}
+Architecture             = $(ARCH)
+Scope                    = machine
+RequestedExecutionLevel  = asInvoker
+OutputName               = raggiesoft-training-studio-v$(VERSION)-$(ARCH)
+UniversalOutputName      = raggiesoft-training-studio-v$(VERSION)
+BuildUniversal           = true
+UniversalDownloadBaseUrl = https://assets.raggiesoft.com/desktop-apps/windows/apps/training-studio/releases/v$(VERSION)
+OutputDir                = out
+BuildBootstrapper        = true
+AboutUrl                 = https://raggiesoftstudio.com/training-studio
+
+[Install]
+DefaultSubdir            = RaggieSoft\RaggieSoft Studio\Training Studio
+StartMenuFolder          = RaggieSoft Training Studio
+MainExecutable           = StudioIDE\TrainingStudio.exe
+
+[UI]
+WizardLayout             = aerowizard
+MsiDialogPreset          = express_custom
+AccentPrimaryHex         = #5B21B6
+AccentSecondaryHex       = #D97706
+LicenseRtf               = License.rtf
+IconFile                 = ..\..\..\..\training-studio\src\TrainingStudio.WinForms\Assets\TrainingStudio.ico
+InstallButtonText        = &Install
+FinishLaunchCheckbox     = &Open RaggieSoft Training Studio when setup finishes
+
+[Prerequisite.DotNet10]
+Preset                   = DotNet10Desktop
+Distribution             = download
+
+[Prerequisite.WebView2]
+Preset                   = EdgeWebView2
+Distribution             = download
+
+[SetupType.Workstation]
+Title                    = &Workstation Courseware IDE + CLI (Recommended)
+Description              = Installs the visual .rstp / Markdown / WebVTT IDE, embedded Hostile LMS Simulator, CLI compiler, and offline F1 manual.
+Tier                     = typical
+Glyph                    = Bolt
+Recommended              = true
+
+[SetupType.HeadlessCli]
+Title                    = &Headless CI/CD SCORM Compiler Only (Compact)
+Description              = Installs only the command-line rstbuild compiler, WCAG 2.2 AA gate, and Legacy SCORM .zip Auditor for build servers.
+Tier                     = minimal
+Glyph                    = Cube
+Recommended              = false
+
+[SetupType.CompleteSuite]
+Title                    = Com&plete Suite + Municipal ADA Title II Sample
+Description              = Installs the full Workstation IDE, CLI compiler, offline F1 manual, and ready-to-compile DOJ ADA Title II sample course.
+Tier                     = complete
+Glyph                    = Blocks
+Recommended              = false
+
+[SetupType.Custom]
+Title                    = C&ustom Component Selection
+Description              = Choose individual IDE, CLI, offline documentation, and sample course features plus destination folder.
+Tier                     = custom
+Glyph                    = Sliders
+Recommended              = false
+
+[Feature.Main]
+Title                    = Headless SCORM 1.2 & 2004 Compiler CLI (rstbuild)
+Description              = Plain-text .rstp compiler, compile-time WCAG 2.2 AA gate, Auto-VPAT 2.5 generator, and Legacy SCORM .zip Auditor.
+Inclusion                = minimal
+DisallowAbsent           = true
+
+[Feature.StudioIde]
+Title                    = Workstation Courseware IDE & Hostile LMS Simulator
+Description              = Multi-pane Windows 11 IDE with lossless .rstp editing, New Compliance Course Wizard, and live HTTP 206 / proxy-drop testing.
+Inclusion                = typical
+
+[Feature.HelpDocs]
+Parent                   = StudioIde
+Title                    = Offline F1 Authoring Manual & Help Viewer
+Description              = Zero-dependency native C++20 offline HTML5 manual (RaggieSoftHelp.exe).
+Inclusion                = typical
+
+[Feature.Samples]
+Title                    = Municipal ADA Title II Sample Compliance Course
+Description              = Ready-to-build 3-slide compliance course demonstrating narrated HTML5 cues, scenario checks, and employee attestation.
+Inclusion                = complete
+
+[Payload.CliCompiler]
+Source                   = ..\..\..\..\training-studio\build\INSTALLDIR\Release\$(ARCH)\CLI
+TargetSubdir             = CLI
+Feature                  = Main
+
+[Payload.Legal]
+Source                   = ..\..\..\..\training-studio\build\INSTALLDIR\Release\x64\Legal
+TargetSubdir             = Legal
+Feature                  = Main
+
+[Payload.StudioIde]
+Source                   = ..\..\..\..\training-studio\build\INSTALLDIR\Release\$(ARCH)\StudioIDE
+TargetSubdir             = StudioIDE
+Feature                  = StudioIde
+
+[Payload.HelpViewer]
+Source                   = ..\..\..\..\training-studio\build\INSTALLDIR\Release\$(ARCH)\HelpViewer
+TargetSubdir             = HelpViewer
+Feature                  = HelpDocs
+
+[Payload.HelpManual]
+Source                   = ..\..\..\..\training-studio\build\INSTALLDIR\Release\x64\HelpModules\raggiesoft.training-studio
+TargetSubdir             = HelpModules\raggiesoft.training-studio
+Feature                  = HelpDocs
+
+[Payload.SampleCourse]
+Source                   = ..\..\..\..\training-studio\build\INSTALLDIR\Release\x64\Samples\municipal-ada-title-ii
+TargetSubdir             = Samples\municipal-ada-title-ii
+Feature                  = Samples
+
+[FileAssociation.RstpProject]
+Extension                = .rstp
+ProgId                   = RaggieSoft.TrainingStudio.Project
+Description              = RaggieSoft Training Studio Course Project
+TargetFile               = StudioIDE\TrainingStudio.exe
+ContentType              = application/x-raggiesoft-rstp
+PerceivedType            = text
+Verbs                    = open:&Open in Training Studio:"%1"
+Advertise                = false
+Feature                  = StudioIde
+
+[Shortcut.StudioStart]
+Name                     = RaggieSoft Training Studio
+TargetFile               = StudioIDE\TrainingStudio.exe
+Location                 = StartMenu
+Feature                  = StudioIde
+
+[Shortcut.HelpStart]
+Name                     = RaggieSoft Training Studio Help
+TargetFile               = HelpViewer\RaggieSoftHelp.exe
+Arguments                = "[INSTALLDIR]HelpModules\raggiesoft.training-studio"
+Location                 = StartMenu
+Feature                  = HelpDocs
+
+[Registry.InstallPath]
+Root                     = HKLM
+Key                      = Software\RaggieSoft\Training Studio
+Name                     = Install Path
+Value                    = [INSTALLDIR]
+Feature                  = Main
+
+[Registry.HelpModulePath]
+Root                     = HKLM
+Key                      = Software\RaggieSoft\HelpModules
+Name                     = raggiesoft.training-studio
+Value                    = [INSTALLDIR]HelpModules\raggiesoft.training-studio
+Feature                  = HelpDocs
