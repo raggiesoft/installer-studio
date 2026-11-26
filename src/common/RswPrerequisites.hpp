@@ -86,9 +86,36 @@ struct CuratedRuntimePreset {
     std::string_view rebootCodes;
 };
 
-inline constexpr std::array<CuratedRuntimePreset, 6> kCuratedRuntimePresets{{
+inline constexpr std::array<CuratedRuntimePreset, 10> kCuratedRuntimePresets{{
+    {"DotNet11Desktop",
+     "Microsoft .NET 11.0 Desktop Runtime",
+     "windowsdesktop-runtime-11.0-$(ARCH).exe",
+     "https://aka.ms/dotnet/11.0/windowsdesktop-runtime-win-x64.exe",
+     "https://aka.ms/dotnet/11.0/windowsdesktop-runtime-win-arm64.exe",
+     "/install /quiet /norestart",
+     "0, 1638",
+     "3010, 1641, 23"},
+
+    {"DotNet11AspNet",
+     "Microsoft ASP.NET Core 11.0 Runtime",
+     "aspnetcore-runtime-11.0-$(ARCH).exe",
+     "https://aka.ms/dotnet/11.0/aspnetcore-runtime-win-x64.exe",
+     "https://aka.ms/dotnet/11.0/aspnetcore-runtime-win-arm64.exe",
+     "/install /quiet /norestart",
+     "0, 1638",
+     "3010, 1641, 23"},
+
+    {"DotNet11Runtime",
+     "Microsoft .NET 11.0 Base Runtime",
+     "dotnet-runtime-11.0-$(ARCH).exe",
+     "https://aka.ms/dotnet/11.0/dotnet-runtime-win-x64.exe",
+     "https://aka.ms/dotnet/11.0/dotnet-runtime-win-arm64.exe",
+     "/install /quiet /norestart",
+     "0, 1638",
+     "3010, 1641, 23"},
+
     {"DotNet10Desktop",
-     "Microsoft .NET 10.0 Desktop Runtime",
+     "Microsoft .NET 10.0 LTS Desktop Runtime",
      "windowsdesktop-runtime-10.0-$(ARCH).exe",
      "https://aka.ms/dotnet/10.0/windowsdesktop-runtime-win-x64.exe",
      "https://aka.ms/dotnet/10.0/windowsdesktop-runtime-win-arm64.exe",
@@ -97,10 +124,19 @@ inline constexpr std::array<CuratedRuntimePreset, 6> kCuratedRuntimePresets{{
      "3010, 1641, 23"},
 
     {"DotNet10AspNet",
-     "Microsoft ASP.NET Core 10.0 Runtime",
+     "Microsoft ASP.NET Core 10.0 LTS Runtime",
      "aspnetcore-runtime-10.0-$(ARCH).exe",
      "https://aka.ms/dotnet/10.0/aspnetcore-runtime-win-x64.exe",
      "https://aka.ms/dotnet/10.0/aspnetcore-runtime-win-arm64.exe",
+     "/install /quiet /norestart",
+     "0, 1638",
+     "3010, 1641, 23"},
+
+    {"DotNet10Runtime",
+     "Microsoft .NET 10.0 LTS Base Runtime",
+     "dotnet-runtime-10.0-$(ARCH).exe",
+     "https://aka.ms/dotnet/10.0/dotnet-runtime-win-x64.exe",
+     "https://aka.ms/dotnet/10.0/dotnet-runtime-win-arm64.exe",
      "/install /quiet /norestart",
      "0, 1638",
      "3010, 1641, 23"},
@@ -460,8 +496,12 @@ inline bool IsDotNetSharedFxInstalled(std::string_view fxFolderName, int majorVe
 
 /// Fast (<1ms) non-invasive check returning `true` if `spec` is ALREADY installed on this machine!
 inline bool IsPrerequisiteSatisfied(const RuntimePrerequisiteSpec& spec, std::string_view arch) {
+    if (EqualsIgnoreCase(spec.preset, "DotNet11Desktop")) return IsDotNetSharedFxInstalled("Microsoft.WindowsDesktop.App", 11, arch);
+    if (EqualsIgnoreCase(spec.preset, "DotNet11AspNet"))  return IsDotNetSharedFxInstalled("Microsoft.AspNetCore.App",     11, arch);
+    if (EqualsIgnoreCase(spec.preset, "DotNet11Runtime")) return IsDotNetSharedFxInstalled("Microsoft.NETCore.App",        11, arch);
     if (EqualsIgnoreCase(spec.preset, "DotNet10Desktop")) return IsDotNetSharedFxInstalled("Microsoft.WindowsDesktop.App", 10, arch);
     if (EqualsIgnoreCase(spec.preset, "DotNet10AspNet"))  return IsDotNetSharedFxInstalled("Microsoft.AspNetCore.App",     10, arch);
+    if (EqualsIgnoreCase(spec.preset, "DotNet10Runtime")) return IsDotNetSharedFxInstalled("Microsoft.NETCore.App",        10, arch);
     if (EqualsIgnoreCase(spec.preset, "DotNet9Desktop"))  return IsDotNetSharedFxInstalled("Microsoft.WindowsDesktop.App",  9, arch);
     if (EqualsIgnoreCase(spec.preset, "DotNet8Desktop"))  return IsDotNetSharedFxInstalled("Microsoft.WindowsDesktop.App",  8, arch);
 

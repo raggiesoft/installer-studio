@@ -59,13 +59,14 @@
 
 namespace rsw {
 
-/// 1-based `TVSIL_STATE` indices (`INDEXTOSTATEIMAGEMASK(1..5)` — slot `0` in `SysTreeView32` means no icon!).
+/// 1-based `TVSIL_STATE` indices (`INDEXTOSTATEIMAGEMASK(1..6)` — slot `0` in `SysTreeView32` means no icon!).
 enum class MsiTreeState : int {
     Local          = 1, // Will be installed on local hard drive (`INSTALLSTATE_LOCAL`)
     EntireSubtree  = 2, // Entire feature (and all subfeatures) installed locally
     PartialSubtree = 3, // Parent feature installed locally, some subfeatures absent
     Advertised     = 4, // Feature will be installed when required (`INSTALLSTATE_ADVERTISED`)
-    Absent         = 5  // Entire feature will be unavailable (`INSTALLSTATE_ABSENT`)
+    Absent         = 5, // Entire feature will be unavailable (`INSTALLSTATE_ABSENT`)
+    RunFromSource  = 6  // Will be installed to run from CD / network (`INSTALLSTATE_SOURCE`, `ADDSOURCE`)
 };
 
 /// One row from the compiled `Product.msi` `Feature` table + live byte cost & selection state.
@@ -74,13 +75,14 @@ struct MsiFeatureNode {
     std::string   parentId;
     std::wstring  title;
     std::wstring  description;
-    int           displayOrder   = 0;
-    int           installLevel   = 1;
-    int           attributes     = 0;     // `msidbFeatureAttributesUIDisallowAbsent = 16`, `DisallowAdvertise = 8`
-    std::uint64_t ownBytes       = 0;     // Direct `FeatureComponents -> File.FileSize` sum
-    MsiTreeState  defaultState   = MsiTreeState::Local;
-    MsiTreeState  currentState   = MsiTreeState::Local;
-    HTREEITEM     hTreeItem      = nullptr;
+    int           displayOrder       = 0;
+    int           installLevel       = 1;
+    int           attributes         = 0; // `msidbFeatureAttributesUIDisallowAbsent = 16`, `DisallowAdvertise = 8`
+    bool          allowRunFromSource = false;
+    std::uint64_t ownBytes           = 0; // Direct `FeatureComponents -> File.FileSize` (or `.rswpak`) sum
+    MsiTreeState  defaultState       = MsiTreeState::Local;
+    MsiTreeState  currentState       = MsiTreeState::Local;
+    HTREEITEM     hTreeItem          = nullptr;
 
     [[nodiscard]] bool DisallowAbsent() const noexcept {
         return (attributes & 16 /* msidbFeatureAttributesUIDisallowAbsent */) != 0;
@@ -99,6 +101,7 @@ inline std::wstring DescribeMsiTreeState(MsiTreeState st) {
         case MsiTreeState::PartialSubtree: return L"Feature will be installed locally (some subfeatures excluded).";
         case MsiTreeState::Advertised:     return L"Feature will be installed on demand when required.";
         case MsiTreeState::Absent:         return L"Entire feature will be unavailable (not installed).";
+        case MsiTreeState::RunFromSource:  return L"Will be installed to run from source media or network share.";
     }
     return L"Will be installed on local hard drive.";
 }
@@ -181,6 +184,20 @@ inline void PaintSingleMsiStateCell(
         g.FillEllipse(&ledBr, dx + dw - ledR * 1.9f, dy + dh * 0.62f, ledR, ledR);
     };
 
+    if (state == MsiTreeState::RunFromSource) {
+        // Optical disc / network media ring (`MenuCD` / `MenuNetwork` — "Run from source media")
+        const float r  = std::min(iw, ih) * 0.44f;
+        const float mx = ix + iw * 0.50f;
+        const float my = iy + ih * 0.50f;
+        Gdiplus::SolidBrush discBr(Gdiplus::Color(255, 56, 189, 248));
+        Gdiplus::Pen discPen(Gdiplus::Color(255, 15, 23, 42), 1.0f);
+        g.FillEllipse(&discBr, mx - r, my - r, r * 2.0f, r * 2.0f);
+        g.DrawEllipse(&discPen, mx - r, my - r, r * 2.0f, r * 2.0f);
+        Gdiplus::SolidBrush hubBr(ui::ToGpColor(frameBg));
+        g.FillEllipse(&hubBr, mx - r * 0.34f, my - r * 0.34f, r * 0.68f, r * 0.68f);
+        return;
+    }
+
     if (state == MsiTreeState::EntireSubtree) {
         // Stacked dual hard drives ("Entire feature + subfeatures on local hard drive")
         drawDriveChassis(ix + iw * 0.14f, iy + ih * 0.04f, iw * 0.78f, ih * 0.56f, false);
@@ -205,11 +222,11 @@ inline void PaintSingleMsiStateCell(
     }
 }
 
-/// Builds a DPI-scaled 6-slot `HIMAGELIST` (`0` = empty, `1..5` = `MsiTreeState`) for `SysTreeView32` (`TVSIL_STATE`)!
+/// Builds a DPI-scaled 7-slot `HIMAGELIST` (`0` = empty, `1..6` = `MsiTreeState`) for `SysTreeView32` (`TVSIL_STATE`)!
 inline HIMAGELIST CreateMsiStateImageList(UINT dpi, const ui::RswTheme& theme) {
     const int cellW = ui::ScalePx(30, dpi, theme.textScalePercent);
     const int cellH = ui::ScalePx(18, dpi, theme.textScalePercent);
-    const int totalW = cellW * 6;
+    const int totalW = cellW * 7;
 
     BITMAPINFO bmi{};
     bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
@@ -239,14 +256,15 @@ inline HIMAGELIST CreateMsiStateImageList(UINT dpi, const ui::RswTheme& theme) {
         g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
         g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
 
-        const MsiTreeState states[5] = {
+        const MsiTreeState states[6] = {
             MsiTreeState::Local,
             MsiTreeState::EntireSubtree,
             MsiTreeState::PartialSubtree,
             MsiTreeState::Advertised,
-            MsiTreeState::Absent
+            MsiTreeState::Absent,
+            MsiTreeState::RunFromSource
         };
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < 6; ++i) {
             PaintSingleMsiStateCell(
                 g,
                 static_cast<float>((i + 1) * cellW + 1),
@@ -261,7 +279,7 @@ inline HIMAGELIST CreateMsiStateImageList(UINT dpi, const ui::RswTheme& theme) {
     ::SelectObject(memDc, oldBmp);
     ::DeleteDC(memDc);
 
-    HIMAGELIST hIml = ::ImageList_Create(cellW, cellH, ILC_COLOR32, 6, 0);
+    HIMAGELIST hIml = ::ImageList_Create(cellW, cellH, ILC_COLOR32, 7, 0);
     if (hIml) {
         ::ImageList_Add(hIml, hDib, nullptr);
     }
@@ -301,8 +319,29 @@ inline bool LoadFeatureTreeFromMsiDatabase(
         }
     }
 
-    // 2. Map `Feature_ -> sum(Component bytes)` via `FeatureComponents`
+    // 1B. Detect components carrying `msidbComponentAttributesOptional` (`2` — Run-from-Source capable!)
+    std::map<std::string, bool> compAllowsSource;
+    {
+        MSIHANDLE hView = 0;
+        if (::MsiDatabaseOpenViewW(hDb, L"SELECT `Component`, `Attributes` FROM `Component`", &hView) == ERROR_SUCCESS && hView) {
+            if (::MsiViewExecute(hView, 0) == ERROR_SUCCESS) {
+                MSIHANDLE hRec = 0;
+                while (::MsiViewFetch(hView, &hRec) == ERROR_SUCCESS && hRec) {
+                    wchar_t cBuf[256]{};
+                    DWORD cch = static_cast<DWORD>(std::size(cBuf));
+                    ::MsiRecordGetStringW(hRec, 1, cBuf, &cch);
+                    const int cAttr = ::MsiRecordGetInteger(hRec, 2);
+                    if ((cAttr & 2) != 0) compAllowsSource[WideToUtf8(cBuf)] = true;
+                    ::MsiCloseHandle(hRec);
+                }
+            }
+            ::MsiCloseHandle(hView);
+        }
+    }
+
+    // 2. Map `Feature_ -> sum(Component bytes)` & Run-from-Source capability via `FeatureComponents`
     std::map<std::string, std::uint64_t> featBytes;
+    std::map<std::string, bool> featAllowsSource;
     {
         MSIHANDLE hView = 0;
         if (::MsiDatabaseOpenViewW(hDb, L"SELECT `Feature_`, `Component_` FROM `FeatureComponents`", &hView) == ERROR_SUCCESS && hView) {
@@ -314,7 +353,10 @@ inline bool LoadFeatureTreeFromMsiDatabase(
                     DWORD cc = static_cast<DWORD>(std::size(cBuf));
                     ::MsiRecordGetStringW(hRec, 1, fBuf, &cf);
                     ::MsiRecordGetStringW(hRec, 2, cBuf, &cc);
-                    featBytes[WideToUtf8(fBuf)] += compBytes[WideToUtf8(cBuf)];
+                    const std::string fStr = WideToUtf8(fBuf);
+                    const std::string cStr = WideToUtf8(cBuf);
+                    featBytes[fStr] += compBytes[cStr];
+                    if (compAllowsSource[cStr]) featAllowsSource[fStr] = true;
                     ::MsiCloseHandle(hRec);
                 }
             }
@@ -358,6 +400,7 @@ inline bool LoadFeatureTreeFromMsiDatabase(
                     node.displayOrder = (disp == MSI_NULL_INTEGER) ? 999 : disp;
                     node.installLevel = level;
                     node.attributes   = (attr == MSI_NULL_INTEGER) ? 0 : attr;
+                    node.allowRunFromSource = featAllowsSource[node.id];
                     node.ownBytes     = featBytes[node.id];
 
                     // Default install level <= 100 (`INSTALLLEVEL_DEFAULT`) starts enabled!
@@ -370,7 +413,8 @@ inline bool LoadFeatureTreeFromMsiDatabase(
                         const INSTALLSTATE st = ::MsiQueryFeatureStateW(installedProductCode.c_str(), idBuf);
                         if (st == INSTALLSTATE_ABSENT)          node.currentState = MsiTreeState::Absent;
                         else if (st == INSTALLSTATE_ADVERTISED) node.currentState = MsiTreeState::Advertised;
-                        else if (st == INSTALLSTATE_LOCAL || st == INSTALLSTATE_SOURCE || st == INSTALLSTATE_DEFAULT) {
+                        else if (st == INSTALLSTATE_SOURCE)     node.currentState = MsiTreeState::RunFromSource;
+                        else if (st == INSTALLSTATE_LOCAL || st == INSTALLSTATE_DEFAULT) {
                             node.currentState = MsiTreeState::Local;
                         }
                     }
@@ -416,7 +460,9 @@ inline std::uint64_t RefreshMsiFeatureRollupsAndTotalBytes(std::vector<MsiFeatur
 
     std::uint64_t total = 0;
     for (const auto& n : nodes) {
-        if (n.currentState != MsiTreeState::Absent && n.currentState != MsiTreeState::Advertised) {
+        if (n.currentState != MsiTreeState::Absent &&
+            n.currentState != MsiTreeState::Advertised &&
+            n.currentState != MsiTreeState::RunFromSource) {
             total += n.ownBytes;
         }
     }
@@ -475,16 +521,17 @@ inline void ApplyMsiFeatureActionRecursive(
     RefreshMsiFeatureRollupsAndTotalBytes(nodes);
 }
 
-/// Builds `ADDLOCAL=...`, `REMOVE=...`, and `ADVERTISE=...` command-line properties for `MsiInstallProductW`!
+/// Builds `ADDLOCAL=...`, `ADDSOURCE=...`, `REMOVE=...`, and `ADVERTISE=...` command-line properties for `MsiInstallProductW`!
 inline std::wstring BuildMsiFeatureSelectionProps(const std::vector<MsiFeatureNode>& nodes) {
     if (nodes.empty()) return L" ADDLOCAL=ALL";
 
-    std::vector<std::wstring> addLocal, removeList, advList;
+    std::vector<std::wstring> addLocal, addSource, removeList, advList;
     for (const auto& n : nodes) {
         const std::wstring wid = Utf8ToWide(n.id);
-        if (n.currentState == MsiTreeState::Absent)          removeList.push_back(wid);
-        else if (n.currentState == MsiTreeState::Advertised) advList.push_back(wid);
-        else                                                 addLocal.push_back(wid);
+        if (n.currentState == MsiTreeState::Absent)             removeList.push_back(wid);
+        else if (n.currentState == MsiTreeState::Advertised)    advList.push_back(wid);
+        else if (n.currentState == MsiTreeState::RunFromSource) addSource.push_back(wid);
+        else                                                    addLocal.push_back(wid);
     }
 
     auto joinCsv = [](const std::vector<std::wstring>& v) {
@@ -498,6 +545,7 @@ inline std::wstring BuildMsiFeatureSelectionProps(const std::vector<MsiFeatureNo
 
     std::wstring props;
     if (!addLocal.empty())   props += L" ADDLOCAL="  + joinCsv(addLocal);
+    if (!addSource.empty())  props += L" ADDSOURCE=" + joinCsv(addSource);
     if (!removeList.empty()) props += L" REMOVE="    + joinCsv(removeList);
     if (!advList.empty())    props += L" ADVERTISE=" + joinCsv(advList);
     return props;

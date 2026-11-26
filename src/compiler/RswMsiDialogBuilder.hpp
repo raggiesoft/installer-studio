@@ -545,6 +545,51 @@ inline bool PopulateMsiInternalUiTables(
     addEvt("FatalError", "Finish", "EndDialog", "Exit", "1", 1);
 
     // -------------------------------------------------------------------------
+    // 6B. Administrative Installation Dialogs (`msiexec.exe /a` Network Image!)
+    //     Closed `Control_Next` cycles guarantee zero Error 2809 failures!
+    // -------------------------------------------------------------------------
+    addDlg("AdminWelcomeDlg", 370, 270, 3, "[ProductName] Network Setup", "Next", "Next", "Cancel");
+    addCtrl("AdminWelcomeDlg", "Bitmap",      "Bitmap",     0,   0,   370, 234, kBmpFixed, std::monostate{}, std::string("RswWelcomeBmp"), std::monostate{});
+    addCtrl("AdminWelcomeDlg", "BottomLine",  "Line",       0,   234, 370, 0,   1,         std::monostate{}, std::monostate{}, std::monostate{});
+    addCtrl("AdminWelcomeDlg", "Title",       "Text",       135, 20,  220, 56,  kVisTrans, std::monostate{}, std::string("{\\VerdanaBold13}Welcome to the [ProductName] Network Setup Wizard"), std::monostate{});
+    addCtrl("AdminWelcomeDlg", "Description", "Text",       135, 82,  220, 110, kVisTrans, std::monostate{},
+            std::string("This wizard creates an uncompressed administrative server image of [ProductName] at a specified network or folder location.\r\n\r\nClick Next to choose the target path, or Cancel to exit."),
+            std::monostate{});
+    addCtrl("AdminWelcomeDlg", "Back",        "PushButton", 180, 243, 56,  17,  2 /* Disabled */, std::monostate{}, std::string("< &Back"), std::string("Next"));
+    addCtrl("AdminWelcomeDlg", "Next",        "PushButton", 236, 243, 56,  17,  kVisEn,    std::monostate{}, std::string("&Next >"), std::string("Cancel"));
+    addCtrl("AdminWelcomeDlg", "Cancel",      "PushButton", 304, 243, 56,  17,  kVisEn,    std::monostate{}, std::string("Cancel"),  std::string("Back"));
+    addEvt("AdminWelcomeDlg", "Next",   "NewDialog",   "AdminInstallPointDlg", "1", 1);
+    addEvt("AdminWelcomeDlg", "Cancel", "SpawnDialog", "CancelDlg",            "1", 1);
+
+    addDlg("AdminInstallPointDlg", 370, 270, 3, "[ProductName] Network Setup - Target Location", "PathEdit", "Install", "Cancel");
+    addBannerChrome("AdminInstallPointDlg", "Network Location", "Specify a network share or folder path for the administrative image.");
+    addCtrl("AdminInstallPointDlg", "PathLabel",    "Text",       20,  62,  330, 16, kVisEn,         std::monostate{}, std::string("&Network or target folder path:"), std::string("PathEdit"));
+    addCtrl("AdminInstallPointDlg", "PathEdit",     "PathEdit",   20,  82,  258, 18, kVisEn,         std::string("TARGETDIR"), std::string("[TARGETDIR]"), std::string("ChangeFolder"));
+    addCtrl("AdminInstallPointDlg", "ChangeFolder", "PushButton", 284, 81,  66,  19, kVisEn,         std::monostate{}, std::string("B&rowse..."), std::string("Back"));
+    addCtrl("AdminInstallPointDlg", "AdminHint",    "Text",       20,  116, 330, 56, kVisEn,         std::monostate{},
+            std::string("Click Install to extract a clean, patchable uncompressed administrative installation image of [ProductName] to the path above."), std::monostate{});
+    addCtrl("AdminInstallPointDlg", "Back",         "PushButton", 180, 243, 56,  17, kVisEn,         std::monostate{}, std::string("< &Back"), std::string("Install"));
+    addCtrl("AdminInstallPointDlg", "Install",      "PushButton", 236, 243, 56,  17, kVisEn,         std::monostate{}, opt.installBtnText,     std::string("Cancel"));
+    addCtrl("AdminInstallPointDlg", "Cancel",       "PushButton", 304, 243, 56,  17, kVisEn,         std::monostate{}, std::string("Cancel"),  std::string("PathLabel"));
+    addEvt("AdminInstallPointDlg", "ChangeFolder", "[_BrowseProperty]", "TARGETDIR",        "1", 1);
+    addEvt("AdminInstallPointDlg", "ChangeFolder", "SpawnDialog",       "BrowseDlg",        "1", 2);
+    addEvt("AdminInstallPointDlg", "Back",         "NewDialog",         "AdminWelcomeDlg",  "1", 1);
+    addEvt("AdminInstallPointDlg", "Install",      "SetTargetPath",     "TARGETDIR",        "1", 1);
+    addEvt("AdminInstallPointDlg", "Install",      "EndDialog",         "Return",           "1", 2);
+    addEvt("AdminInstallPointDlg", "Cancel",       "SpawnDialog",       "CancelDlg",        "1", 1);
+
+    // Populate standard Windows Installer `Error` rows for Multi-Volume Disk Spanning (`Error 1302`)!
+    static constexpr std::pair<int, const char*> kStandardMsiErrors[] = {
+        {1302, "Please insert the disk: [2]"},
+        {1308, "Source file not found: [2]. Verify that the file exists and that you can access it."},
+        {1309, "Error reading from file: [3]. System error [2]. Verify that the source media is accessible."},
+        {1606, "Could not access network location [2]."}
+    };
+    for (const auto& [errCode, errMsg] : kStandardMsiErrors) {
+        insertRow(hDb, "Error", {"Error", "Message"}, std::vector<SqlVal>{errCode, std::string(errMsg)}, outError);
+    }
+
+    // -------------------------------------------------------------------------
     // 7. Compile Author-Defined `[MsiDialog.<id>]` & `[MsiControl.<id>]` Sections!
     // -------------------------------------------------------------------------
     const auto customDlgIds  = doc.GetNamedSectionIds("MsiDialog");

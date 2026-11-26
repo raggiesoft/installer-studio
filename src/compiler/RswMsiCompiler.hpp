@@ -35,6 +35,7 @@
 #include "../common/RswManifestAst.hpp"
 #include "../common/RswPlatform.hpp"
 #include "../common/RswVersion.hpp"
+#include "../common/RswZipAndPak.hpp"
 #include "RswCabBuilder.hpp"
 #include "RswMsiDialogBuilder.hpp"
 #include "RswMsmMerger.hpp"
@@ -118,6 +119,9 @@ struct CompiledMsiSummary {
     std::filesystem::path iconFilePath;
     std::size_t           fileCount           = 0;
     std::size_t           componentCount      = 0;
+    bool                  usesExternalMedia   = false; // `true` when `Compression = none` or external `CAB1..N.cab`
+    std::size_t           cabinetVolumeCount  = 1;
+    std::vector<FeaturePackRuntimeEntry> featurePacks; // External `.rswpak` on-demand feature packs!
 };
 
 namespace msi_sql {
@@ -323,18 +327,67 @@ inline bool VerifyCompiledMsiDatabase(const std::filesystem::path& msiPath, std:
         return n;
     };
 
-    if (countRows(L"SELECT `File` FROM `File`") <= 0) {
-        outError = "VerifyMsi: File table is empty.";
+    auto readSumInt = [&](UINT pid) -> INT {
+        UINT dataType = 0;
+        INT iVal = 0;
+        FILETIME ft{};
+        DWORD cch = 0;
+        if (::MsiSummaryInfoGetPropertyW(hSum.Get(), pid, &dataType, &iVal, &ft, nullptr, &cch) == ERROR_SUCCESS) {
+            return iVal;
+        }
+        return -1;
+    };
+
+    if (countRows(L"SELECT `File` FROM `File`") < 0) {
+        outError = "VerifyMsi: File table query failed.";
         return false;
     }
-    if (countRows(L"SELECT `Name` FROM `_Streams` WHERE `Name` = 'payload.cab'") != 1) {
-        outError = "VerifyMsi: Embedded 'payload.cab' stream not found in _Streams table.";
-        return false;
+
+    // Verify `Media` storage consistency across Embedded `#payload.cab`, External `CAB1..N.cab`,
+    // AND Uncompressed Loose Source Media (`Compression = none`, `PID_WORDCOUNT` bit `1` == `0`)!
+    if (countRows(L"SELECT `File` FROM `File`") > 0) {
+        if (countRows(L"SELECT `DiskId` FROM `Media`") <= 0) {
+            outError = "VerifyMsi: Media table is empty despite non-empty File table.";
+            return false;
+        }
+        ScopedMsiHandle hMedView;
+        if (::MsiDatabaseOpenViewW(hDb.Get(), L"SELECT `DiskId`, `Cabinet` FROM `Media`", hMedView.Put()) == ERROR_SUCCESS &&
+            ::MsiViewExecute(hMedView.Get(), 0) == ERROR_SUCCESS) {
+            ScopedMsiHandle hRec;
+            while (::MsiViewFetch(hMedView.Get(), hRec.Put()) == ERROR_SUCCESS) {
+                wchar_t cabBuf[256]{};
+                DWORD cCab = 256;
+                ::MsiRecordGetStringW(hRec.Get(), 2, cabBuf, &cCab);
+                const std::string cabName = WideToUtf8(cabBuf);
+                if (cabName.empty()) {
+                    // Uncompressed loose source files (`Compression = none`): `PID_WORDCOUNT` bit `1` (`2`) must be `0`!
+                    const INT wordCount = readSumInt(15);
+                    if (wordCount < 0 || (wordCount & 2) != 0) {
+                        outError = "VerifyMsi (ICE39): Uncompressed Media row has compressed PID_WORDCOUNT bit set.";
+                        return false;
+                    }
+                } else if (cabName.front() == '#') {
+                    const std::wstring streamName = Utf8ToWide(cabName.substr(1));
+                    const std::wstring q = L"SELECT `Name` FROM `_Streams` WHERE `Name` = '" + streamName + L"'";
+                    if (countRows(q) != 1) {
+                        outError = "VerifyMsi: Embedded '" + cabName + "' stream not found in _Streams table.";
+                        return false;
+                    }
+                }
+            }
+        }
     }
     if (countRows(L"SELECT `Dialog` FROM `Dialog` WHERE `Dialog` = 'WelcomeDlg'") != 1 ||
+        countRows(L"SELECT `Dialog` FROM `Dialog` WHERE `Dialog` = 'AdminWelcomeDlg'") != 1 ||
+        countRows(L"SELECT `Dialog` FROM `Dialog` WHERE `Dialog` = 'AdminInstallPointDlg'") != 1 ||
         countRows(L"SELECT `Dialog` FROM `Dialog` WHERE `Dialog` = 'ProgressDlg'") != 1 ||
         countRows(L"SELECT `Dialog` FROM `Dialog` WHERE `Dialog` = 'ExitDialog'") != 1) {
-        outError = "VerifyMsi: Missing required Wizard 97 dialogs in Dialog table.";
+        outError = "VerifyMsi: Missing required Wizard 97 or Administrative (/a) dialogs in Dialog table.";
+        return false;
+    }
+    if (countRows(L"SELECT `Action` FROM `AdminUISequence`") <= 0 ||
+        countRows(L"SELECT `Action` FROM `AdminExecuteSequence`") <= 0) {
+        outError = "VerifyMsi: Missing AdminUISequence or AdminExecuteSequence rows for msiexec /a.";
         return false;
     }
 
@@ -618,20 +671,38 @@ inline bool CompileManifestToMsi(
         return curParent;
     };
 
-    // Collect `[Feature.<id>]` hierarchy (supporting `Parent` sub-features, `DisallowAbsent`, & `AllowAdvertise`!)
+    // Collect `[Feature.<id>]` hierarchy (supporting `Parent` sub-features, `DisallowAbsent`, `AllowAdvertise`,
+    // `AllowRunFromSource` (`MenuCD`/`MenuNetwork`), AND `Delivery = embedded|ondemand` `.rswpak` feature packs!)
     struct FeatureRec {
         std::string id;
         std::string parentId;
         std::string title;
         std::string desc;
-        int         level = 1;
-        int         attrs = 8; // Default `msidbFeatureAttributesDisallowAdvertise` (`8`) unless `AllowAdvertise = true`
+        int         level              = 1;
+        int         attrs              = 8; // Default `msidbFeatureAttributesDisallowAdvertise` (`8`) unless `AllowAdvertise = true`
+        bool        allowRunFromSource = false;
+        bool        onDemandPack       = false;
+        std::string packUrl;
     };
     std::vector<FeatureRec> features;
+    std::set<std::string> runFromSourceFeatLower;
+    std::set<std::string> onDemandPackFeatLower;
     for (const auto& fid : doc.GetNamedSectionIds("Feature")) {
         int fAttrs = 0;
+        const bool runSrc = doc.GetBool("Feature", fid, "AllowRunFromSource", false);
+        const bool onDem  = EqualsIgnoreCase(doc.GetString("Feature", fid, "Delivery", "embedded"), "ondemand");
         if (!doc.GetBool("Feature", fid, "AllowAdvertise", false)) fAttrs |= 8;  // `msidbFeatureAttributesDisallowAdvertise`
         if (doc.GetBool("Feature", fid, "DisallowAbsent", false))  fAttrs |= 16; // `msidbFeatureAttributesUIDisallowAbsent`
+        if (runSrc) {
+            fAttrs |= 24; // Allow `FavorSource` / source-capable feature display (`msidbFeatureAttributesFavorSource = 1` optional; keep local default `0` + component `Optional = 2`!)
+            fAttrs &= ~24;
+            if (!doc.GetBool("Feature", fid, "AllowAdvertise", false)) fAttrs |= 8;
+            if (doc.GetBool("Feature", fid, "DisallowAbsent", false))  fAttrs |= 16;
+            runFromSourceFeatLower.insert(AsciiLower(fid));
+        }
+        if (onDem) {
+            onDemandPackFeatLower.insert(AsciiLower(fid));
+        }
         const std::string incStr = TrimAscii(doc.GetString("Feature", fid, "Inclusion"));
         const std::string rawLvl = TrimAscii(doc.GetString("Feature", fid, "Level"));
         const int resolvedLvl    = ResolveFeatureMsiLevel(incStr, doc.GetInt("Feature", fid, "Level", 1), !rawLvl.empty());
@@ -641,7 +712,10 @@ inline bool CompileManifestToMsi(
             doc.GetString("Feature", fid, "Title", fid),
             doc.GetString("Feature", fid, "Description", ""),
             resolvedLvl,
-            fAttrs
+            fAttrs,
+            runSrc,
+            onDem,
+            ExpandArchToken(doc.GetString("Feature", fid, "PackUrl"), arch)
         });
     }
     if (features.empty()) {
@@ -779,6 +853,12 @@ inline bool CompileManifestToMsi(
         });
     };
 
+    const std::filesystem::path scratchDir = std::filesystem::temp_directory_path(ec) /
+                                             ("rsw-build-" + outSummary.packageCode.substr(1, 8));
+    std::filesystem::create_directories(scratchDir, ec);
+
+    std::vector<RswPakInputItem> onDemandPakInputs;
+    std::size_t zipCounter = 0;
     for (const auto& pid : doc.GetNamedSectionIds("Payload")) {
         const auto absSrc       = resolvePath(doc.GetString("Payload", pid, "Source"));
         const std::string refCmp= TrimAscii(doc.GetString("Payload", pid, "Component"));
@@ -788,21 +868,32 @@ inline bool CompileManifestToMsi(
         const std::string sub   = ExpandArchToken(doc.GetString("Payload", pid, "TargetSubdir", defSb), arch);
         const bool recursive    = doc.GetBool("Payload", pid, "Recursive", true);
         const std::string feat  = doc.GetString("Payload", pid, "Feature", features.front().id);
+        const bool isOnDemand   = (onDemandPackFeatLower.count(AsciiLower(feat)) > 0);
 
-        if (std::filesystem::is_regular_file(absSrc, ec)) {
-            appendSingleFile(absSrc, tRoot, sub, feat, refCmp);
-        } else if (std::filesystem::is_directory(absSrc, ec)) {
+        auto routeSingleFile = [&](const std::filesystem::path& srcFile, const std::string& targetRelDir) {
+            if (isOnDemand) {
+                const std::string fn = WideToUtf8(srcFile.filename().wstring());
+                std::string relInRoot = targetRelDir.empty() ? fn : (targetRelDir + "/" + fn);
+                onDemandPakInputs.push_back({srcFile, tRoot + "/" + relInRoot, feat});
+                ensureTargetDirKey(tRoot, targetRelDir);
+                ensureFeatureExists(feat);
+            } else {
+                appendSingleFile(srcFile, tRoot, targetRelDir, feat, refCmp);
+            }
+        };
+
+        auto harvestDirectoryIntoPayload = [&](const std::filesystem::path& dirRoot) {
             std::vector<std::filesystem::path> found;
             if (recursive) {
-                for (const auto& de : std::filesystem::recursive_directory_iterator(absSrc, ec)) {
+                for (const auto& de : std::filesystem::recursive_directory_iterator(dirRoot, ec)) {
                     if (de.is_regular_file(ec)) found.push_back(de.path());
                 }
             } else {
-                for (const auto& de : std::filesystem::directory_iterator(absSrc, ec)) {
+                for (const auto& de : std::filesystem::directory_iterator(dirRoot, ec)) {
                     if (de.is_regular_file(ec)) found.push_back(de.path());
                 }
             }
-            std::wstring basePrefix = absSrc.lexically_normal().generic_wstring();
+            std::wstring basePrefix = dirRoot.lexically_normal().generic_wstring();
             while (!basePrefix.empty() && basePrefix.back() == L'/') basePrefix.pop_back();
 
             std::sort(found.begin(), found.end());
@@ -822,15 +913,29 @@ inline bool CompileManifestToMsi(
                            _wcsnicmp(parentGen.c_str(), basePrefix.c_str(), basePrefix.size()) == 0) {
                     relParentStr.clear();
                 } else {
-                    auto lexRel = fPath.parent_path().lexically_normal().lexically_relative(absSrc.lexically_normal());
+                    auto lexRel = fPath.parent_path().lexically_normal().lexically_relative(dirRoot.lexically_normal());
                     if (lexRel != L".") relParentStr = WideToUtf8(lexRel.generic_wstring());
                 }
 
                 std::string combinedSub = sub.empty()
                     ? relParentStr
                     : (relParentStr.empty() ? sub : (sub + "/" + relParentStr));
-                appendSingleFile(fPath, tRoot, combinedSub, feat, refCmp);
+                routeSingleFile(fPath, combinedSub);
             }
+        };
+
+        if (std::filesystem::is_regular_file(absSrc, ec) && IsZipArchivePath(absSrc)) {
+            const auto zipExtractDir = scratchDir / ("zip-src-" + std::to_string(++zipCounter));
+            std::vector<std::filesystem::path> zExtracted;
+            if (!ExtractZipArchiveToDirectory(absSrc, zipExtractDir, zExtracted, outError)) {
+                std::filesystem::remove_all(scratchDir, ec);
+                return false;
+            }
+            harvestDirectoryIntoPayload(zipExtractDir);
+        } else if (std::filesystem::is_regular_file(absSrc, ec)) {
+            routeSingleFile(absSrc, sub);
+        } else if (std::filesystem::is_directory(absSrc, ec)) {
+            harvestDirectoryIntoPayload(absSrc);
         }
     }
 
@@ -840,9 +945,40 @@ inline bool CompileManifestToMsi(
         ensureFeatureExists(doc.GetString("MergeModule", mid, "Feature", features.front().id));
     }
 
-    if (stagedFiles.empty() && mergeModuleIds.empty()) {
+    if (stagedFiles.empty() && mergeModuleIds.empty() && onDemandPakInputs.empty()) {
+        std::filesystem::remove_all(scratchDir, ec);
         outError = "No payload files were matched by [Payload.*] or [MergeModule.*] sections.";
         return false;
+    }
+
+    // Emit external `.rswpak` LZMS on-demand blocks (`<outStem>-<FeatureId>.rswpak`) for any
+    // `[Feature.<Id>] Delivery = ondemand`, and register a lightweight MSI Registry KeyPath
+    // component for each on-demand feature so `SelectionTree` tracks its selection cleanly!
+    std::string univDlBase = TrimAscii(doc.GetString("Package", "", "UniversalDownloadBaseUrl"));
+    while (!univDlBase.empty() && univDlBase.back() == '/') univDlBase.pop_back();
+    for (const auto& f : features) {
+        if (!f.onDemandPack) continue;
+        std::vector<RswPakInputItem> featItems;
+        for (const auto& pi : onDemandPakInputs) {
+            if (EqualsIgnoreCase(pi.featureId, f.id)) {
+                featItems.push_back(pi);
+            }
+        }
+        if (featItems.empty()) continue;
+
+        const std::string pakFileName = outStem + "-" + SlugifyName(f.id) + ".rswpak";
+        const std::filesystem::path pakOutPath = outDir / Utf8ToWide(pakFileName);
+        std::uint64_t uncompTot = 0;
+        std::string shaHex;
+        if (!WriteRswPakFile(featItems, pakOutPath, uncompTot, shaHex, outError)) {
+            std::filesystem::remove_all(scratchDir, ec);
+            return false;
+        }
+        std::string dlUrl = f.packUrl;
+        if (dlUrl.empty() && !univDlBase.empty()) {
+            dlUrl = univDlBase + "/" + pakFileName;
+        }
+        outSummary.featurePacks.push_back({f.id, pakFileName, dlUrl, shaHex, uncompTot});
     }
 
     // Pre-register `[Folder.<id>]` & `[Shortcut.<id>]` directories so `Directory` table is 100% complete!
@@ -885,9 +1021,6 @@ inline bool CompileManifestToMsi(
     // STEP 2: Prepare scratch workspace & queue staged files for `#payload.cab`
     //         (Final `BuildPayloadCabinet` runs after `[MergeModule.*]` merging!)
     // -------------------------------------------------------------------------
-    const std::filesystem::path scratchDir = std::filesystem::temp_directory_path(ec) /
-                                             ("rsw-build-" + outSummary.packageCode.substr(1, 8));
-    std::filesystem::create_directories(scratchDir, ec);
     const std::filesystem::path cabPath        = scratchDir / "payload.cab";
     const std::filesystem::path bannerBmpPath  = scratchDir / "banner.bmp";
     const std::filesystem::path welcomeBmpPath = scratchDir / "welcome.bmp";
@@ -895,8 +1028,22 @@ inline bool CompileManifestToMsi(
     std::vector<CabInputEntry> cabInputs;
     cabInputs.reserve(stagedFiles.size() + 16);
     for (const auto& sf : stagedFiles) {
-        cabInputs.push_back({sf.sourcePath, sf.fileKey});
+        cabInputs.push_back({sf.sourcePath, sf.fileKey, sf.sequence});
     }
+
+    const bool uncompressedLooseMedia = EqualsIgnoreCase(doc.GetString("Media", "", "Compression", "cab"), "none");
+    const bool embedCabinetInMsi      = doc.GetBool("Media", "", "EmbedCabinet", true);
+    const int  maxCabMb               = doc.GetInt("Media", "", "MaxCabinetSizeMB", 0);
+    const int  maxCabKb               = doc.GetInt("Media", "", "MaxCabinetSizeKB", 0);
+    const ULONG maxCabinetBytes       = (maxCabKb > 0)
+        ? static_cast<ULONG>(std::min<unsigned long long>(0x7FFFFFFFull, static_cast<unsigned long long>(maxCabKb) * 1024ull))
+        : ((maxCabMb > 0)
+            ? static_cast<ULONG>(std::min<unsigned long long>(0x7FFFFFFFull, static_cast<unsigned long long>(maxCabMb) * 1024ull * 1024ull))
+            : 0u);
+    const bool useExternalCabinets    = !uncompressedLooseMedia && (!embedCabinetInMsi || maxCabinetBytes > 0);
+    const std::string mediaVolPrefix  = doc.GetString("Media", "", "VolumeLabel", "DISK");
+    const std::string mediaDiskPrompt = doc.GetString("Media", "", "DiskPrompt", "Please insert [ProductName] Disk [1]");
+    outSummary.usesExternalMedia      = uncompressedLooseMedia || useExternalCabinets;
 
     const bool useLzx = !EqualsIgnoreCase(doc.GetString("Package", "", "CabinetCompression", "lzx"), "mszip");
     WriteDefaultWizard97BannerBmp(bannerBmpPath);
@@ -952,6 +1099,7 @@ inline bool CompileManifestToMsi(
         "CREATE TABLE `CustomAction` (`Action` CHAR(72) NOT NULL, `Type` SHORT NOT NULL, `Source` CHAR(72), `Target` CHAR(255) PRIMARY KEY `Action`)",
         "CREATE TABLE `InstallExecuteSequence` (`Action` CHAR(72) NOT NULL, `Condition` CHAR(255), `Sequence` SHORT PRIMARY KEY `Action`)",
         "CREATE TABLE `AdminExecuteSequence` (`Action` CHAR(72) NOT NULL, `Condition` CHAR(255), `Sequence` SHORT PRIMARY KEY `Action`)",
+        "CREATE TABLE `AdminUISequence` (`Action` CHAR(72) NOT NULL, `Condition` CHAR(255), `Sequence` SHORT PRIMARY KEY `Action`)",
         "CREATE TABLE `AdvtExecuteSequence` (`Action` CHAR(72) NOT NULL, `Condition` CHAR(255), `Sequence` SHORT PRIMARY KEY `Action`)",
         "CREATE TABLE `InstallUISequence` (`Action` CHAR(72) NOT NULL, `Condition` CHAR(255), `Sequence` SHORT PRIMARY KEY `Action`)",
         "CREATE TABLE `TextStyle` (`TextStyle` CHAR(72) NOT NULL, `FaceName` CHAR(32) NOT NULL, `Size` SHORT NOT NULL, `Color` LONG, `StyleBits` SHORT PRIMARY KEY `TextStyle`)",
@@ -985,8 +1133,12 @@ inline bool CompileManifestToMsi(
     std::set<std::string> secureCustomProps = {
         "RSW_OLDERVERSION_DETECTED", "RSW_NEWERVERSION_DETECTED", "RSW_OSBUILD",
         "INSTALLDIR", "STARTMENUFOLDER", "DESKTOP_SHORTCUT", "REGISTER_ASSOC",
-        "REMOVE_CACHE", "REMOVE_PREFS"
+        "REMOVE_CACHE", "REMOVE_PREFS", "RS_SUITE_MANAGED"
     };
+
+    if (outSummary.usesExternalMedia && !mediaDiskPrompt.empty()) {
+        addProp("DiskPrompt", mediaDiskPrompt);
+    }
 
     addProp("ProductCode",     outSummary.productCode);
     addProp("ProductName",     outSummary.productName);
@@ -1262,6 +1414,9 @@ inline bool CompileManifestToMsi(
     std::map<std::string, std::string> relPathToDirKey;
 
     for (const auto& sf : stagedFiles) {
+        const int runSrcCompBit = runFromSourceFeatLower.count(AsciiLower(sf.featureId))
+            ? 2 /* `msidbComponentAttributesOptional`: allows both Local AND Run-from-Source (`MenuCD`/`MenuNetwork`)! */
+            : 0;
         if (sf.explicitCompLower.empty()) {
             const bool isUserDir = IsPerUserProfileRootDir(sf.targetRoot);
             if (isUserDir) {
@@ -1284,7 +1439,7 @@ inline bool CompileManifestToMsi(
                 msi_sql::InsertRow(
                     hDb.Get(), "Component",
                     {"Component", "ComponentId", "Directory_", "Attributes", "Condition", "KeyPath"},
-                    {sf.compKey, sf.compGuid, sf.dirKey, kCompAttr64BitFile, std::monostate{}, sf.fileKey},
+                    {sf.compKey, sf.compGuid, sf.dirKey, kCompAttr64BitFile | runSrcCompBit, std::monostate{}, sf.fileKey},
                     outError);
             }
             ++totalComponents;
@@ -1296,6 +1451,9 @@ inline bool CompileManifestToMsi(
                 outError);
         }
 
+        const int fileAttrs = 512 /* Vital */ |
+                              (uncompressedLooseMedia ? 0x2000 /* `msidbFileAttributesNoncompressed` */ : 0);
+
         msi_sql::InsertRow(
             hDb.Get(), "File",
             {"File", "Component_", "FileName", "FileSize", "Version", "Language", "Attributes", "Sequence"},
@@ -1306,7 +1464,7 @@ inline bool CompileManifestToMsi(
                 sf.fileSize,
                 sf.peVersion.empty() ? SqlParam{std::monostate{}} : SqlParam{sf.peVersion},
                 sf.peLanguage.empty() ? SqlParam{std::monostate{}} : SqlParam{sf.peLanguage},
-                512 /* Vital */,
+                fileAttrs,
                 sf.sequence
             },
             outError);
@@ -1626,28 +1784,139 @@ inline bool CompileManifestToMsi(
         }
     }
 
+    // Emit a lightweight HKCU marker Component for each `.rswpak` on-demand feature (`Delivery = ondemand`)
+    // so Windows Installer `SelectionTree` displays and persists the feature's selected state!
+    for (const auto& fp : outSummary.featurePacks) {
+        const std::string fpComp = "c_pak_" + SlugifyName(fp.featureId);
+        const std::string fpReg  = "r_pak_" + SlugifyName(fp.featureId);
+        const std::string fpGuid = ComputeDeterministicComponentGuid(outSummary.upgradeCode, arch, "rswpak:" + AsciiLower(fp.featureId));
+        msi_sql::InsertRow(
+            hDb.Get(), "Component",
+            {"Component", "ComponentId", "Directory_", "Attributes", "Condition", "KeyPath"},
+            {fpComp, fpGuid, std::string("INSTALLDIR"), kCompAttr64BitReg, std::monostate{}, fpReg},
+            outError);
+        ++totalComponents;
+        msi_sql::InsertRow(hDb.Get(), "FeatureComponents", {"Feature_", "Component_"}, {fp.featureId, fpComp}, outError);
+        msi_sql::InsertRow(
+            hDb.Get(), "Registry",
+            {"Registry", "Root", "Key", "Name", "Value", "Component_"},
+            {fpReg, 1 /* HKCU */, "Software\\" + outSummary.manufacturer + "\\" + outSummary.productName + "\\FeaturePacks",
+             fp.featureId, fp.fileName, fpComp},
+            outError);
+    }
+
     outSummary.fileCount      = stagedFiles.size() + totalMergedFiles;
     outSummary.componentCount = totalComponents;
 
-    // Pack all `[Payload.*]` + merged `[MergeModule.*]` files into unified `LZX:21` `#payload.cab`!
-    if (!cabInputs.empty() && !BuildPayloadCabinet(cabInputs, cabPath, useLzx, outError)) {
-        std::filesystem::remove_all(scratchDir, ec);
-        return false;
+    // -------------------------------------------------------------------------
+    // STEP 5G: Pack or Stage Media (`#payload.cab`, Spanned `CAB1..N.cab`, or Uncompressed Loose Tree!)
+    // -------------------------------------------------------------------------
+    if (uncompressedLooseMedia) {
+        // Stage uncompressed loose source files directly into `<outDir>\<SourceTree>\...` matching `Directory` rows!
+        std::map<std::string, DirNode> dirMap;
+        for (const auto& dn : directories) dirMap[dn.key] = dn;
+
+        auto computeLooseSourceDir = [&](const std::string& startDirKey) -> std::filesystem::path {
+            std::vector<std::string> relSegs;
+            std::string cur = startDirKey;
+            for (int depth = 0; depth < 64 && !cur.empty() && cur != "TARGETDIR"; ++depth) {
+                auto it = dirMap.find(cur);
+                if (it == dirMap.end()) break;
+                const std::string& def = it->second.defaultDir;
+                if (def != "." && def != "SourceDir") {
+                    const auto pipe = def.find('|');
+                    const std::string longName = (pipe == std::string::npos) ? def : def.substr(pipe + 1);
+                    if (!longName.empty() && longName != ".") {
+                        relSegs.push_back(longName);
+                    }
+                }
+                cur = it->second.parentKey;
+            }
+            std::reverse(relSegs.begin(), relSegs.end());
+            std::filesystem::path p = outDir;
+            for (const auto& s : relSegs) p /= Utf8ToWide(s);
+            return p;
+        };
+
+        for (const auto& sf : stagedFiles) {
+            const auto dstFolder = computeLooseSourceDir(sf.dirKey);
+            std::filesystem::create_directories(dstFolder, ec);
+            const auto dstFile = dstFolder / Utf8ToWide(sf.fileNameOnly);
+            if (!std::filesystem::copy_file(sf.sourcePath, dstFile, std::filesystem::copy_options::overwrite_existing, ec)) {
+                std::filesystem::remove_all(scratchDir, ec);
+                outError = "Failed staging uncompressed loose source file to '" + WideToUtf8(dstFile.wstring()) + "'.";
+                return false;
+            }
+        }
+        outSummary.cabinetVolumeCount = 1;
+        msi_sql::InsertRow(
+            hDb.Get(), "Media",
+            {"DiskId", "LastSequence", "DiskPrompt", "Cabinet", "VolumeLabel", "Source"},
+            {1, static_cast<int>(cabInputs.size()), mediaDiskPrompt, std::monostate{}, mediaVolPrefix + "1", std::monostate{}},
+            outError);
+    } else if (useExternalCabinets) {
+        std::vector<SpannedCabinetVolume> volumes;
+        if (!cabInputs.empty() && !BuildSpannedPayloadCabinets(cabInputs, outDir, maxCabinetBytes, useLzx, volumes, outError)) {
+            std::filesystem::remove_all(scratchDir, ec);
+            return false;
+        }
+        outSummary.cabinetVolumeCount = std::max<std::size_t>(1, volumes.size());
+        if (volumes.empty()) {
+            msi_sql::InsertRow(
+                hDb.Get(), "Media",
+                {"DiskId", "LastSequence", "DiskPrompt", "Cabinet", "VolumeLabel", "Source"},
+                {1, 0, mediaDiskPrompt, std::monostate{}, mediaVolPrefix + "1", std::monostate{}},
+                outError);
+        } else {
+            for (const auto& vol : volumes) {
+                msi_sql::InsertRow(
+                    hDb.Get(), "Media",
+                    {"DiskId", "LastSequence", "DiskPrompt", "Cabinet", "VolumeLabel", "Source"},
+                    {vol.diskId, vol.lastSequence, "Disk " + std::to_string(vol.diskId),
+                     vol.cabinetName, mediaVolPrefix + std::to_string(vol.diskId), std::monostate{}},
+                    outError);
+            }
+        }
+    } else {
+        // Default single-file embedded `LZX:21` `#payload.cab` inside `_Streams`!
+        if (!cabInputs.empty() && !BuildPayloadCabinet(cabInputs, cabPath, useLzx, outError)) {
+            std::filesystem::remove_all(scratchDir, ec);
+            return false;
+        }
+        outSummary.cabinetVolumeCount = 1;
+        msi_sql::InsertRow(
+            hDb.Get(), "Media",
+            {"DiskId", "LastSequence", "DiskPrompt", "Cabinet", "VolumeLabel", "Source"},
+            {1, static_cast<int>(cabInputs.size()), std::monostate{},
+             cabInputs.empty() ? SqlParam{std::monostate{}} : SqlParam{std::string("#payload.cab")},
+             std::monostate{}, std::monostate{}},
+            outError);
+        if (!cabInputs.empty() && !msi_sql::InsertBinaryStreamRow(hDb.Get(), "_Streams", "Name", "Data", "payload.cab", cabPath, outError)) {
+            std::filesystem::remove_all(scratchDir, ec);
+            return false;
+        }
     }
 
-    // `Media` & `_Streams` (`payload.cab`)
-    msi_sql::InsertRow(
-        hDb.Get(), "Media",
-        {"DiskId", "LastSequence", "DiskPrompt", "Cabinet", "VolumeLabel", "Source"},
-        {1, static_cast<int>(cabInputs.size()), std::monostate{}, std::string("#payload.cab"), std::monostate{}, std::monostate{}},
-        outError);
-
-    if ((!cabInputs.empty() && !msi_sql::InsertBinaryStreamRow(hDb.Get(), "_Streams", "Name", "Data", "payload.cab", cabPath, outError)) ||
-        !msi_sql::InsertBinaryStreamRow(hDb.Get(), "Binary", "Name", "Data", "RswBannerBmp", bannerBmpPath, outError) ||
+    if (!msi_sql::InsertBinaryStreamRow(hDb.Get(), "Binary", "Name", "Data", "RswBannerBmp", bannerBmpPath, outError) ||
         !msi_sql::InsertBinaryStreamRow(hDb.Get(), "Binary", "Name", "Data", "RswWelcomeBmp", welcomeBmpPath, outError)) {
         std::filesystem::remove_all(scratchDir, ec);
         return false;
     }
+
+    // Dynamic `ARPSYSTEMCOMPONENT` Governance CustomActions (Type 51 Property Setters):
+    //   - Standalone installs leave `RS_SUITE_MANAGED` unset, so products appear normally in Installed Apps.
+    //   - Unified Suite Setup passes `RS_SUITE_MANAGED=1`, setting `ARPSYSTEMCOMPONENT=1` cleanly!
+    //   - Detaching a kept product during Suite removal passes `RS_SUITE_MANAGED=0`, clearing `ARPSYSTEMCOMPONENT`!
+    msi_sql::InsertRow(
+        hDb.Get(), "CustomAction",
+        {"Action", "Type", "Source", "Target"},
+        {std::string("RswSetSuiteSystemComponent"), 51, std::string("ARPSYSTEMCOMPONENT"), std::string("1")},
+        outError);
+    msi_sql::InsertRow(
+        hDb.Get(), "CustomAction",
+        {"Action", "Type", "Source", "Target"},
+        {std::string("RswClearSuiteSystemComponent"), 51, std::string("ARPSYSTEMCOMPONENT"), std::string("")},
+        outError);
 
     if (registeredDirKeys.count("ApplicationProgramsFolder")) {
         // Type 35 (`msidbCustomActionTypeDirectory | msidbCustomActionTypeTextData`) Custom Action:
@@ -1793,10 +2062,12 @@ inline bool CompileManifestToMsi(
     }
 
     std::vector<SeqEntry> execSeq = {
-        {"FindRelatedProducts",    nullptr, 100},
-        {"AppSearch",              nullptr, 200},
-        {"LaunchConditions",       nullptr, 400},
-        {"ValidateProductID",      nullptr, 700},
+        {"FindRelatedProducts",         nullptr, 100},
+        {"AppSearch",                   nullptr, 200},
+        {"LaunchConditions",            nullptr, 400},
+        {"RswSetSuiteSystemComponent",  "RS_SUITE_MANAGED = \"1\"", 450},
+        {"RswClearSuiteSystemComponent","RS_SUITE_MANAGED = \"0\"", 451},
+        {"ValidateProductID",           nullptr, 700},
         {"CostInitialize",         nullptr, 800},
         {"FileCost",               nullptr, 900},
         {"CostFinalize",           nullptr, 1000},
@@ -1838,6 +2109,24 @@ inline bool CompileManifestToMsi(
         msi_sql::InsertRow(
             hDb.Get(), "InstallExecuteSequence", {"Action", "Condition", "Sequence"},
             {std::string(s.action), s.cond ? SqlParam{std::string(s.cond)} : SqlParam{std::monostate{}}, s.seq},
+            outError);
+    }
+
+    const SeqEntry adminUiSeq[] = {
+        {"CostInitialize",  nullptr, 800},
+        {"FileCost",        nullptr, 900},
+        {"CostFinalize",    nullptr, 1000},
+        {"AdminWelcomeDlg", nullptr, 1290},
+        {"ProgressDlg",     nullptr, 1298},
+        {"ExecuteAction",   nullptr, 1300},
+        {"ExitDialog",      nullptr, -1},
+        {"UserExit",        nullptr, -2},
+        {"FatalError",      nullptr, -3}
+    };
+    for (const auto& s : adminUiSeq) {
+        msi_sql::InsertRow(
+            hDb.Get(), "AdminUISequence", {"Action", "Condition", "Sequence"},
+            {std::string(s.action), std::monostate{}, s.seq},
             outError);
     }
 
@@ -1892,10 +2181,11 @@ inline bool CompileManifestToMsi(
         ::MsiSummaryInfoSetPropertyW(hSum.Get(), 9,  VT_LPSTR,    0,    &nowFt, wPkgCode.c_str());
         ::MsiSummaryInfoSetPropertyW(hSum.Get(), 12, VT_FILETIME, 0,    &nowFt, nullptr);
         ::MsiSummaryInfoSetPropertyW(hSum.Get(), 13, VT_FILETIME, 0,    &nowFt, nullptr);
-        ::MsiSummaryInfoSetPropertyW(hSum.Get(), 14, VT_I4,       500,  &nowFt, nullptr);
-        ::MsiSummaryInfoSetPropertyW(hSum.Get(), 15, VT_I4,       2,    &nowFt, nullptr);
-        ::MsiSummaryInfoSetPropertyW(hSum.Get(), 18, VT_LPSTR,    0,    &nowFt, kGeneratorSigWide.data());
-        ::MsiSummaryInfoSetPropertyW(hSum.Get(), 19, VT_I4,       2,    &nowFt, nullptr);
+        const INT summaryWordCount = uncompressedLooseMedia ? 0 : 2; // Bit 1 (`2`) = compressed source files; `0` = uncompressed long filenames!
+        ::MsiSummaryInfoSetPropertyW(hSum.Get(), 14, VT_I4,       500,              &nowFt, nullptr);
+        ::MsiSummaryInfoSetPropertyW(hSum.Get(), 15, VT_I4,       summaryWordCount, &nowFt, nullptr);
+        ::MsiSummaryInfoSetPropertyW(hSum.Get(), 18, VT_LPSTR,    0,                &nowFt, kGeneratorSigWide.data());
+        ::MsiSummaryInfoSetPropertyW(hSum.Get(), 19, VT_I4,       2,                &nowFt, nullptr);
 
         if (::MsiSummaryInfoPersist(hSum.Get()) != ERROR_SUCCESS) {
             std::filesystem::remove_all(scratchDir, ec);

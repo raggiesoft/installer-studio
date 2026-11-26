@@ -329,15 +329,25 @@ inline ValidationReport ValidateManifestDocument(
         }
     }
 
-    // 2. Required sections & required fields check
+    // 2. Required sections & required fields check (aware of `PackageKind = sfx` and `PackageKind = suite`!)
+    const std::string pkgKindLow = AsciiLower(TrimAscii(doc.GetString("Package", "", "PackageKind", "msi")));
+    const bool isSfxPkg   = (pkgKindLow == "sfx");
+    const bool isSuitePkg = (pkgKindLow == "suite");
+
     for (const auto& sd : kSectionDescriptors) {
         if (sd.cardinality == SectionCardinality::SingletonRequired) {
+            if ((isSfxPkg || isSuitePkg) && EqualsIgnoreCase(sd.nameOrPrefix, "Install")) {
+                continue; // `[Install]` is optional for pure SFX archives and Suite chainers!
+            }
             if (seenSingletonSections.find(AsciiLower(sd.nameOrPrefix)) == seenSingletonSections.end()) {
                 addErr("RSW015", 1, std::string(sd.nameOrPrefix), "",
                        "Missing required section '[" + std::string(sd.nameOrPrefix) + "]'.");
             } else {
                 for (const auto& fd : kFieldDescriptors) {
                     if (fd.required && EqualsIgnoreCase(fd.sectionPrefix, sd.nameOrPrefix)) {
+                        if (isSfxPkg && EqualsIgnoreCase(sd.nameOrPrefix, "Package") && EqualsIgnoreCase(fd.key, "UpgradeCode")) {
+                            continue; // Pure SFX archives do not register in Installed Apps, so UpgradeCode is optional!
+                        }
                         if (doc.GetString(sd.nameOrPrefix, "", fd.key).empty()) {
                             addErr("RSW016", 1, std::string(sd.nameOrPrefix), std::string(fd.key),
                                    "Missing required key '" + std::string(fd.key) + "' in '[" + std::string(sd.nameOrPrefix) + "]'.");
@@ -348,6 +358,13 @@ inline ValidationReport ValidateManifestDocument(
         } else if (sd.cardinality == SectionCardinality::NamedRepeatable) {
             auto itemIds = doc.GetNamedSectionIds(sd.nameOrPrefix);
             if (sd.atLeastOneRequired && itemIds.empty()) {
+                if (isSuitePkg && EqualsIgnoreCase(sd.nameOrPrefix, "Payload")) {
+                    if (doc.GetNamedSectionIds("SuitePackage").empty()) {
+                        addErr("RSW017", 1, "SuitePackage", "",
+                               "PackageKind = suite must define at least one '[SuitePackage.<id>]' section.");
+                    }
+                    continue;
+                }
                 addErr("RSW017", 1, std::string(sd.nameOrPrefix), "",
                        "Manifest must define at least one '[" + std::string(sd.nameOrPrefix) + ".<id>]' section.");
             }
@@ -530,6 +547,28 @@ inline ValidationReport ValidateManifestDocument(
                        "Merge Module (.msm) file does not exist on disk: " + WideToUtf8(absMsm.wstring()));
             }
         }
+    }
+
+    // Validate `[SuitePackage.<id>]` child `.msi` / `-setup.exe` paths & `[Media]` cabinet bounds
+    for (const auto& spId : doc.GetNamedSectionIds("SuitePackage")) {
+        const std::string rawSp = doc.GetString("SuitePackage", spId, "Source");
+        if (!rawSp.empty()) {
+            const auto absSp = resolvePathStd(rawSp);
+            if (!std::filesystem::exists(absSp, ec)) {
+                addErr("RSW038", 1, "SuitePackage." + spId, "Source",
+                       "SuitePackage Source file does not exist on disk: " + WideToUtf8(absSp.wstring()));
+            }
+        }
+    }
+    const int maxCabMb = doc.GetInt("Media", "", "MaxCabinetSizeMB", 0);
+    const int maxCabKb = doc.GetInt("Media", "", "MaxCabinetSizeKB", 0);
+    if (maxCabMb < 0 || maxCabMb > 2047) {
+        addErr("RSW039", 1, "Media", "MaxCabinetSizeMB",
+               "MaxCabinetSizeMB must be between 0 (single cabinet) and 2047 MB.");
+    }
+    if (maxCabKb < 0 || (maxCabKb > 0 && maxCabKb < 16)) {
+        addErr("RSW039", 1, "Media", "MaxCabinetSizeKB",
+               "MaxCabinetSizeKB must be 0 or >= 16 KB.");
     }
 
     // 5. WCAG 2.2 AA Brand Accent Contrast Verification (`[UI] AccentPrimaryHex`)

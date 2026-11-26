@@ -37,6 +37,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -47,12 +48,30 @@ namespace rsw {
 struct CabInputEntry {
     std::filesystem::path sourcePath; // Real UTF-16 path on the build machine
     std::string           cabFileKey; // Exact primary key in MSI `File.File` column (e.g. `"f_0001"`)
+    int                   sequence = 0; // Optional 1-based MSI `File.Sequence` for multi-volume spanning
+};
+
+/// Tracks per-file starting cabinet indices (`iCab = 1..N`) when FCI spans across `CAB1.cab..CABN.cab`!
+struct CabSpanTracker {
+    int                        maxCabSeen = 1;
+    std::map<std::string, int> fileKeyToStartCab;
 };
 
 namespace detail {
 
 inline FNFCIFILEPLACED(CabFilePlaced) {
-    (void)pccab; (void)pszFile; (void)cbFile; (void)fContinuation; (void)pv;
+    (void)cbFile;
+    if (pccab != nullptr && pv != nullptr) {
+        auto* tr = static_cast<CabSpanTracker*>(pv);
+        if (pccab->iCab > tr->maxCabSeen) {
+            tr->maxCabSeen = pccab->iCab;
+        }
+        // Per Microsoft's Windows Installer `Media.LastSequence` rule: a file that spans
+        // across multiple cabinets belongs to the cabinet in which it BEGINS (`!fContinuation`)!
+        if (!fContinuation && pszFile != nullptr && pszFile[0] != '\0') {
+            tr->fileKeyToStartCab[pszFile] = pccab->iCab;
+        }
+    }
     return 0;
 }
 
@@ -177,7 +196,14 @@ inline FNFCIGETTEMPFILE(CabGetTempFile) {
 }
 
 inline FNFCIGETNEXTCABINET(CabGetNextCabinet) {
-    (void)pccab; (void)cbPrevCab; (void)pv;
+    (void)cbPrevCab; (void)pv;
+    if (pccab != nullptr) {
+        // FCI automatically increments `pccab->iCab` (e.g. `1 -> 2 -> 3`) before invoking
+        // `CabGetNextCabinet`; format `CAB2.cab`, `CAB3.cab`, ... and matching disk prompt!
+        pccab->iDisk = pccab->iCab;
+        std::snprintf(pccab->szCab,  CB_MAX_CABINET_NAME, "CAB%d.cab", pccab->iCab);
+        std::snprintf(pccab->szDisk, CB_MAX_DISK_NAME,    "Disk %d",   pccab->iCab);
+    }
     return TRUE;
 }
 
@@ -205,6 +231,123 @@ inline FNFCISTATUS(CabStatusCallback) {
 }
 
 } // namespace detail
+
+/// Describes each generated external cabinet (`CAB1.cab..CABN.cab`) for the MSI `Media` table!
+struct SpannedCabinetVolume {
+    int                   diskId       = 1;
+    int                   lastSequence = 0;
+    std::string           cabinetName;  // e.g. `"CAB1.cab"`
+    std::filesystem::path cabinetPath;
+};
+
+/// Compresses `entries` across one or more numbered external cabinets (`CAB1.cab..CABN.cab`)
+/// capped at `maxCabinetBytes` (`<= 0x7FFFFFFF`) inside `outDir`, computing exact `LastSequence`
+/// boundaries for every row of Windows Installer's relational `Media` table!
+inline bool BuildSpannedPayloadCabinets(
+    const std::vector<CabInputEntry>& entries,
+    const std::filesystem::path& outDir,
+    ULONG maxCabinetBytes,
+    bool useHighRatioLzx,
+    std::vector<SpannedCabinetVolume>& outVolumes,
+    std::string& outError)
+{
+    outVolumes.clear();
+    if (entries.empty()) return true;
+
+    std::error_code ec;
+    std::filesystem::create_directories(outDir, ec);
+    for (int k = 1; k <= 64; ++k) {
+        std::filesystem::remove(outDir / ("CAB" + std::to_string(k) + ".cab"), ec);
+    }
+
+    const std::string cabDirUtf8 = WideToUtf8(outDir.wstring()) + "\\";
+    if (cabDirUtf8.size() >= CB_MAX_CAB_PATH) {
+        outError = "Cabinet output directory exceeds FCI CB_MAX_CAB_PATH limit: " + outDir.string();
+        return false;
+    }
+
+    const ULONG effectiveCap = (maxCabinetBytes == 0 || maxCabinetBytes > 0x7FFFFFFFu)
+        ? 0x7FFFFFFFu
+        : std::max<ULONG>(16384u, maxCabinetBytes);
+
+    CCAB ccab{};
+    ccab.cb             = effectiveCap;
+    ccab.cbFolderThresh = effectiveCap;
+    ccab.iCab           = 1;
+    ccab.iDisk          = 1;
+    std::memcpy(ccab.szCabPath, cabDirUtf8.c_str(), cabDirUtf8.size() + 1);
+    std::snprintf(ccab.szCab,  CB_MAX_CABINET_NAME, "CAB1.cab");
+    std::snprintf(ccab.szDisk, CB_MAX_DISK_NAME,    "Disk 1");
+
+    CabSpanTracker tracker{};
+    ERF erf{};
+    HFCI hfci = ::FCICreate(
+        &erf,
+        detail::CabFilePlaced,
+        detail::CabMemAlloc,
+        detail::CabMemFree,
+        detail::CabFileOpen,
+        detail::CabFileRead,
+        detail::CabFileWrite,
+        detail::CabFileClose,
+        detail::CabFileSeek,
+        detail::CabFileDelete,
+        detail::CabGetTempFile,
+        &ccab,
+        &tracker);
+
+    if (hfci == nullptr) {
+        outError = "FCICreate failed for spanned cabinets (FCI error " + std::to_string(erf.erfOper) + ").";
+        return false;
+    }
+
+    const TCOMP compressionType = useHighRatioLzx ? TCOMPfromLZXWindow(21) : tcompTYPE_MSZIP;
+    for (const auto& item : entries) {
+        std::string srcUtf8 = WideToUtf8(item.sourcePath.wstring());
+        std::string keyCopy = item.cabFileKey;
+        if (!::FCIAddFile(
+                hfci, srcUtf8.data(), keyCopy.data(), FALSE,
+                detail::CabGetNextCabinet, detail::CabStatusCallback, detail::CabGetOpenInfo,
+                compressionType)) {
+            const int oper = erf.erfOper;
+            ::FCIDestroy(hfci);
+            outError = "FCIAddFile failed during cabinet spanning on '" + srcUtf8 + "' (FCI error " + std::to_string(oper) + ").";
+            return false;
+        }
+    }
+
+    if (!::FCIFlushCabinet(hfci, FALSE, detail::CabGetNextCabinet, detail::CabStatusCallback)) {
+        const int oper = erf.erfOper;
+        ::FCIDestroy(hfci);
+        outError = "FCIFlushCabinet failed during cabinet spanning (FCI error " + std::to_string(oper) + ").";
+        return false;
+    }
+    if (!::FCIDestroy(hfci)) {
+        outError = "FCIDestroy failed after cabinet spanning.";
+        return false;
+    }
+
+    const int totalCabs = std::max(1, tracker.maxCabSeen);
+    int runningLastSeq  = 0;
+    for (int diskId = 1; diskId <= totalCabs; ++diskId) {
+        for (std::size_t idx = 0; idx < entries.size(); ++idx) {
+            const int seq = (entries[idx].sequence > 0) ? entries[idx].sequence : static_cast<int>(idx + 1);
+            auto it = tracker.fileKeyToStartCab.find(entries[idx].cabFileKey);
+            const int startCab = (it != tracker.fileKeyToStartCab.end()) ? it->second : 1;
+            if (startCab <= diskId && seq > runningLastSeq) {
+                runningLastSeq = seq;
+            }
+        }
+        const std::string cabName = "CAB" + std::to_string(diskId) + ".cab";
+        const auto cabPath = outDir / cabName;
+        if (!std::filesystem::exists(cabPath, ec)) {
+            outError = "Expected spanned cabinet volume missing on disk: " + cabPath.string();
+            return false;
+        }
+        outVolumes.push_back({diskId, runningLastSeq, cabName, cabPath});
+    }
+    return true;
+}
 
 /// Compresses `entries` (in exact `File.Sequence` order) into a single `.cab` file at `outCabPath`.
 inline bool BuildPayloadCabinet(

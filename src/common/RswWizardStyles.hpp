@@ -41,19 +41,20 @@ namespace rsw {
 
 /// All selectable customer-facing `SetupWizard.exe` layout variations (`[UI] WizardLayout`).
 enum class WizardStyleKind : int {
-    StandardGlass  = 0, // `standard` — Signature RaggieSoft Glass header + 64x64 medallion
-    Wizard95       = 1, // `wizard95` — Classic 1995 `#C0C0C0` 3D beveled dialog + 164px left sidebar
-    Wizard97       = 2, // `wizard97` — Classic enterprise top-banner sheet + etched rules
-    AeroWizard     = 3, // `aerowizard` — Command-bar header with 30x30 circular `<-` Back glyph
-    FluentMica     = 4, // `fluentmica` — Windows 11 Mica surface + 168px left vertical step rail
-    OneClick       = 5, // `oneclick` — Compact single-card express splash with "Customize..." toggle
-    PassiveToast   = 6, // `passivetoast` — Non-interactive `/passive` & `/qb` progress banner
-    FullScreenBlue = 7, // `fullscreenblue` — 1995 `#000080 -> #000000` full-screen wash + 3D dialog
-    FullScreenTeal = 8, // `fullscreenteal` — 1995 `#008080` ACME Setup Engine teal wash + 3D dialog
-    Autorun16x9    = 9  // `autorun16x9` — Widescreen 640x480 16:9 media/book launcher
+    StandardGlass  = 0,  // `standard` — Signature RaggieSoft Glass header + 64x64 medallion
+    Wizard95       = 1,  // `wizard95` — Classic 1995 `#C0C0C0` 3D beveled dialog + 164px left sidebar
+    Wizard97       = 2,  // `wizard97` — Classic enterprise top-banner sheet + etched rules
+    AeroWizard     = 3,  // `aerowizard` — Command-bar header with 30x30 circular `<-` Back glyph
+    FluentMica     = 4,  // `fluentmica` — Windows 11 Mica surface + 168px left vertical step rail
+    OneClick       = 5,  // `oneclick` — Compact single-card express splash with "Customize..." toggle
+    PassiveToast   = 6,  // `passivetoast` — Non-interactive `/passive` & `/qb` progress banner
+    FullScreenBlue = 7,  // `fullscreenblue` — 1995 `#000080 -> #000000` full-screen wash + 3D dialog
+    FullScreenTeal = 8,  // `fullscreenteal` — 1995 `#008080` ACME Setup Engine teal wash + 3D dialog
+    Autorun16x9    = 9,  // `autorun16x9` — Widescreen 640x480 16:9 media/book launcher
+    Simple         = 10  // `simple` — Ultra-compact single-dialog UI (`Destination folder` + `[...]` + progress + `[&Install]`/`[&Extract]`)
 };
 
-inline constexpr int kWizardStyleCount = 10;
+inline constexpr int kWizardStyleCount = 11;
 
 /// Canonical `.rsip` manifest token for each `WizardStyleKind` (in exact IDE combo-box order).
 inline constexpr const char* WizardStyleToken(WizardStyleKind k) noexcept {
@@ -68,6 +69,7 @@ inline constexpr const char* WizardStyleToken(WizardStyleKind k) noexcept {
         case WizardStyleKind::FullScreenBlue: return "fullscreenblue";
         case WizardStyleKind::FullScreenTeal: return "fullscreenteal";
         case WizardStyleKind::Autorun16x9:    return "autorun16x9";
+        case WizardStyleKind::Simple:         return "simple";
     }
     return "standard";
 }
@@ -85,6 +87,7 @@ inline constexpr const wchar_t* WizardStyleDisplayLabel(WizardStyleKind k) noexc
         case WizardStyleKind::FullScreenBlue: return L"fullscreenblue (1995 Cobalt Wash)";
         case WizardStyleKind::FullScreenTeal: return L"fullscreenteal (1995 ACME #008080 Teal)";
         case WizardStyleKind::Autorun16x9:    return L"autorun16x9 (16:9 Media Autorun)";
+        case WizardStyleKind::Simple:         return L"simple (Ultra-Compact Single-Dialog Setup / SFX)";
     }
     return L"standard (RaggieSoft Glass)";
 }
@@ -101,6 +104,7 @@ inline WizardStyleKind ParseWizardStyleKind(std::string_view raw) noexcept {
     if (s == "fullscreenblue" || s == "bluewash")        return WizardStyleKind::FullScreenBlue;
     if (s == "fullscreenteal" || s == "acme" || s == "tealwash") return WizardStyleKind::FullScreenTeal;
     if (s == "autorun16x9" || s == "autorun")            return WizardStyleKind::Autorun16x9;
+    if (s == "simple" || s == "compact" || s == "minimal" || s == "sfx") return WizardStyleKind::Simple;
     return WizardStyleKind::StandardGlass;
 }
 

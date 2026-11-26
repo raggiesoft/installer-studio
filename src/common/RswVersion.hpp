@@ -41,13 +41,13 @@
 
 namespace rsw {
 
-// Semantic Versioning (`0.5.1`)
+// Semantic Versioning (`0.6.0`)
 inline constexpr int kVersionMajor = 0;
-inline constexpr int kVersionMinor = 5;
-inline constexpr int kVersionPatch = 1;
+inline constexpr int kVersionMinor = 6;
+inline constexpr int kVersionPatch = 0;
 
-inline constexpr std::string_view  kVersionString      = "0.5.1";
-inline constexpr std::wstring_view kVersionStringWide  = L"0.5.1";
+inline constexpr std::string_view  kVersionString      = "0.6.0";
+inline constexpr std::wstring_view kVersionStringWide  = L"0.6.0";
 
 // Suite, Runtime Wizard, Help Viewer, & MSI Prism Product Identity
 inline constexpr std::string_view  kSuiteTitle         = "RaggieSoft Installer Studio";
@@ -62,9 +62,10 @@ inline constexpr std::string_view  kCanonicalExt       = ".rsip";
 inline constexpr std::string_view  kSuiteExt           = ".rsis";
 inline constexpr std::string_view  kIncludeExt         = ".rsii";
 inline constexpr std::string_view  kScriptExt          = ".rssc";
-inline constexpr std::string_view  kGeneratorSignature = "RaggieSoft Installer Studio (instbuild.exe 0.5.1)";
-inline constexpr std::wstring_view kGeneratorSigWide   = L"RaggieSoft Installer Studio (instbuild.exe 0.5.1)";
-inline constexpr std::string_view  kManifestSchemaVer  = "0.5";
+inline constexpr std::string_view  kPakExt             = ".rswpak";
+inline constexpr std::string_view  kGeneratorSignature = "RaggieSoft Installer Studio (instbuild.exe 0.6.0)";
+inline constexpr std::wstring_view kGeneratorSigWide   = L"RaggieSoft Installer Studio (instbuild.exe 0.6.0)";
+inline constexpr std::string_view  kManifestSchemaVer  = "0.6";
 
 /// IDE Product Editions (`Community` permanently maintains 100% feature parity with `Premier`!).
 enum class RswIdeEdition : int {
@@ -114,6 +115,11 @@ inline constexpr int kResIdPrereqManifest      = 205; // UTF-8 serialized `[Prer
 inline constexpr int kResIdUniversalManifest   = 210; // UTF-8 `[Universal]` CPU-dispatch manifest (`Mode=offline|web`)
 inline constexpr int kResIdUniversalSetupX64   = 211; // LZMS-compressed native `<Product>-x64-setup.exe` (Offline Universal)
 inline constexpr int kResIdUniversalSetupArm64 = 212; // LZMS-compressed native `<Product>-arm64-setup.exe` (Offline Universal)
+inline constexpr int kResIdFeaturePackManifest = 215; // UTF-8 `[FeaturePacks]` table for external `.rswpak` on-demand blocks
+inline constexpr int kResIdSfxOrNativeArchive  = 220; // Solid `RSWPAK1` LZMS payload stream (`PackageKind = sfx` & `Engine = native`)
+inline constexpr int kResIdNativeManifest      = 221; // UTF-8 `[NativeInstall]` / `[SFX]` execution & shortcut/registry manifest
+inline constexpr int kResIdSuiteManifest       = 230; // UTF-8 `[SuiteChainer]` multi-package manifest (`PackageKind = suite` / `.rsis`)
 inline constexpr int kResIdPrereqPayloadBase   = 300; // `300 + idx`: Embedded offline runtime binaries!
+inline constexpr int kResIdSuiteChildBase      = 400; // `400 + idx`: Embedded LZMS child `.msi` or `-setup.exe` binaries in Suite Setup!
 
 } // namespace rsw

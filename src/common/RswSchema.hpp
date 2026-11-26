@@ -80,24 +80,29 @@ inline constexpr std::string_view kAllowedTargetRoots =
 
 /// Curated one-click runtime prerequisite presets supported by `[Prerequisite.<id>] Preset`.
 inline constexpr std::string_view kAllowedPrereqPresets =
-    "Custom|DotNet10Desktop|DotNet10AspNet|DotNet9Desktop|DotNet8Desktop|EdgeWebView2|VcRedist2022";
+    "Custom|DotNet11Desktop|DotNet11AspNet|DotNet11Runtime|DotNet10Desktop|DotNet10AspNet|DotNet10Runtime|"
+    "DotNet9Desktop|DotNet8Desktop|EdgeWebView2|VcRedist2022";
 
 /// All selectable customer-facing `SetupWizard.exe` layout variations (`[UI] WizardLayout`).
 inline constexpr std::string_view kAllowedWizardLayouts =
-    "standard|wizard95|wizard97|aerowizard|fluentmica|oneclick|passivetoast|fullscreenblue|fullscreenteal|autorun16x9";
+    "standard|wizard95|wizard97|aerowizard|fluentmica|oneclick|passivetoast|fullscreenblue|fullscreenteal|autorun16x9|simple";
 
 // ================================================================================
-// 1. CANONICAL `.RSIP` SECTION DESCRIPTOR TABLE (`18` SECTIONS)
+// 1. CANONICAL `.RSIP` SECTION DESCRIPTOR TABLE (`21` SECTIONS)
 // ================================================================================
-inline constexpr std::array<SectionDescriptor, 18> kSectionDescriptors{{
+inline constexpr std::array<SectionDescriptor, 21> kSectionDescriptors{{
     {"Package",         SectionCardinality::SingletonRequired, true,
-     "Core product identity, MSI Summary Information, target CPU architecture (x64/arm64), and universal output settings."},
+     "Core product identity, PackageKind (msi/msm/sfx/suite), Engine (msi/native), UAC execution level, target CPU architecture (x64/arm64), and universal output settings."},
     {"Requirements",    SectionCardinality::SingletonOptional, false,
      "Minimum Windows 11 build gate (RtlGetVersion & MSI LaunchCondition), downgrade protection, and silent reboot exit code."},
     {"Install",         SectionCardinality::SingletonRequired, true,
-     "Default installation subfolder under ProgramFiles64Folder/LocalAppDataFolder and Start Menu group."},
+     "Default installation subfolder under ProgramFiles64Folder/LocalAppDataFolder and Start Menu group (optional when PackageKind = sfx or suite)."},
+    {"Media",           SectionCardinality::SingletonOptional, false,
+     "Multi-volume cabinet disk spanning (MaxCabinetSizeMB -> CAB1.cab..CABN.cab), external vs. embedded cabinets, and uncompressed loose source media (Compression = none | cab)."},
+    {"SFX",             SectionCardinality::SingletonOptional, false,
+     "Lightweight LZMS self-extracting archive (.exe) post-extraction launch (PostExtractRun), document open (PostExtractOpen), temp staging, and folder options (PackageKind = sfx)."},
     {"UI",              SectionCardinality::SingletonOptional, false,
-     "Branding, RTF license, icon, 10 selectable C++ WizardLayout styles (including Wizard95, FluentMica, FullScreenBlue & ACME FullScreenTeal), SetupTypePreset, and MSI.DLL dialog workflow."},
+     "Branding, RTF license, icon, 11 selectable C++ WizardLayout styles (including 'simple' ultra-compact single-dialog mode, Wizard95, FluentMica, FullScreenBlue & ACME FullScreenTeal), SetupTypePreset, and MSI.DLL dialog workflow."},
     {"Signing",         SectionCardinality::SingletonOptional, false,
      "Optional dual-layer Authenticode / Microsoft Azure Artifact Signing (Product.msi first, then outer Setup.exe) via signtool.exe."},
     {"SetupType",       SectionCardinality::NamedRepeatable,   false,
@@ -105,17 +110,19 @@ inline constexpr std::array<SectionDescriptor, 18> kSectionDescriptors{{
     {"Billboard",       SectionCardinality::NamedRepeatable,   false,
      "Optional rotating feature highlight card ([Billboard.<id>]) displayed during installation on FullScreenBlue, FullScreenTeal, and progress views."},
     {"Prerequisite",    SectionCardinality::NamedRepeatable,   false,
-     "Runtime prerequisite ([Prerequisite.<id>]: .NET Desktop Runtime, WebView2, VC++ Redist, or Custom .exe/.msi) executed BEFORE msiexec with download/embedded/side-by-side delivery and reboot exit-code tracking."},
+     "Runtime prerequisite ([Prerequisite.<id>]: .NET 11, .NET 10 LTS, WebView2, VC++ Redist, or Custom .exe/.msi) executed BEFORE msiexec with download/embedded/side-by-side delivery and reboot exit-code tracking."},
+    {"SuitePackage",    SectionCardinality::NamedRepeatable,   false,
+     "Child .msi or native setup package ([SuitePackage.<id>]) chained under a single UAC prompt in Unified Suite Setup (PackageKind = suite) with dynamic ARPSYSTEMCOMPONENT adoption."},
     {"MergeModule",     SectionCardinality::NamedRepeatable,   false,
      "Consumes a Windows Installer Merge Module ([MergeModule.<id>]: .msm) merging its Components, Files, Registry, and MergeModule.CABinet directly into Product.msi."},
     {"Feature",         SectionCardinality::NamedRepeatable,   false,
-     "Named MSI Feature or Sub-Feature ([Feature.<id>]) with plain-English Inclusion tiers (minimal/typical/complete/hidden) displayed in SetupWizard.exe and MSI SelectionTree."},
+     "Named Feature or Sub-Feature ([Feature.<id>]) with plain-English Inclusion tiers, optional Run-from-Source (MenuCD/MenuNetwork), and embedded vs. external .rswpak on-demand delivery."},
     {"Component",       SectionCardinality::NamedRepeatable,   false,
      "Explicit MSI Component ([Component.<id>]) enforcing Microsoft Single-Directory & KeyPath rules (File, Registry, or CreateFolder)."},
     {"Folder",          SectionCardinality::NamedRepeatable,   false,
      "Creates a destination subdirectory ([Folder.<id>]) via MSI CreateFolder + ICE64 RemoveFolder cleanup."},
     {"Payload",         SectionCardinality::NamedRepeatable,   true,
-     "Maps a build-machine file or directory ([Payload.<id>]) into #payload.cab and deterministic or explicit MSI Components."},
+     "Maps a build-machine file, directory, or .zip archive ([Payload.<id>]) into #payload.cab / RSWPAK1 and deterministic or explicit Components."},
     {"FileAssociation", SectionCardinality::NamedRepeatable,   false,
      "Registers a file extension, ProgId, document icon, MIME type, and Explorer shell verbs ([FileAssociation.<id>])."},
     {"Shortcut",        SectionCardinality::NamedRepeatable,   false,
@@ -133,8 +140,8 @@ inline constexpr std::array<SectionDescriptor, 18> kSectionDescriptors{{
 // ================================================================================
 inline constexpr std::array<FieldDescriptor, 45> kFieldDescriptors{{
     // --- [Package] ---
-    {"Package", "SchemaVersion",         FieldValueKind::String,      false, "0.5",               "",
-     "Manifest grammar version (`0.5`)."},
+    {"Package", "SchemaVersion",         FieldValueKind::String,      false, "0.6",               "",
+     "Manifest grammar version (`0.6`)."},
     {"Package", "Name",                  FieldValueKind::String,      true,  "",                  "",
      "Consumer-facing ProductName written to MSI Property table and VERSIONINFO."},
     {"Package", "Version",               FieldValueKind::MsiVersion,  true,  "",                  "",
@@ -247,25 +254,56 @@ inline constexpr std::array<FieldDescriptor, 45> kFieldDescriptors{{
 //    BILLBOARDS, PREREQUISITES, SELECTION TREE, COMPONENTS, FOLDERS, & DIALOGS)
 // ================================================================================
 inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>({
-    // --- Extended [Package], [Requirements], [UI], [SetupType], [Billboard], [Feature], [Payload], [Shortcut], [Registry] ---
-    {"Package",  "PackageKind",          FieldValueKind::EnumChoice,  false, "msi",               "msi|msm",
-     "`msi` builds a standalone Enterprise `.msi` (+ optional `-setup.exe`); `msm` builds a reusable Merge Module (`.msm`)."},
+    // --- Extended [Package], [Media], [SFX], [Requirements], [UI], [SetupType], [Billboard], [SuitePackage], [Feature], [Payload], [Shortcut], [Registry] ---
+    {"Package",  "PackageKind",          FieldValueKind::EnumChoice,  false, "msi",               "msi|msm|sfx|suite",
+     "`msi` builds an Enterprise `.msi` (+ optional `-setup.exe`), `msm` builds a Merge Module (`.msm`), `sfx` builds a lightweight LZMS Self-Extracting `.exe` (zero Installed Apps clutter), and `suite` builds a single-UAC Unified Suite Chainer (`ARPSYSTEMCOMPONENT` adoption)."},
+    {"Package",  "Engine",               FieldValueKind::EnumChoice,  false, "msi",               "msi|native",
+     "`msi` uses Microsoft Windows Installer (`msi.dll`); `native` uses RaggieSoft's zero-`msi.dll` transactional LZMS extraction engine with rollback journal, `.lnk` shortcuts, `Uninstall` registry registration, and signed `Uninstall.exe`."},
     {"Package",  "RequestedExecutionLevel", FieldValueKind::EnumChoice, false, "asInvoker",       "asInvoker|highestAvailable|requireAdministrator",
-     "Controls when Windows UAC prompts on outer `Setup.exe` (`RT_MANIFEST` `#1`): `asInvoker` (default — wizard starts un-elevated and prompts for UAC only when clicking Install, keeping Finish app launches & Browse dialogs un-elevated), `highestAvailable` (elevates upfront for Admin accounts while allowing Standard Users to open Setup), or `requireAdministrator` (requires Admin UAC immediately at `0.0s` launch with Explorer shell-token de-elevation on Finish launch)."},
+     "Controls Windows UAC level stamped onto PE `RT_MANIFEST` `#1` across `msi`, `native`, `sfx`, and `suite` EXEs: `asInvoker` (default — un-elevated launch; prompts UAC only if per-machine install begins), `highestAvailable` (elevates upfront for Admins while letting Standard Users run), or `requireAdministrator` (requires Admin UAC immediately at `0.0s` launch)."},
     {"Package",  "BuildUniversal",       FieldValueKind::Boolean,     false, "false",             "",
      "When `true` (or when `--universal` is passed to `instbuild.exe`), compiles both `x64` and `arm64` editions and emits `<UniversalOutputName>-offline-setup.exe` plus `<UniversalOutputName>-setup.exe`."},
     {"Package",  "UniversalOutputName",  FieldValueKind::String,      false, "",                  "",
      "Optional base filename stem for universal combined installers; defaults to `OutputName` stripped of `-$(ARCH)`."},
     {"Package",  "UniversalDownloadBaseUrl", FieldValueKind::String,  false, "",                  "",
-     "Optional HTTPS folder URL hosting `<OutputName>-x64-setup.exe` and `<OutputName>-arm64-setup.exe` for the smart CPU-aware web stub."},
+     "Optional HTTPS folder URL hosting `<OutputName>-x64-setup.exe`, `<OutputName>-arm64-setup.exe`, and `.rswpak` feature packs."},
     {"Package",  "Tagline",              FieldValueKind::String,      false, "",                  "",
      "Short subtitle displayed beneath the product title in `SetupWizard.exe` and `InstallerStudio.exe`."},
     {"Package",  "WebsiteLabel",         FieldValueKind::String,      false, "",                  "",
      "Optional domain badge shown in the setup wizard footer (left blank if omitted — 100% white-label!)."},
+
+    // --- [Media] (Multi-Volume Disk Spanning & Uncompressed Loose Source Media!) ---
+    {"Media",    "Compression",          FieldValueKind::EnumChoice,  false, "cab",               "cab|none",
+     "`cab` compresses payloads into `#payload.cab` or external `CAB1.cab..CABN.cab`; `none` emits uncompressed loose source files (`PID_WORDCOUNT` bit `1` cleared + `msidbFileAttributesNoncompressed` `0x2000`) for Run-from-Media / Network shares."},
+    {"Media",    "EmbedCabinet",         FieldValueKind::Boolean,     false, "true",              "",
+     "When `true` and `MaxCabinetSizeMB = 0` (`MaxCabinetSizeKB = 0`), embeds `#payload.cab` inside `Product.msi`; when `false` or spanning is active, emits external `CAB1.cab..CABN.cab` next to `Product.msi`."},
+    {"Media",    "MaxCabinetSizeMB",     FieldValueKind::Integer,     false, "0",                 "",
+     "Maximum size in megabytes (`1..2047`) per external cabinet (`CAB1.cab..CABN.cab`) before spanning to the next `DiskId` in the `Media` SQL table (`0` = undivided single cabinet)."},
+    {"Media",    "MaxCabinetSizeKB",     FieldValueKind::Integer,     false, "0",                 "",
+     "Optional fine-grained maximum cabinet size in kilobytes (`>= 32`) before spanning to `CAB2.cab..CABN.cab` (overrides `MaxCabinetSizeMB` when `> 0`)."},
+    {"Media",    "VolumeLabel",          FieldValueKind::String,      false, "DISK",              "",
+     "Volume label prefix written to `Media.VolumeLabel` (`DISK1`, `DISK2`, ...)."},
+    {"Media",    "DiskPrompt",           FieldValueKind::String,      false, "Please insert [ProductName] Disk [1]", "",
+     "Change-media prompt written to `Media.DiskPrompt` and `Property.DiskPrompt` (`Error 1302`)."},
+
+    // --- [SFX] (Self-Extracting `.EXE` Options when `PackageKind = sfx`!) ---
+    {"SFX",      "PostExtractRun",       FieldValueKind::RelativePath,false, "",                  "",
+     "Optional bundled `.exe` or `.cmd` (relative to the extraction folder) launched automatically after extraction completes."},
+    {"SFX",      "PostExtractArgs",      FieldValueKind::String,      false, "",                  "",
+     "Optional command-line arguments passed when launching `PostExtractRun`."},
+    {"SFX",      "PostExtractOpen",      FieldValueKind::RelativePath,false, "",                  "",
+     "Optional bundled document (`.pdf`, `.html`, `.txt`, `.rtf`, etc. relative to extraction folder) opened via `ShellExecuteExW` when a compatible viewer is installed."},
+    {"SFX",      "ExtractToTemp",        FieldValueKind::Boolean,     false, "false",             "",
+     "When `true`, defaults extraction to an isolated `%TEMP%\\<Slug>-<PID>` temporary directory instead of prompting for a permanent folder."},
+    {"SFX",      "AllowChangeFolder",    FieldValueKind::Boolean,     false, "true",              "",
+     "When `true` (default), allows the user to edit or browse the destination folder before clicking `&Extract`."},
+    {"SFX",      "SilentOverwrite",      FieldValueKind::Boolean,     false, "true",              "",
+     "When `true`, overwrites existing files in the destination folder without extra prompts."},
+
     {"Requirements", "SilentRebootExitCode", FieldValueKind::Integer, false, "3010",              "",
      "Process exit code returned in silent mode (`/s` / `/qn`) when a runtime prerequisite or MSI requests a Windows restart (`3010` standard MSI)."},
     {"UI",       "WizardLayout",         FieldValueKind::EnumChoice,  false, "standard",          kAllowedWizardLayouts,
-     "Selects the customer-facing `SetupWizard.exe` style: `standard` (RaggieSoft Glass), `wizard95` (1995 `#C0C0C0` 3D beveled + left sidebar), `wizard97` (classic top-banner), `aerowizard` (command bar + circular `<-` Back), `fluentmica` (Windows 11 Mica + left step rail), `oneclick` (compact 1-click splash), `passivetoast` (`/passive` progress), `fullscreenblue` (1995 `#000080` Cobalt wash + 3D dialog), `fullscreenteal` (1995 `#008080` Microsoft ACME Teal wash + 3D dialog), or `autorun16x9` (640x480 16:9 launcher)."},
+     "Selects the customer-facing `SetupWizard.exe` style: `simple` (ultra-compact single-dialog `Destination folder` + `[...]` + progress + `&Install`/`&Extract`), `standard` (RaggieSoft Glass), `wizard95` (1995 `#C0C0C0` 3D beveled + left sidebar), `wizard97` (classic top-banner), `aerowizard` (command bar + circular `<-` Back), `fluentmica` (Windows 11 Mica + left step rail), `oneclick` (compact 1-click splash), `passivetoast` (`/passive` progress), `fullscreenblue` (1995 `#000080` Cobalt wash + 3D dialog), `fullscreenteal` (1995 `#008080` Microsoft ACME Teal wash + 3D dialog), or `autorun16x9` (640x480 16:9 launcher)."},
     {"UI",       "SetupTypePreset",      FieldValueKind::EnumChoice,  false, "express_custom",    "express_custom|win95_classic",
      "`express_custom` displays Express / Compact / Custom cards; `win95_classic` displays classic 4-option Typical / Compact / Complete / Custom cards (overridden if custom `[SetupType.<id>]` sections are defined)."},
     {"UI",       "MsiDialogPreset",      FieldValueKind::EnumChoice,  false, "express_custom",    "express_custom|minimal",
@@ -328,6 +366,32 @@ inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>
      "Sets `msidbFeatureAttributesUIDisallowAbsent` (`16`) locking a required core feature so users cannot disable it in `SelectionTree`."},
     {"Feature",  "AllowAdvertise",       FieldValueKind::Boolean,     false, "false",             "",
      "When `false` (default), sets `msidbFeatureAttributesDisallowAdvertise` (`8`) hiding MSI on-demand advertisement; set `true` to enable 'Feature will be installed when required'."},
+    {"Feature",  "AllowRunFromSource",   FieldValueKind::Boolean,     false, "false",             "",
+     "When `true`, sets `msidbComponentAttributesOptional` (`2`) on owned components and enables `MenuCD` ('Will be installed to run from CD') & `MenuNetwork` ('Will be installed to run from network') in `SelectionTree`."},
+    {"Feature",  "Delivery",             FieldValueKind::EnumChoice,  false, "embedded",          "embedded|ondemand",
+     "`embedded` packs feature files inside the main installer; `ondemand` splits this feature into an external LZMS-compressed `<OutputName>-<FeatureId>.rswpak` block fetched via WinHTTP with SHA-256 + Authenticode verification when selected."},
+    {"Feature",  "PackUrl",              FieldValueKind::String,      false, "",                  "",
+     "Optional HTTPS download URL for `<OutputName>-<FeatureId>.rswpak` when `Delivery = ondemand` (defaults to `UniversalDownloadBaseUrl` or side-by-side local `.rswpak`)."},
+
+    // --- [SuitePackage.<id>] (Unified Suite Chainer & Dynamic ARPSYSTEMCOMPONENT Adoption!) ---
+    {"SuitePackage", "Name",             FieldValueKind::String,      true,  "",                  "",
+     "Consumer-facing child tool title displayed in the Unified Suite Setup & Maintenance Hub."},
+    {"SuitePackage", "Description",      FieldValueKind::String,      false, "",                  "",
+     "Plain-English description of this child package in the Suite checklist."},
+    {"SuitePackage", "Source",           FieldValueKind::Path,        true,  "",                  "",
+     "Path to the compiled child `.msi` or native `-setup.exe` binary on the build machine (supports `$(ARCH)`)."},
+    {"SuitePackage", "UpgradeCode",      FieldValueKind::Guid,        false, "",                  "",
+     "Permanent `{UpgradeCode}` of this child package used to detect & dynamically adopt already-installed standalone siblings (`RS_SUITE_MANAGED=1`)."},
+    {"SuitePackage", "Engine",           FieldValueKind::EnumChoice,  false, "msi",               "msi|native|exe",
+     "Child installer engine (`msi` passes `RS_SUITE_MANAGED=1` via `MsiInstallProductW`; `native` / `exe` passes `/s RS_SUITE_MANAGED=1`)."},
+    {"SuitePackage", "InstallArgs",      FieldValueKind::String,      false, "",                  "",
+     "Optional extra properties or CLI switches passed to this child package during Suite install."},
+    {"SuitePackage", "Required",         FieldValueKind::Boolean,     false, "false",             "",
+     "When `true`, locks this core Suite package as required in the Suite Setup checklist."},
+    {"SuitePackage", "SelectedByDefault",FieldValueKind::Boolean,     false, "true",              "",
+     "Whether this child package is pre-checked by default on fresh Suite installations."},
+    {"SuitePackage", "AdoptStandalone",  FieldValueKind::Boolean,     false, "true",              "",
+     "When `true` (default), dynamically adopts any already-installed standalone sibling (`REINSTALL=ALL REINSTALLMODE=vomus RS_SUITE_MANAGED=1`) under the single Suite Installed Apps entry."},
     {"Payload",  "TargetRoot",           FieldValueKind::EnumChoice,  false, "INSTALLDIR",        kAllowedTargetRoots,
      "Destination MSI system folder root (`INSTALLDIR`, `CommonAppDataFolder`, `AppDataFolder`, `FontsFolder`, etc.)."},
     {"Payload",  "Component",            FieldValueKind::String,      false, "",                  "",
