@@ -426,14 +426,20 @@ inline bool PopulateMsiInternalUiTables(
     addCtrl("RepairModeDlg", "Back",      "PushButton", 180, 243, 56, 17, kVisEn,         std::monostate{}, std::string("< &Back"), std::string("RepairBtn"));
     addCtrl("RepairModeDlg", "RepairBtn", "PushButton", 236, 243, 56, 17, installBtnAttr, std::monostate{}, std::string("&Repair"), std::string("Cancel"));
     addCtrl("RepairModeDlg", "Cancel",    "PushButton", 304, 243, 56, 17, kVisEn,         std::monostate{}, std::string("Cancel"),  std::string("RepairGroup"));
-    addEvt("RepairModeDlg", "Back",      "NewDialog",     "MaintenanceTypeDlg", "1", 1);
-    addEvt("RepairModeDlg", "RepairBtn", "ReinstallMode", "pecms",  "RSW_REPAIR_KIND = \"Quick\"", 1);
-    addEvt("RepairModeDlg", "RepairBtn", "ReinstallMode", "vomus",  "RSW_REPAIR_KIND = \"Full\"",  2);
-    addEvt("RepairModeDlg", "RepairBtn", "Reinstall",     "ALL",    "1", 3);
-    addEvt("RepairModeDlg", "RepairBtn", "EndDialog",     "Return", "1", 4);
-    addEvt("RepairModeDlg", "Cancel",    "SpawnDialog",   "CancelDlg", "1", 1);
+    addEvt("RepairModeDlg", "Back",      "NewDialog",       "MaintenanceTypeDlg", "1", 1);
+    addEvt("RepairModeDlg", "RepairBtn", "ReinstallMode",   "pecms",  "RSW_REPAIR_KIND = \"Quick\"", 1);
+    addEvt("RepairModeDlg", "RepairBtn", "[REINSTALLMODE]", "pecms",  "RSW_REPAIR_KIND = \"Quick\"", 2);
+    addEvt("RepairModeDlg", "RepairBtn", "ReinstallMode",   "vomus",  "RSW_REPAIR_KIND = \"Full\"",  3);
+    addEvt("RepairModeDlg", "RepairBtn", "[REINSTALLMODE]", "vomus",  "RSW_REPAIR_KIND = \"Full\"",  4);
+    addEvt("RepairModeDlg", "RepairBtn", "Reinstall",       "ALL",    "1", 5);
+    addEvt("RepairModeDlg", "RepairBtn", "[REINSTALL]",     "ALL",    "1", 6);
+    addEvt("RepairModeDlg", "RepairBtn", "EndDialog",       "Return", "1", 7);
+    addEvt("RepairModeDlg", "Cancel",    "SpawnDialog",     "CancelDlg", "1", 1);
 
     // Safe Uninstall Confirmation (`VerifyRemoveDlg` — Closed 5-control cycle without dangling `Note` pointer!)
+    // CRITICAL UAC ELEVATION FIX: Set BOTH `Remove = ALL` AND `[REMOVE] = ALL` so when `ExecuteAction`
+    // crosses from the non-elevated `InstallUISequence` client to the elevated `msiserver` service,
+    // `REMOVE="ALL"` is passed explicitly in the public property bag and completely uninstalls the app!
     addDlg("VerifyRemoveDlg", 370, 270, 3, "[ProductName] - Safe Uninstall", "RemoveBtn", "RemoveBtn", "Cancel");
     addBannerChrome("VerifyRemoveDlg", "Remove [ProductName]", "Your personal documents and projects are never deleted.");
     addCtrl("VerifyRemoveDlg", "Note",      "Text",       20, 60,  330, 44, kVisEn, std::monostate{},
@@ -445,45 +451,63 @@ inline bool PopulateMsiInternalUiTables(
     addCtrl("VerifyRemoveDlg", "Cancel",    "PushButton", 304,243, 56,  17, kVisEn,         std::monostate{}, std::string("Cancel"),  std::string("CacheChk"));
     addEvt("VerifyRemoveDlg", "Back",      "NewDialog",   "MaintenanceTypeDlg", "1", 1);
     addEvt("VerifyRemoveDlg", "RemoveBtn", "Remove",      "ALL",    "1", 1);
-    addEvt("VerifyRemoveDlg", "RemoveBtn", "EndDialog",   "Return", "1", 2);
+    addEvt("VerifyRemoveDlg", "RemoveBtn", "[REMOVE]",    "ALL",    "1", 2);
+    addEvt("VerifyRemoveDlg", "RemoveBtn", "EndDialog",   "Return", "1", 3);
     addEvt("VerifyRemoveDlg", "Cancel",    "SpawnDialog", "CancelDlg", "1", 1);
 
     // -------------------------------------------------------------------------
     // 6. `ProgressDlg`, `ExitDialog`, `CancelDlg`, `UserExit`, & `FatalError`
     // -------------------------------------------------------------------------
-    // Note on `ProgressBar` Attributes:
-    //   Setting `msidbControlAttributesProgress95` (`0x00010000`) instructs `MSI.DLL` to
-    //   instantiate a native Windows Common Controls `msctls_progress32` bar instead of
-    //   MSI's legacy flat white 2D rectangle (unless `[UI] MsiProgressStyle = flat`)!
-    // Note on `EnableRollback -> Enable`:
-    //   Subscribing `Cancel` to `EnableRollback` automatically disables `Cancel` during
-    //   `InstallFinalize` when `.rbf` rollback files are being deleted (point of no return)!
+    // Detailed `MSI.DLL` `ProgressDlg` (`ActionText` + multiline `ActionData` [`File` / `Directory` / `Size`]
+    // + `Progress95` `ProgressBar` + live `TimeRemaining` + `EnableRollback` Cancel lock!):
+    constexpr int kVisNoPrefix     = kVisEn | 0x00080000; // `msidbControlAttributesNoPrefix` prevents `&` path underlines!
     const bool wantFlatMsiProgress = EqualsIgnoreCase(doc.GetString("UI", "", "MsiProgressStyle", "standard"), "flat");
     const int progressBarAttr      = wantFlatMsiProgress ? kVisEn : (kVisEn | 0x00010000 /* Progress95 native ComCtl32 */);
 
     addDlg("ProgressDlg", 370, 270, 1 /* Modeless */, "[ProductName] Setup", "Cancel", "Cancel", "Cancel");
-    addBannerChrome("ProgressDlg", "Configuring [ProductName]", "Please wait while Windows Installer applies changes.");
-    addCtrl("ProgressDlg", "ActionText",  "Text",        20, 75,  330, 18, kVisEn,          std::monostate{}, std::string("Preparing installation..."), std::monostate{});
-    addCtrl("ProgressDlg", "ProgressBar", "ProgressBar", 20, 100, 330, 16, progressBarAttr, std::monostate{}, std::monostate{}, std::monostate{});
-    addCtrl("ProgressDlg", "Cancel",      "PushButton",  304,243, 56,  17, kVisEn,          std::monostate{}, std::string("Cancel"), std::monostate{});
+    addCtrl("ProgressDlg", "BannerBitmap", "Bitmap", 0,  0,   370, 44, kBmpFixed, std::monostate{}, std::string("RswBannerBmp"), std::monostate{});
+    addCtrl("ProgressDlg", "BannerLine",   "Line",   0,  44,  370, 0,  1,         std::monostate{}, std::monostate{}, std::monostate{});
+    addCtrl("ProgressDlg", "BottomLine",   "Line",   0,  234, 370, 0,  1,         std::monostate{}, std::monostate{}, std::monostate{});
+    addCtrl("ProgressDlg", "TitleInstall", "Text",   15, 6,   340, 15, kVisTrans, std::monostate{}, std::string("{\\DlgFontBold8}Configuring [ProductName]"), std::monostate{});
+    addCtrl("ProgressDlg", "TitleRemove",  "Text",   15, 6,   340, 15, kVisTrans, std::monostate{}, std::string("{\\DlgFontBold8}Removing [ProductName]"), std::monostate{});
+    addCtrl("ProgressDlg", "DescInstall",  "Text",   20, 22,  335, 18, kVisTrans, std::monostate{}, std::string("The program features you selected are being configured."), std::monostate{});
+    addCtrl("ProgressDlg", "DescRemove",   "Text",   20, 22,  335, 18, kVisTrans, std::monostate{}, std::string("The program features you selected are currently being uninstalled."), std::monostate{});
+    addCond("ProgressDlg", "TitleInstall", "Hide", "REMOVE~=\"ALL\"");
+    addCond("ProgressDlg", "DescInstall",  "Hide", "REMOVE~=\"ALL\"");
+    addCond("ProgressDlg", "TitleRemove",  "Hide", "NOT (REMOVE~=\"ALL\")");
+    addCond("ProgressDlg", "DescRemove",   "Hide", "NOT (REMOVE~=\"ALL\")");
+
+    addCtrl("ProgressDlg", "StatusLabel",   "Text",        20, 58,  42,  14, kVisEn,          std::monostate{}, std::string("{\\DlgFontBold8}Status:"), std::monostate{});
+    addCtrl("ProgressDlg", "ActionText",    "Text",        64, 58,  286, 14, kVisNoPrefix,    std::monostate{}, std::string("Preparing installation..."), std::monostate{});
+    addCtrl("ProgressDlg", "ActionData",    "Text",        20, 76,  330, 42, kVisNoPrefix,    std::monostate{}, std::string("Initializing Windows Installer transaction..."), std::monostate{});
+    addCtrl("ProgressDlg", "ProgressBar",   "ProgressBar", 20, 124, 330, 16, progressBarAttr, std::monostate{}, std::monostate{}, std::monostate{});
+    addCtrl("ProgressDlg", "TimeRemaining", "Text",        20, 148, 330, 16, kVisNoPrefix,    std::monostate{}, std::string(""), std::monostate{});
+    addCtrl("ProgressDlg", "Cancel",        "PushButton",  304,243, 56,  17, kVisEn,          std::monostate{}, std::string("Cancel"), std::monostate{});
     addEvt("ProgressDlg", "Cancel", "SpawnDialog", "CancelDlg", "1", 1);
     insertRow(hDb, "EventMapping", {"Dialog_", "Control_", "Event", "Attribute"},
-              std::vector<SqlVal>{std::string("ProgressDlg"), std::string("ActionText"),  std::string("ActionText"),     std::string("Text")}, outError);
+              std::vector<SqlVal>{std::string("ProgressDlg"), std::string("ActionText"),    std::string("ActionText"),     std::string("Text")}, outError);
     insertRow(hDb, "EventMapping", {"Dialog_", "Control_", "Event", "Attribute"},
-              std::vector<SqlVal>{std::string("ProgressDlg"), std::string("ProgressBar"), std::string("SetProgress"),    std::string("Progress")}, outError);
+              std::vector<SqlVal>{std::string("ProgressDlg"), std::string("ActionData"),    std::string("ActionData"),     std::string("Text")}, outError);
     insertRow(hDb, "EventMapping", {"Dialog_", "Control_", "Event", "Attribute"},
-              std::vector<SqlVal>{std::string("ProgressDlg"), std::string("Cancel"),      std::string("EnableRollback"), std::string("Enable")}, outError);
+              std::vector<SqlVal>{std::string("ProgressDlg"), std::string("ProgressBar"),   std::string("SetProgress"),    std::string("Progress")}, outError);
+    insertRow(hDb, "EventMapping", {"Dialog_", "Control_", "Event", "Attribute"},
+              std::vector<SqlVal>{std::string("ProgressDlg"), std::string("TimeRemaining"), std::string("TimeRemaining"),  std::string("TimeRemaining")}, outError);
+    insertRow(hDb, "EventMapping", {"Dialog_", "Control_", "Event", "Attribute"},
+              std::vector<SqlVal>{std::string("ProgressDlg"), std::string("Cancel"),        std::string("EnableRollback"), std::string("Enable")}, outError);
 
     const bool hasExitLaunchCheck = (!opt.mainExeFileKey.empty() && opt.offerLaunchOnFinish);
     addDlg("ExitDialog", 370, 270, 3, "[ProductName] Setup", "Finish", "Finish", "Finish");
     addCtrl("ExitDialog", "Bitmap",      "Bitmap",     0,   0,   370, 234, kBmpFixed, std::monostate{}, std::string("RswWelcomeBmp"), std::monostate{});
     addCtrl("ExitDialog", "BottomLine",  "Line",       0,   234, 370, 0,   1,         std::monostate{}, std::monostate{}, std::monostate{});
     addCtrl("ExitDialog", "Title",       "Text",       135, 20,  220, 60,  kVisTrans, std::monostate{}, std::string("{\\VerdanaBold13}Completed the [ProductName] Setup Wizard"), std::monostate{});
+    addCtrl("ExitDialog", "TitleRemove", "Text",       135, 20,  220, 60,  kVisTrans, std::monostate{}, std::string("{\\VerdanaBold13}[ProductName] Has Been Uninstalled"), std::monostate{});
+    addCond("ExitDialog", "Title",       "Hide", "REMOVE~=\"ALL\"");
+    addCond("ExitDialog", "TitleRemove", "Hide", "NOT (REMOVE~=\"ALL\")");
     addCtrl("ExitDialog", "Description", "Text",       135, 85,  220, 60,  kVisTrans, std::monostate{}, std::string("Click Finish to exit the Setup Wizard."), std::monostate{});
     if (hasExitLaunchCheck) {
         addCtrl("ExitDialog", "LaunchCheck", "CheckBox", 135, 160, 220, 18, kVisTrans, std::string("LAUNCHAPP"), opt.launchChkText, std::string("Finish"));
-        addCond("ExitDialog", "LaunchCheck", "Hide", "REMOVE=\"ALL\"");
-        addEvt("ExitDialog",  "Finish", "DoAction", "RswLaunchMainApp", "LAUNCHAPP = \"1\" AND NOT REMOVE=\"ALL\"", 1);
+        addCond("ExitDialog", "LaunchCheck", "Hide", "REMOVE~=\"ALL\"");
+        addEvt("ExitDialog",  "Finish", "DoAction", "RswLaunchMainApp", "LAUNCHAPP = \"1\" AND NOT (REMOVE~=\"ALL\")", 1);
     }
     // CRITICAL FIX FOR MSI ERROR 2809: When `LaunchCheck -> Finish` exists, `Finish` MUST point back to `"LaunchCheck"` to close the cycle!
     addCtrl("ExitDialog", "Finish", "PushButton", 236, 243, 56, 17, kVisEn, std::monostate{}, std::string("&Finish"),

@@ -503,7 +503,52 @@ std::wstring FormatMsiActionDataStatus(
         return actionDesc.empty() ? L"Applying system changes..." : SanitizeUnexpandedMsiTokens(actionDesc);
     }
     if (base.empty()) return detail;
+    if (detail.find(L'\n') != std::wstring::npos) {
+        return base + L"...\r\n" + detail;
+    }
     return base + L": " + detail;
+}
+
+/// Condenses multiline `ActionData` (`"Copying new files...\r\nFile: Foo.exe\r\nDirectory: ..."`)
+/// down to a crisp single-line status (`"Copying new files: Foo.exe"`) for compact retro
+/// `Enable(PROGRESS)`, `OneClick`, and `PassiveToast` progress meters!
+std::wstring CompactSingleLineProgressText(const std::wstring& raw) {
+    const auto nl1 = raw.find_first_of(L"\r\n");
+    if (nl1 == std::wstring::npos) return raw;
+    std::wstring head = raw.substr(0, nl1);
+    while (!head.empty() && head.back() == L'.') head.pop_back();
+
+    std::size_t start2 = raw.find_first_not_of(L"\r\n", nl1);
+    if (start2 == std::wstring::npos) return head + L"...";
+    const auto nl2 = raw.find_first_of(L"\r\n", start2);
+    std::wstring line2 = (nl2 == std::wstring::npos) ? raw.substr(start2) : raw.substr(start2, nl2 - start2);
+    for (const wchar_t* pfx : {L"File: ", L"Folder: ", L"Shortcut: ", L"Key: ", L"Feature: ", L"Application: "}) {
+        const std::size_t pLen = std::wcslen(pfx);
+        if (line2.compare(0, pLen, pfx) == 0) {
+            line2.erase(0, pLen);
+            break;
+        }
+    }
+    return line2.empty() ? (head + L"...") : (head + L": " + line2);
+}
+
+/// Formats estimated remaining wall-clock time (`"Time remaining: 1 minute 24 seconds"`)
+/// once sufficient progress (`permille >= 35`) and elapsed duration (`>= 2000ms`) exist.
+std::wstring FormatEstimatedTimeRemaining(ULONGLONG startTickMs, int permille) {
+    if (startTickMs == 0 || permille < 35 || permille >= 995) return {};
+    const ULONGLONG elapsedMs = ::GetTickCount64() - startTickMs;
+    if (elapsedMs < 2000) return {};
+    const double frac      = static_cast<double>(permille) / 1000.0;
+    const double remSecRaw = (static_cast<double>(elapsedMs) / 1000.0) * ((1.0 - frac) / frac);
+    const long long remSec = std::clamp<long long>(static_cast<long long>(remSecRaw + 0.5), 1LL, 86400LL);
+    const long long mins   = remSec / 60;
+    const long long secs   = remSec % 60;
+    std::wstring out = L"Time remaining: ";
+    if (mins > 0) {
+        out += std::to_wstring(mins) + (mins == 1 ? L" minute " : L" minutes ");
+    }
+    out += std::to_wstring(secs) + (secs == 1 ? L" second" : L" seconds");
+    return out;
 }
 
 /// Streams RTF bytes into a Win32 RichEdit control (`EM_STREAMIN` + `SF_RTF`).
@@ -665,6 +710,7 @@ public:
     std::atomic<bool>       cancelRequested{false};
     std::atomic<bool>       cancelLockedPointOfNoReturn{false};
     std::atomic<bool>       installRunning{false};
+    ULONGLONG               installStartTickMs = 0;
     int                     currentPermille   = 0;
     int                     lastAnnouncedDecile = -1;
     UINT                    finalMsiResult    = ERROR_SUCCESS;
@@ -831,9 +877,22 @@ public:
         }
     }
 
+    void EnsureCustomSystemMenuAbout() noexcept {
+        if (!hWnd || !cfg.systemMenuAbout || IsRetroDockedProgressMode()) return;
+        HMENU hSys = ::GetSystemMenu(hWnd, FALSE);
+        if (!hSys) return;
+        MENUITEMINFOW mii{sizeof(mii)};
+        mii.fMask = MIIM_ID;
+        if (!::GetMenuItemInfoW(hSys, IDM_SYS_ABOUT_SETUP, FALSE, &mii)) {
+            const std::wstring abtLbl = L"&About " + cfg.productName + L" Setup...";
+            ::AppendMenuW(hSys, MF_SEPARATOR, 0, nullptr);
+            ::AppendMenuW(hSys, MF_STRING, IDM_SYS_ABOUT_SETUP, abtLbl.c_str());
+        }
+    }
+
     void ComputeLogicalDialogSize(int& outLogW, int& outLogH) const noexcept {
         if (IsRetroDockedProgressMode()) {
-            outLogW = 460; outLogH = 148;
+            outLogW = 440; outLogH = 104;
         } else if (cfg.isAutorun16x9) {
             outLogW = 640; outLogH = 480;
         } else if (IsPassiveToastMode()) {
@@ -851,11 +910,39 @@ public:
         if (!hWnd) return;
         const UINT dpi = ::GetDpiForWindow(hWnd);
         auto S = [&](int px) { return rsw::ui::ScalePx(px, dpi, theme.textScalePercent); };
+
+        // Authentic 1995/1998 `Enable(PROGRESS)` Chrome Rule:
+        //   - During `IsRetroDockedProgressMode()` (`FullScreenBlue` & `FullScreenTeal` `Installing`),
+        //     strip ALL window chrome (`WS_CAPTION`, `WS_SYSMENU`, `WS_MINIMIZEBOX`) so the docked
+        //     progress meter is a pure, titlebar-free 3D `#C0C0C0` beveled panel!
+        //   - On all interactive wizard steps (`Welcome`, `SetupType`, `Finished`, etc.), restore standard chrome!
+        const DWORD curStyle  = static_cast<DWORD>(::GetWindowLongW(hWnd, GWL_STYLE));
+        const DWORD visBit    = (curStyle & WS_VISIBLE);
+        const DWORD wantStyle = IsRetroDockedProgressMode()
+            ? (WS_POPUP | WS_CLIPCHILDREN | visBit)
+            : (WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN | visBit);
+        const bool styleChanged = ((curStyle & ~WS_CLIPSIBLINGS) != wantStyle);
+        if (styleChanged) {
+            ::SetWindowLongW(hWnd, GWL_STYLE, static_cast<LONG>(wantStyle));
+        }
+
+        // Enforce sharp 90-degree corners (`DWMWCP_DONOTROUND = 1`) and suppress Windows 11 DWM border
+        // halo (`DWMWA_COLOR_NONE = 0xFFFFFFFE`) on borderless retro progress & classic Win95 sheets!
+        const int cornerPref = (IsRetroDockedProgressMode() || rsw::UsesClassic3dDialogSheet(cfg.wizardStyle)) ? 1 : 0;
+        ::DwmSetWindowAttribute(hWnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &cornerPref, sizeof(cornerPref));
+        if (IsRetroDockedProgressMode()) {
+            const COLORREF noBorder = 0xFFFFFFFEu; // `DWMWA_COLOR_NONE`
+            ::DwmSetWindowAttribute(hWnd, 34 /* DWMWA_BORDER_COLOR */, &noBorder, sizeof(noBorder));
+        } else {
+            const COLORREF defBorder = 0xFFFFFFFFu; // `DWMWA_COLOR_DEFAULT`
+            ::DwmSetWindowAttribute(hWnd, 34 /* DWMWA_BORDER_COLOR */, &defBorder, sizeof(defBorder));
+            EnsureCustomSystemMenuAbout();
+        }
+
         int logW = 620, logH = 490;
         ComputeLogicalDialogSize(logW, logH);
         RECT winRc{0, 0, S(logW), S(logH)};
-        const DWORD style = static_cast<DWORD>(::GetWindowLongW(hWnd, GWL_STYLE));
-        ::AdjustWindowRectExForDpi(&winRc, style, FALSE, 0, dpi);
+        ::AdjustWindowRectExForDpi(&winRc, wantStyle, FALSE, 0, dpi);
         const int totalW = winRc.right - winRc.left;
         const int totalH = winRc.bottom - winRc.top;
 
@@ -869,12 +956,14 @@ public:
         int posX = workRc.left + std::max<int>(0, ((workRc.right - workRc.left) - totalW) / 2);
         int posY = workRc.top  + std::max<int>(0, ((workRc.bottom - workRc.top) - totalH) / 2);
         if (IsRetroDockedProgressMode()) {
-            // Dock the compact classic `#C0C0C0` 3D progress dialog at bottom-right so the
+            // Dock the borderless `#C0C0C0` 3D `Enable(PROGRESS)` meter at bottom-right so the
             // `[Billboard.*]` showcase card sits unobstructed dead-center on the retro screen!
             posX = std::max<int>(workRc.left + S(16), workRc.right  - totalW - S(24));
             posY = std::max<int>(workRc.top  + S(16), workRc.bottom - totalH - S(24));
         }
-        ::SetWindowPos(hWnd, nullptr, posX, posY, totalW, totalH, SWP_NOZORDER | SWP_NOACTIVATE);
+        ::SetWindowPos(
+            hWnd, nullptr, posX, posY, totalW, totalH,
+            SWP_NOZORDER | SWP_NOACTIVATE | (styleChanged ? SWP_FRAMECHANGED : 0));
         ApplyFontsAndLayout();
     }
 
@@ -1637,9 +1726,11 @@ public:
             ::MoveWindow(hProgStatus, S(24), S(104), W - S(48), S(24), TRUE);
             ::MoveWindow(hProgBar,    S(24), S(134), W - S(48), S(22), TRUE);
         } else if (IsRetroDockedProgressMode()) {
-            // `460 x 148` Classic 1995 `#C0C0C0` 3D Docked Bottom-Right Progress Meter + `Cancel`
-            ::MoveWindow(hProgStatus, S(16), S(36), W - S(32), S(20), TRUE);
-            ::MoveWindow(hProgBar,    S(16), S(60), W - S(32), S(20), TRUE);
+            // `440 x 104` Borderless Classic `Enable(PROGRESS)` Meter (`#C0C0C0` 3D bevel, ZERO titlebar!):
+            // Status text across top, sunken progress bar on left, and classic 3D `Cancel` button right beside it!
+            ::MoveWindow(hProgStatus, S(14), S(32), W - S(28),  S(20), TRUE);
+            ::MoveWindow(hProgBar,    S(14), S(60), W - S(114), S(24), TRUE);
+            ::MoveWindow(hBtnCancel,  W - S(92), S(58), S(78),  S(28), TRUE);
         } else if (IsCompactOneClickSplash()) {
             // `540 x 310` One-Click Express Splash Card
             ::MoveWindow(hLicAccept,  S(18), footerY - S(34), W - S(36), S(26), TRUE);
@@ -1710,10 +1801,10 @@ public:
             ::MoveWindow(hDeskScChk,    cardX, bodyTop + S(124), cardW, S(28), TRUE);
             ::MoveWindow(hFileAssocChk, cardX, bodyTop + S(160), cardW, S(28), TRUE);
 
-            // `Installing`: Progress Card (`hProgStatus` + `hProgBar`)
-            const int progTopOff = isWin95Sheet ? S(72) : S(136);
-            ::MoveWindow(hProgStatus, cardX + S(16), bodyTop + progTopOff,         cardW - S(32), S(24), TRUE);
-            ::MoveWindow(hProgBar,    cardX + S(16), bodyTop + progTopOff + S(32), cardW - S(32), S(24), TRUE);
+            // `Installing`: Detailed Progress Card (`ActionText` + multiline `File / Directory / Size` + `ProgressBar` + `TimeRemaining`)
+            const int progTopOff = isWin95Sheet ? S(64) : S(128);
+            ::MoveWindow(hProgStatus, cardX + S(16), bodyTop + progTopOff,         cardW - S(32), S(64), TRUE);
+            ::MoveWindow(hProgBar,    cardX + S(16), bodyTop + progTopOff + S(68), cardW - S(32), S(22), TRUE);
 
             // `Finished`: Summary + `&Launch` checkbox positioned strictly inside the right-hand column (`S(192)`) when left sidebar is active!
             const int finLeft = UsesClassicWelcomeSidebar() ? S(192) : (cardX + S(10));
@@ -2088,6 +2179,7 @@ public:
 
         currentPermille     = 0;
         lastAnnouncedDecile = -1;
+        installStartTickMs  = ::GetTickCount64();
         capturedErrorText.clear();
         ::SendMessageW(hProgBar, PBM_SETPOS, 0, 0);
 
@@ -2312,6 +2404,9 @@ public:
                     if (!lineStat.empty() || !lineErr.empty()) {
                         std::lock_guard<std::mutex> lk(msgMutex);
                         if (!lineStat.empty()) {
+                            for (char& ch : lineStat) {
+                                if (ch == '\t') ch = '\n';
+                            }
                             latestStatusText = rsw::Utf8ToWide(lineStat);
                             ::PostMessageW(hWnd, WM_RSW_STATUS_TEXT, 0, 0);
                         }
@@ -2679,33 +2774,35 @@ public:
         const int footerY = H - footerH;
         const int btnsLeftX = ::IsWindowVisible(hBtnBack) ? (W - S(326)) : (W - S(224));
 
-        // 1. Footer Bar (Classic 3D Etched Rule on `#C0C0C0` sheets, or Branded Glass Footer Bar!)
-        if (rsw::UsesClassic3dDialogSheet(cfg.wizardStyle)) {
-            rsw::ui::DrawClassicEtchedHorizontalRule(memDc, S(12), W - S(12), footerY, theme);
-            if (!IsCompactOneClickSplash()) {
-                HGDIOBJ oFs = ::SelectObject(memDc, hFontSmall);
-                ::SetTextColor(memDc, theme.textSecondary);
-                const std::wstring pubFoot = cfg.websiteLabel.empty()
-                    ? cfg.manufacturer
-                    : (cfg.manufacturer + L"  •  " + cfg.websiteLabel);
-                RECT pfRc{S(16), footerY + S(4), std::max(S(40), btnsLeftX - S(12)), H};
-                ::DrawTextW(memDc, pubFoot.c_str(), -1, &pfRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-                ::SelectObject(memDc, oFs);
-            }
-        } else {
-            const int leftFloor = ::IsWindowVisible(hBtnOneClickCust) ? S(146) : 0;
-            if (leftFloor == 0) {
-                rsw::ui::DrawGlassFooterBar(
-                    memDc, g, W, H, footerH, btnsLeftX, dpi, theme, cfg.manufacturer, cfg.websiteLabel);
+        // 1. Footer Bar (Skipped on borderless `Enable(PROGRESS)` meter; Classic 3D Etched Rule on `#C0C0C0` sheets, or Branded Glass Footer Bar!)
+        if (!IsRetroDockedProgressMode()) {
+            if (rsw::UsesClassic3dDialogSheet(cfg.wizardStyle)) {
+                rsw::ui::DrawClassicEtchedHorizontalRule(memDc, S(12), W - S(12), footerY, theme);
+                if (!IsCompactOneClickSplash()) {
+                    HGDIOBJ oFs = ::SelectObject(memDc, hFontSmall);
+                    ::SetTextColor(memDc, theme.textSecondary);
+                    const std::wstring pubFoot = cfg.websiteLabel.empty()
+                        ? cfg.manufacturer
+                        : (cfg.manufacturer + L"  •  " + cfg.websiteLabel);
+                    RECT pfRc{S(16), footerY + S(4), std::max(S(40), btnsLeftX - S(12)), H};
+                    ::DrawTextW(memDc, pubFoot.c_str(), -1, &pfRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                    ::SelectObject(memDc, oFs);
+                }
             } else {
-                RECT footerRc{0, footerY, W, H};
-                ::FillRect(memDc, &footerRc, theme.hbrFooter);
-                HPEN divPen = ::CreatePen(PS_SOLID, 1, theme.borderSubtle);
-                HGDIOBJ oP = ::SelectObject(memDc, divPen);
-                ::MoveToEx(memDc, 0, footerY, nullptr);
-                ::LineTo(memDc, W, footerY);
-                ::SelectObject(memDc, oP);
-                ::DeleteObject(divPen);
+                const int leftFloor = ::IsWindowVisible(hBtnOneClickCust) ? S(146) : 0;
+                if (leftFloor == 0) {
+                    rsw::ui::DrawGlassFooterBar(
+                        memDc, g, W, H, footerH, btnsLeftX, dpi, theme, cfg.manufacturer, cfg.websiteLabel);
+                } else {
+                    RECT footerRc{0, footerY, W, H};
+                    ::FillRect(memDc, &footerRc, theme.hbrFooter);
+                    HPEN divPen = ::CreatePen(PS_SOLID, 1, theme.borderSubtle);
+                    HGDIOBJ oP = ::SelectObject(memDc, divPen);
+                    ::MoveToEx(memDc, 0, footerY, nullptr);
+                    ::LineTo(memDc, W, footerY);
+                    ::SelectObject(memDc, oP);
+                    ::DeleteObject(divPen);
+                }
             }
         }
 
@@ -2720,18 +2817,23 @@ public:
             }
         };
 
-        // 1B. Passive Toast (`500 x 236`) OR Retro Docked Bottom-Right Progress Meter (`460 x 148` on `FullScreenBlue` / `FullScreenTeal`)!
+        // 1B. Passive Toast (`500 x 236`) OR Borderless Retro `Enable(PROGRESS)` Bottom-Right Meter (`440 x 104`, ZERO Titlebar!)
         const StepHeaderInfo hdrInfo = CurrentStepHeaderInfo();
         if (IsRetroDockedProgressMode()) {
+            // Paint crisp outer 2px raised 3D `#C0C0C0` dialog bevel since OS caption/border chrome is stripped!
+            rsw::ui::DrawClassic3dBevelFrame(memDc, clientRc, false /* raised outer frame */, theme);
             const int pct = std::clamp(currentPermille / 10, 0, 100);
-            std::wstring phaseTitle = L"Installing " + cfg.productName + L"... (" + std::to_wstring(pct) + L"%)";
-            if (selectedAction == SelectedAction::MaintUninstall)     phaseTitle = L"Removing " + cfg.productName + L"... (" + std::to_wstring(pct) + L"%)";
+            std::wstring phaseTitle = L"Installing " + cfg.productName + L"...";
+            if (selectedAction == SelectedAction::MaintUninstall)     phaseTitle = L"Removing " + cfg.productName + L"...";
             if (selectedAction == SelectedAction::MaintQuickRepair ||
-                selectedAction == SelectedAction::MaintFullReinstall) phaseTitle = L"Repairing " + cfg.productName + L"... (" + std::to_wstring(pct) + L"%)";
+                selectedAction == SelectedAction::MaintFullReinstall) phaseTitle = L"Repairing " + cfg.productName + L"...";
+            const std::wstring pctStr = std::to_wstring(pct) + L"%";
             HGDIOBJ oFr = ::SelectObject(memDc, hFontBold);
             ::SetTextColor(memDc, theme.textPrimary);
-            RECT hRc{S(16), S(10), W - S(16), S(34)};
+            RECT hRc{S(14), S(10), W - S(64), S(30)};
             ::DrawTextW(memDc, phaseTitle.c_str(), -1, &hRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            RECT pRc{W - S(60), S(10), W - S(14), S(30)};
+            ::DrawTextW(memDc, pctStr.c_str(), -1, &pRc, DT_RIGHT | DT_SINGLELINE | DT_NOPREFIX);
             ::SelectObject(memDc, oFr);
             ::BitBlt(hdcOut, 0, 0, W, H, memDc, 0, 0, SRCCOPY);
             ::SelectObject(memDc, oldBmp);
@@ -3223,23 +3325,19 @@ public:
             }
 
             case WizardPage::Installing: {
-                int progTop = bodyTop + S(82);
+                int progTop = bodyTop + S(74);
                 if (!isWin95Sheet) {
-                    RECT heroRc{cardX, bodyTop, cardX + cardW, bodyTop + S(66)};
+                    RECT heroRc{cardX, bodyTop, cardX + cardW, bodyTop + S(64)};
                     rsw::ui::DrawHeroBrandCard(
                         memDc, g, heroRc, dpi, theme,
                         cfg.manufacturer, cfg.tagline, cfg.websiteLabel,
                         L"CONFIGURING SYSTEM", hAppIconBig);
                 } else {
-                    progTop = bodyTop + S(18);
+                    progTop = bodyTop + S(10);
                 }
 
-                RECT progCard{cardX, progTop, cardX + cardW, progTop + S(136)};
-                if (isWin95Sheet) {
-                    rsw::ui::DrawClassic3dBevelFrame(memDc, progCard, true, theme);
-                } else {
-                    DrawGlassPanelBox(g, progCard, S(10));
-                }
+                RECT progCard{cardX, progTop, cardX + cardW, progTop + S(194)};
+                DrawPanelSurface(memDc, g, progCard, S(10));
 
                 ::SelectObject(memDc, hFontSection);
                 ::SetTextColor(memDc, theme.textPrimary);
@@ -3248,13 +3346,21 @@ public:
                 if (selectedAction == SelectedAction::MaintQuickRepair ||
                     selectedAction == SelectedAction::MaintFullReinstall) phaseTitle = L"Repairing " + cfg.productName + L"...";
 
-                RECT ptRc{progCard.left + S(16), progCard.top + S(16), progCard.right - S(84), progCard.top + S(46)};
+                RECT ptRc{progCard.left + S(16), progCard.top + S(14), progCard.right - S(84), progCard.top + S(42)};
                 ::DrawTextW(memDc, phaseTitle.c_str(), -1, &ptRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
                 const int pct = std::clamp(currentPermille / 10, 0, 100);
                 const std::wstring pctStr = std::to_wstring(pct) + L"%";
-                RECT pctRc{progCard.right - S(80), progCard.top + S(16), progCard.right - S(16), progCard.top + S(46)};
+                RECT pctRc{progCard.right - S(80), progCard.top + S(14), progCard.right - S(16), progCard.top + S(42)};
                 ::DrawTextW(memDc, pctStr.c_str(), -1, &pctRc, DT_RIGHT | DT_SINGLELINE | DT_NOPREFIX);
+
+                const std::wstring etaStr = FormatEstimatedTimeRemaining(installStartTickMs, currentPermille);
+                if (!etaStr.empty()) {
+                    ::SelectObject(memDc, hFontSmall);
+                    ::SetTextColor(memDc, theme.textSecondary);
+                    RECT etaRc{progCard.left + S(16), progCard.bottom - S(30), progCard.right - S(16), progCard.bottom - S(8)};
+                    ::DrawTextW(memDc, etaStr.c_str(), -1, &etaRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                }
                 break;
             }
 
@@ -3517,14 +3623,7 @@ public:
         switch (msg) {
             case WM_CREATE:
                 self->CreateControls();
-                if (self->cfg.systemMenuAbout) {
-                    HMENU hSys = ::GetSystemMenu(hWnd, FALSE);
-                    if (hSys) {
-                        const std::wstring abtLbl = L"&About " + self->cfg.productName + L" Setup...";
-                        ::AppendMenuW(hSys, MF_SEPARATOR, 0, nullptr);
-                        ::AppendMenuW(hSys, MF_STRING, IDM_SYS_ABOUT_SETUP, abtLbl.c_str());
-                    }
-                }
+                self->EnsureCustomSystemMenuAbout();
                 self->RefreshEffectiveThemeAndChrome();
                 self->ApplyFontsAndLayout();
                 return 0;
@@ -3576,7 +3675,8 @@ public:
             case WM_CTLCOLORBTN: {
                 HDC hdcChild = reinterpret_cast<HDC>(wParam);
                 HWND hChild  = reinterpret_cast<HWND>(lParam);
-                const bool onCard = (hChild == self->hProgStatus || hChild == self->hUninstCache || hChild == self->hUninstPrefs);
+                const bool onCard = (!self->IsRetroDockedProgressMode() && hChild == self->hProgStatus) ||
+                                    hChild == self->hUninstCache || hChild == self->hUninstPrefs;
                 ::SetTextColor(hdcChild, self->theme.textPrimary);
                 ::SetBkColor(hdcChild, onCard ? self->theme.cardBg : self->theme.windowBg);
                 return reinterpret_cast<LRESULT>(onCard ? self->theme.hbrCard : self->theme.hbrWindow);
@@ -3805,6 +3905,9 @@ public:
                     std::lock_guard<std::mutex> lk(self->msgMutex);
                     txt = self->latestStatusText;
                 }
+                if (self->IsRetroDockedProgressMode() || self->IsPassiveToastMode() || self->IsCompactOneClickSplash()) {
+                    txt = CompactSingleLineProgressText(txt);
+                }
                 ::SetWindowTextW(self->hProgStatus, txt.c_str());
                 if (self->hBackdropWnd) ::InvalidateRect(self->hBackdropWnd, nullptr, FALSE);
                 return 0;
@@ -3929,15 +4032,18 @@ struct ElevatedWorkerProgressState {
         if (statusFile.empty()) return;
         std::ofstream out(statusFile, std::ios::binary | std::ios::trunc);
         if (!out) return;
-        auto oneLine = [](std::string s) {
-            for (char& c : s) {
-                if (c == '\r' || c == '\n') c = ' ';
+        auto encodeLines = [](std::string s) {
+            std::string clean;
+            clean.reserve(s.size());
+            for (char c : s) {
+                if (c == '\r') continue;
+                clean.push_back(c == '\n' ? '\t' : c);
             }
-            return s;
+            return clean;
         };
         out << permille << "\n"
-            << oneLine(statusUtf8) << "\n"
-            << oneLine(errorUtf8)  << "\n"
+            << encodeLines(statusUtf8) << "\n"
+            << encodeLines(errorUtf8)  << "\n"
             << (cancelLocked ? "1" : "0") << "\n";
     }
 };
@@ -4987,12 +5093,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         if (hMon && ::GetMonitorInfoW(hMon, &mi)) {
             monRc = mi.rcMonitor;
         }
-        const std::wstring backTitle = app.cfg.productName + L" Setup Background";
+        // Full-screen Cobalt-Blue (`#000080`) / ACME Teal (`#008080`) wash has ZERO titlebar,
+        // ZERO taskbar button (`WS_EX_TOOLWINDOW`), ZERO rounded corners, and ZERO DWM border!
         app.hBackdropWnd = ::CreateWindowExW(
-            0, kBackClass, backTitle.c_str(), WS_POPUP | WS_CLIPCHILDREN,
+            WS_EX_TOOLWINDOW, kBackClass, L"", WS_POPUP | WS_CLIPCHILDREN,
             monRc.left, monRc.top, monRc.right - monRc.left, monRc.bottom - monRc.top,
             nullptr, nullptr, hInstance, &app);
         if (app.hBackdropWnd) {
+            const int doNotRound = 1; // `DWMWCP_DONOTROUND`
+            const COLORREF noBorder = 0xFFFFFFFEu; // `DWMWA_COLOR_NONE`
+            ::DwmSetWindowAttribute(app.hBackdropWnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &doNotRound, sizeof(doNotRound));
+            ::DwmSetWindowAttribute(app.hBackdropWnd, 34 /* DWMWA_BORDER_COLOR */, &noBorder, sizeof(noBorder));
             ::ShowWindow(app.hBackdropWnd, SW_SHOWNOACTIVATE);
             ::UpdateWindow(app.hBackdropWnd);
         }

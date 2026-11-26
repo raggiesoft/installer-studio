@@ -419,7 +419,13 @@ inline bool CompileManifestToMsi(
     NormalizeMsiGuid(doc.GetString("Package", "", "UpgradeCode"), outSummary.upgradeCode);
     const std::string rawProdCode = ExpandArchToken(doc.GetString("Package", "", "ProductCode", "*"), arch);
     if (rawProdCode == "*" || rawProdCode.empty()) {
-        outSummary.productCode = GenerateRandomMsiGuid();
+        // Deterministic UUIDv5 keyed by `(UpgradeCode, Architecture, ProductVersion)`:
+        //   - Rebuilding the SAME version (`0.5.0`, `arm64`) keeps a stable `ProductCode` so
+        //     `msiexec /x <file>.msi` and `winget` manifests always match the installed product!
+        //   - Bumping `Version` (`0.5.0` -> `0.5.1` or `1.0.0` -> `1.1.0`) automatically yields a
+        //     fresh `ProductCode` so Major Upgrades work seamlessly out of the box!
+        outSummary.productCode = ComputeDeterministicComponentGuid(
+            outSummary.upgradeCode, arch, "productcode:" + outSummary.productVersion);
     } else {
         NormalizeMsiGuid(rawProdCode, outSummary.productCode);
     }
@@ -1624,23 +1630,47 @@ inline bool CompileManifestToMsi(
     }
 
     // Populate `ActionText` with BOTH plain `Description` (never containing raw `[1]`!)
-    // AND proper `Template` patterns formatted by `MsiFormatRecordW` on `INSTALLMESSAGE_ACTIONDATA`
-    // so neither `msiexec` nor `SetupWizard.exe` EVER prints an unexpanded `"Copying New File: [1]"`!
+    // AND rich `Template` patterns (`File: [1]\r\nDirectory: [9]\r\nSize: [6] bytes`) formatted
+    // live by `MSI.DLL`'s `ActionData` `EventMapping` on `ProgressDlg` AND by `MsiFormatRecordW`
+    // inside `SetupWizard.exe`!
     struct ActionTextRow { const char* action; const char* desc; const char* tmpl; };
     const ActionTextRow actionTexts[] = {
-        {"InstallValidate",        "Validating installation...",          nullptr},
-        {"RemoveExistingProducts", "Removing previous version...",        nullptr},
-        {"ProcessComponents",      "Updating component registration...",  nullptr},
-        {"RemoveFiles",            "Removing old files",                  "[1]"},
-        {"CreateFolders",          "Creating application folders",        "[1]"},
-        {"InstallFiles",           "Copying new files",                   "[1]"},
-        {"RegisterFonts",          "Registering fonts",                   "[1]"},
-        {"CreateShortcuts",        "Creating shortcuts",                  "[1]"},
-        {"WriteRegistryValues",    "Updating system configuration...",    nullptr},
-        {"RegisterProgIdInfo",     "Registering document types...",       nullptr},
-        {"RegisterExtensionInfo",  "Registering file extensions...",      nullptr},
-        {"RegisterProduct",        "Registering product...",              nullptr},
-        {"PublishProduct",         "Publishing product information...",   nullptr}
+        {"AppSearch",               "Searching for installed applications...",    "Property: [1]"},
+        {"LaunchConditions",        "Evaluating launch conditions...",            nullptr},
+        {"CostInitialize",          "Computing disk space requirements...",       nullptr},
+        {"FileCost",                "Computing disk space requirements...",       nullptr},
+        {"CostFinalize",            "Computing disk space requirements...",       nullptr},
+        {"InstallValidate",         "Validating installation...",                 nullptr},
+        {"RemoveExistingProducts",  "Removing previous version...",               "Application: [1]"},
+        {"ProcessComponents",       "Updating component registration...",         nullptr},
+        {"UnpublishFeatures",       "Unpublishing product features...",           "Feature: [1]"},
+        {"RemoveRegistryValues",    "Removing system registry values...",         "Key: [1]\r\nName: [2]"},
+        {"RemoveShortcuts",         "Removing shortcuts...",                      "Shortcut: [1]"},
+        {"RemoveFiles",             "Removing files...",                          "File: [1]\r\nDirectory: [9]"},
+        {"RemoveFolders",           "Removing folders...",                        "Folder: [1]"},
+        {"CreateFolders",           "Creating application folders...",            "Folder: [1]"},
+        {"MoveFiles",               "Moving files...",                            "File: [1]\r\nDirectory: [9]\r\nSize: [6] bytes"},
+        {"InstallFiles",            "Copying new files...",                       "File: [1]\r\nDirectory: [9]\r\nSize: [6] bytes"},
+        {"DuplicateFiles",          "Creating duplicate files...",                "File: [1]\r\nDirectory: [9]\r\nSize: [6] bytes"},
+        {"PatchFiles",              "Patching files...",                          "File: [1]\r\nDirectory: [2]\r\nSize: [3] bytes"},
+        {"RegisterFonts",           "Registering fonts...",                       "Font: [1]"},
+        {"UnregisterFonts",         "Unregistering fonts...",                     "Font: [1]"},
+        {"CreateShortcuts",         "Creating shortcuts...",                      "Shortcut: [1]"},
+        {"WriteRegistryValues",     "Writing system registry values...",          "Key: [1]\r\nName: [2]"},
+        {"RegisterProgIdInfo",      "Registering document types...",              "ProgId: [1]"},
+        {"UnregisterProgIdInfo",    "Unregistering document types...",            "ProgId: [1]"},
+        {"RegisterExtensionInfo",   "Registering file extensions...",             "Extension: [1]"},
+        {"UnregisterExtensionInfo", "Unregistering file extensions...",           "Extension: [1]"},
+        {"RegisterMIMEInfo",        "Registering MIME content types...",          "MIME Type: [1]"},
+        {"UnregisterMIMEInfo",      "Unregistering MIME content types...",        "MIME Type: [1]"},
+        {"RegisterUser",            "Registering user information...",            "[1]"},
+        {"RegisterProduct",         "Registering product...",                     "[1]"},
+        {"PublishFeatures",         "Publishing product features...",             "Feature: [1]"},
+        {"PublishProduct",          "Publishing product information...",          nullptr},
+        {"InstallAdminPackage",     "Copying network installation files...",      "File: [1]\r\nDirectory: [9]\r\nSize: [6] bytes"},
+        {"GenerateScript",          "Generating script operations for action:",   "[1]"},
+        {"Rollback",                "Rolling back action:",                       "[1]"},
+        {"RollbackCleanup",         "Removing backup files...",                   "File: [1]"}
     };
     for (const auto& at : actionTexts) {
         msi_sql::InsertRow(

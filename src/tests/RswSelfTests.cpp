@@ -555,10 +555,12 @@ int wmain() {
                 ::MsiRecordGetStringW(hActRec.Get(), 1, dBuf, &cd);
                 ::MsiRecordGetStringW(hActRec.Get(), 2, tBuf, &ct);
                 descClean   = (std::wstring_view(dBuf).find(L"[1]") == std::wstring_view::npos);
-                tmplPresent = (std::wstring_view(tBuf) == L"[1]");
+                tmplPresent = (std::wstring_view(tBuf).find(L"[1]") != std::wstring_view::npos &&
+                               std::wstring_view(tBuf).find(L"[9]") != std::wstring_view::npos &&
+                               std::wstring_view(tBuf).find(L"[6]") != std::wstring_view::npos);
             }
             Check(descClean && tmplPresent,
-                  "ActionText separates Description from '[1]' Template (prevents 'Copying New File: [1]' bug)");
+                  "ActionText separates Description from rich '[1]/[9]/[6]' File/Directory/Size Template");
         }
 
         // 5C. Verify `v0.4.3` Combined Universal Packaging (`<stem>-offline-setup.exe` + Smart CPU Web Stub `<stem>-setup.exe`)!
@@ -803,15 +805,40 @@ int wmain() {
                 }
             }
 
-            // Verify `ProgressDlg.Cancel` subscribes to `EnableRollback -> Enable` in `EventMapping`!
+            // Verify `ProgressDlg` subscribes `ActionData`, `TimeRemaining`, & `EnableRollback` in `EventMapping`,
+            // AND `VerifyRemoveDlg.RemoveBtn` sets `[REMOVE] = ALL` so standalone MSI uninstall crosses UAC!
+            bool actionDataEvt = false, timeRemEvt = false, removePropEvt = false;
             rsw::ScopedMsiHandle hEmView;
             if (::MsiDatabaseOpenViewW(hVerifyDb.Get(),
-                    L"SELECT `Control_` FROM `EventMapping` WHERE `Dialog_` = 'ProgressDlg' AND `Control_` = 'Cancel' AND `Event` = 'EnableRollback' AND `Attribute` = 'Enable'",
+                    L"SELECT `Control_`, `Event` FROM `EventMapping` WHERE `Dialog_` = 'ProgressDlg'",
                     hEmView.Put()) == ERROR_SUCCESS &&
                 ::MsiViewExecute(hEmView.Get(), 0) == ERROR_SUCCESS) {
                 rsw::ScopedMsiHandle hRec;
-                rollbackCancelEvt = (::MsiViewFetch(hEmView.Get(), hRec.Put()) == ERROR_SUCCESS);
+                while (::MsiViewFetch(hEmView.Get(), hRec.Put()) == ERROR_SUCCESS) {
+                    wchar_t cBuf[64]{}, eBuf[64]{};
+                    DWORD cL = 64, eL = 64;
+                    ::MsiRecordGetStringW(hRec.Get(), 1, cBuf, &cL);
+                    ::MsiRecordGetStringW(hRec.Get(), 2, eBuf, &eL);
+                    if (std::wcscmp(cBuf, L"Cancel") == 0 && std::wcscmp(eBuf, L"EnableRollback") == 0) rollbackCancelEvt = true;
+                    if (std::wcscmp(cBuf, L"ActionData") == 0 && std::wcscmp(eBuf, L"ActionData") == 0) actionDataEvt = true;
+                    if (std::wcscmp(cBuf, L"TimeRemaining") == 0 && std::wcscmp(eBuf, L"TimeRemaining") == 0) timeRemEvt = true;
+                }
             }
+            rsw::ScopedMsiHandle hRmView;
+            if (::MsiDatabaseOpenViewW(hVerifyDb.Get(),
+                    L"SELECT `Argument` FROM `ControlEvent` WHERE `Dialog_` = 'VerifyRemoveDlg' AND `Control_` = 'RemoveBtn' AND `Event` = '[REMOVE]'",
+                    hRmView.Put()) == ERROR_SUCCESS &&
+                ::MsiViewExecute(hRmView.Get(), 0) == ERROR_SUCCESS) {
+                rsw::ScopedMsiHandle hRec;
+                if (::MsiViewFetch(hRmView.Get(), hRec.Put()) == ERROR_SUCCESS) {
+                    wchar_t aBuf[64]{};
+                    DWORD aL = 64;
+                    ::MsiRecordGetStringW(hRec.Get(), 1, aBuf, &aL);
+                    removePropEvt = (std::wcscmp(aBuf, L"ALL") == 0);
+                }
+            }
+            rollbackCancelEvt = rollbackCancelEvt && actionDataEvt && timeRemEvt && removePropEvt &&
+                                (v1Sum.productCode != v2Sum.productCode);
 
             // Mathematical Error 2809 Guard: verify EVERY dialog's `Control_Next` pointers form a closed cycle!
             std::map<std::wstring, std::map<std::wstring, std::wstring>> dlgNext;
