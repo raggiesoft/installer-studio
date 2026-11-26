@@ -681,6 +681,17 @@ inline bool ResolveManifestIncludesAndVars(
         normalized.push_back(ln);
     }
     outResolved.lines = std::move(normalized);
+
+    // Automatically expand built-in `$(VERSION)` across all `KeyValue` entries (e.g. `OutputName`,
+    // `UniversalOutputName`, `OutputDir`, and `UniversalDownloadBaseUrl`) using `[Package] Version`!
+    const std::string resolvedPkgVer = TrimAscii(outResolved.GetString("Package", "", "Version"));
+    if (!resolvedPkgVer.empty() && AsciiLower(resolvedPkgVer).find("$(version)") == std::string::npos) {
+        for (auto& ln : outResolved.lines) {
+            if (ln.kind == AstLineKind::KeyValue) {
+                ln.value = ExpandNamedToken(ln.value, "VERSION", resolvedPkgVer);
+            }
+        }
+    }
     return true;
 }
 

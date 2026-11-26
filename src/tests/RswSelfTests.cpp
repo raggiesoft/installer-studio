@@ -1057,6 +1057,21 @@ int wmain() {
                   beaconAfter.empty() &&
                   (msiProbe1 == msiProbe2),
                   "v0.5.1 CheckTokenMembership UAC-off check, UpgradeCode single-instance isolation, & ScopedActiveMsiBeacon queue discovery pass");
+
+            auto verTokRaw = rsw::ParseManifestText(
+                "[Package]\nName = VerTest\nVersion = 2.4.9\nManufacturer = RaggieSoft\n"
+                "UpgradeCode = {C34A9B12-4411-4822-9A11-524147474947}\n"
+                "OutputName = app-v$(VERSION)-$(ARCH)\n"
+                "UniversalOutputName = app-v$(VERSION)\n"
+                "UniversalDownloadBaseUrl = https://assets.raggiesoft.com/releases/v$(VERSION)\n"
+                "[Install]\nDefaultSubdir = RaggieSoft\\VerTest\n");
+            rsw::RswManifestDocument verTokRes;
+            std::string vtErr;
+            const bool vtOk = rsw::ResolveManifestIncludesAndVars(verTokRaw, {}, verTokRes, vtErr) &&
+                              verTokRes.GetString("Package", "", "OutputName") == "app-v2.4.9-$(ARCH)" &&
+                              verTokRes.GetString("Package", "", "UniversalOutputName") == "app-v2.4.9" &&
+                              verTokRes.GetString("Package", "", "UniversalDownloadBaseUrl") == "https://assets.raggiesoft.com/releases/v2.4.9";
+            Check(vtOk, "v0.5.1 $(VERSION) automatic manifest token expansion across OutputName & UniversalDownloadBaseUrl", vtErr);
         }
 
         // 6a. Execute `AppSearch -> LaunchConditions -> CostInitialize -> FileCost -> CostFinalize`

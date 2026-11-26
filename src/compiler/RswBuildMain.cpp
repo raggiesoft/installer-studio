@@ -47,7 +47,8 @@ void PrintUsageBanner() {
         << rsw::kSuiteTitle << " — " << rsw::kProductTagline << " (v" << rsw::kVersionString << ")\n"
         << "Zero-Dependency Native Win32 C++20 Compiler (`instbuild.exe` -> MSI, MSM, MST, MSP, Universal Setup.exe & VPAT 2.5)\n\n"
         << "Usage:\n"
-        << "  instbuild.exe <project.rsip | suite.rsis> [--arch=x64|arm64] [--universal] [--with-vpat]\n"
+        << "  instbuild.exe <project.rsip | suite.rsis> [--arch=x64|arm64] [--universal] [--with-vpat] [--out-dir=<dir>]\n"
+        << "                [--version-override=<X.Y.Z>] [--output-name=<stem>] [--universal-name=<stem>] [--web-base-url=<url>]\n"
         << "  instbuild.exe --validate [--diagnostics=json] <project.rsip | suite.rsis> [--arch=x64|arm64]\n"
         << "  instbuild.exe --emit-ai-spec <output-dir>\n"
         << "  instbuild.exe --emit-vpat <project.rsip> <output-dir>\n"
@@ -58,7 +59,16 @@ void PrintUsageBanner() {
         << "  instbuild.exe --version | --help\n";
 }
 
-/// Validates or compiles a single `.rsip` project (resolving `@include` `.rsii` & `variables`).
+struct CliPackageOverrides {
+    std::string outDir;
+    std::string version;
+    std::string outputName;
+    std::string universalName;
+    bool        hasWebBaseUrl = false;
+    std::string webBaseUrl;
+};
+
+/// Validates or compiles a single `.rsip` project (resolving `@include` `.rsii`, `$(VERSION)`, & CLI overrides).
 int ProcessSingleProject(
     const std::filesystem::path& manifestPath,
     const std::map<std::string, std::string>& variables,
@@ -67,6 +77,7 @@ int ProcessSingleProject(
     bool validateOnly,
     bool jsonDiagnostics,
     bool emitVpatAlongside,
+    const CliPackageOverrides& pkgOverrides,
     const std::filesystem::path& compilerExeDir)
 {
     rsw::RswManifestDocument rawDoc;
@@ -83,6 +94,10 @@ int ProcessSingleProject(
         return 1;
     }
 
+    if (!pkgOverrides.version.empty()) {
+        rawDoc.SetString("Package", "", "Version", pkgOverrides.version);
+    }
+
     rsw::RswManifestDocument doc;
     if (!rsw::ResolveManifestIncludesAndVars(rawDoc, variables, doc, parseError)) {
         if (jsonDiagnostics) {
@@ -94,6 +109,23 @@ int ProcessSingleProject(
             std::cerr << "[ERROR] " << parseError << "\n";
         }
         return 1;
+    }
+
+    const std::string effVer = rsw::TrimAscii(doc.GetString("Package", "", "Version"));
+    auto expandVer = [&](std::string s) {
+        return effVer.empty() ? s : rsw::ExpandNamedToken(s, "VERSION", effVer);
+    };
+    if (!pkgOverrides.outDir.empty()) {
+        doc.SetString("Package", "", "OutputDir", expandVer(pkgOverrides.outDir));
+    }
+    if (!pkgOverrides.outputName.empty()) {
+        doc.SetString("Package", "", "OutputName", expandVer(pkgOverrides.outputName));
+    }
+    if (!pkgOverrides.universalName.empty()) {
+        doc.SetString("Package", "", "UniversalOutputName", expandVer(pkgOverrides.universalName));
+    }
+    if (pkgOverrides.hasWebBaseUrl) {
+        doc.SetString("Package", "", "UniversalDownloadBaseUrl", expandVer(pkgOverrides.webBaseUrl));
     }
 
     const bool buildUniversal = archOverride.empty() &&
@@ -230,6 +262,7 @@ int wmain(int argc, wchar_t* argv[]) {
     std::string archOverride;
     std::string categoryFilter;
     std::string projectFilter;
+    CliPackageOverrides pkgOverrides{};
     std::map<std::string, std::string> cliVariables;
     std::vector<std::string> positional;
 
@@ -419,6 +452,15 @@ int wmain(int argc, wchar_t* argv[]) {
         if (a.rfind("--arch=", 0) == 0) { archOverride = a.substr(7); continue; }
         if (a.rfind("--category=", 0) == 0) { categoryFilter = a.substr(11); continue; }
         if (a.rfind("--project=", 0) == 0) { projectFilter = a.substr(10); continue; }
+        if (a.rfind("--out-dir=", 0) == 0) { pkgOverrides.outDir = a.substr(10); continue; }
+        if (a.rfind("--version-override=", 0) == 0) { pkgOverrides.version = a.substr(19); continue; }
+        if (a.rfind("--output-name=", 0) == 0) { pkgOverrides.outputName = a.substr(14); continue; }
+        if (a.rfind("--universal-name=", 0) == 0) { pkgOverrides.universalName = a.substr(17); continue; }
+        if (a.rfind("--web-base-url=", 0) == 0) {
+            pkgOverrides.hasWebBaseUrl = true;
+            pkgOverrides.webBaseUrl    = a.substr(15);
+            continue;
+        }
         if (a.rfind("-D", 0) == 0 && a.size() > 2) {
             auto eq = a.find('=', 2);
             if (eq != std::string::npos) {
@@ -477,13 +519,13 @@ int wmain(int argc, wchar_t* argv[]) {
             if (projWantsUniv) {
                 const int rc = ProcessSingleProject(
                     proj.resolvedPath, suite.variables, "", true,
-                    false, false, emitVpatFlag, compilerExeDir);
+                    false, false, emitVpatFlag, pkgOverrides, compilerExeDir);
                 if (rc != 0) return rc;
             } else {
                 for (const auto& arch : archList) {
                     const int rc = ProcessSingleProject(
                         proj.resolvedPath, suite.variables, arch, false,
-                        validateOnly, false, emitVpatFlag, compilerExeDir);
+                        validateOnly, false, emitVpatFlag, pkgOverrides, compilerExeDir);
                     if (rc != 0) {
                         return rc;
                     }
@@ -505,5 +547,5 @@ int wmain(int argc, wchar_t* argv[]) {
 
     return ProcessSingleProject(
         inputPath, cliVariables, archOverride, universalFlag,
-        validateOnly, jsonDiagnostics, emitVpatFlag, compilerExeDir);
+        validateOnly, jsonDiagnostics, emitVpatFlag, pkgOverrides, compilerExeDir);
 }
