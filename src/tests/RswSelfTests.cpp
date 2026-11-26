@@ -784,6 +784,52 @@ int wmain() {
                   contrastFixed && sawRsw055,
                   "v0.5.0 10 WizardLayout styles (incl. FullScreenBlue & ACME FullScreenTeal), win95_classic SetupTypes, & RSW055 WCAG Contrast Enforcer pass");
         }
+
+        // 5G. Verify MSI Error 1324 (`..` in `Directory.DefaultDir`) Prevention & `VerifyCompiledMsiDatabase` Gate!
+        {
+            const auto nestedSrc = testWorkDir / L"smb-unicode-src" / L"Zo\x00EB" / L"Chapters";
+            std::filesystem::create_directories(nestedSrc, ec);
+            const auto nestedFile = nestedSrc / L"p001.md";
+            {
+                std::ofstream nf(nestedFile, std::ios::binary);
+                nf << "Sample chapter text\n";
+            }
+
+            std::ostringstream dotMan;
+            dotMan << "[Package]\nName = DotNormSample\nVersion = 0.5.0\nManufacturer = RaggieSoft\n"
+                   << "UpgradeCode = {9E2F1A33-4455-4B66-8C77-112233445566}\n"
+                   << "[Install]\nDefaultSubdir = RaggieSoft\\..\\RaggieSoft\\DotNormSample\n"
+                   << "[Payload.Nested]\nSource = " << rsw::WideToUtf8((testWorkDir / L"smb-unicode-src").wstring()) << "\n"
+                   << "TargetSubdir = Library\\.\\DiscardMe\\..\\Books\n";
+            auto dotDoc = rsw::ParseManifestText(dotMan.str(), testWorkDir / L"dot-norm.rsip");
+            dotDoc.SetString("Package", "", "OutputDir", rsw::WideToUtf8((testWorkDir / L"dot-out").wstring()));
+
+            rsw::CompiledMsiSummary dotSum{};
+            std::string dotErr;
+            const bool dotBuilt = rsw::CompileManifestToMsi(dotDoc, hostArch, dotSum, dotErr);
+
+            // Confirm `VerifyCompiledMsiDatabase` catches a corrupted `FILE~1|..` `Directory.DefaultDir` row!
+            const auto badDirMsi = testWorkDir / L"dot-out" / L"corrupted-dotdot.msi";
+            bool rejectedBadDotDot = false;
+            if (dotBuilt) {
+                std::filesystem::copy_file(dotSum.msiPath, badDirMsi, std::filesystem::copy_options::overwrite_existing, ec);
+                rsw::ScopedMsiHandle hBadDb, hBadView;
+                if (::MsiOpenDatabaseW(badDirMsi.wstring().c_str(), MSIDBOPEN_TRANSACT, hBadDb.Put()) == ERROR_SUCCESS &&
+                    ::MsiDatabaseOpenViewW(hBadDb.Get(), L"INSERT INTO `Directory` (`Directory`, `Directory_Parent`, `DefaultDir`) VALUES ('d_bad', 'INSTALLDIR', 'FILE~999|..')", hBadView.Put()) == ERROR_SUCCESS &&
+                    ::MsiViewExecute(hBadView.Get(), 0) == ERROR_SUCCESS) {
+                    ::MsiDatabaseCommit(hBadDb.Get());
+                }
+                hBadView = rsw::ScopedMsiHandle{};
+                hBadDb   = rsw::ScopedMsiHandle{};
+                std::string badVerifyErr;
+                rejectedBadDotDot = !rsw::VerifyCompiledMsiDatabase(badDirMsi, badVerifyErr) &&
+                                    badVerifyErr.find("Error 1324") != std::string::npos;
+            }
+
+            Check(dotBuilt && rejectedBadDotDot,
+                  "Lexical payload subdir slicer + Directory segment sanitizer + VerifyMsi Error 1324 ('..') gate pass",
+                  dotErr);
+        }
     }
 
     // 6. Live Windows Installer (`msi.dll`) Engine Verification (`AppSearch`, `Signature`, `LaunchConditions`,

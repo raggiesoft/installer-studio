@@ -865,16 +865,17 @@ inline void DrawAccessibleOptionCard(
         FillAndStrokeRoundRect(g, x + 3.0f, y + 3.0f, w - 6.0f, h - 6.0f, std::max(4.0f, rad - 2.0f), nullptr, &focusPen);
     }
 
-    // Left 48x48 Vector Squircle Badge
-    const float badgeSz = static_cast<float>(std::min(S(48), static_cast<int>(h) - S(12)));
+    // Left Vector Squircle Badge (compact `40px` on 4-card layouts so right-hand text gets extra width!)
+    const int maxBadge = (rc.bottom - rc.top < S(76)) ? S(40) : S(48);
+    const float badgeSz = static_cast<float>(std::min(maxBadge, static_cast<int>(h) - S(12)));
     const float badgeX  = x + static_cast<float>(S(12));
     const float badgeY  = y + (h - badgeSz) * 0.5f;
     DrawOptionBadge48(g, badgeX, badgeY, badgeSz, glyph, badgeRimRgb, badgeAccentRgb, theme);
 
-    // Crisp Accessible Radio Circle (`x = badgeX + badgeSz + 12`)
+    // Crisp Accessible Radio Circle (`x = badgeX + badgeSz + 10`)
     const float radioSz = static_cast<float>(S(18));
-    const float radioX  = badgeX + badgeSz + static_cast<float>(S(12));
-    const float radioY  = y + static_cast<float>(S(12));
+    const float radioX  = badgeX + badgeSz + static_cast<float>(S(10));
+    const float radioY  = y + static_cast<float>(S(9));
     Gdiplus::Pen radioRim(ToGpColor(isSelected ? theme.accentPrimary : theme.textSecondary), 2.0f);
     g.DrawEllipse(&radioRim, radioX, radioY, radioSz, radioSz);
     if (isSelected) {
@@ -885,7 +886,7 @@ inline void DrawAccessibleOptionCard(
 
     // Heading (with Win32 `&` accelerator underline support via `DrawTextW`) + Wrapped Subtitle
     const int textLeft = static_cast<int>(radioX + radioSz + static_cast<float>(S(10)));
-    const int textRight = rc.right - S(14);
+    const int textRight = rc.right - S(12);
 
     HFONT hTitleFont = CreateScaledFont(L"Segoe UI", 11, FW_BOLD,   dpi, theme.textScalePercent);
     HFONT hDescFont  = CreateScaledFont(L"Segoe UI",  9, FW_NORMAL, dpi, theme.textScalePercent);
@@ -893,12 +894,12 @@ inline void DrawAccessibleOptionCard(
     ::SetBkMode(hdc, TRANSPARENT);
     HGDIOBJ oldF = ::SelectObject(hdc, hTitleFont);
     ::SetTextColor(hdc, theme.textPrimary);
-    RECT titleRc{textLeft, rc.top + S(9), textRight, rc.top + S(31)};
+    RECT titleRc{textLeft, rc.top + S(6), textRight, rc.top + S(27)};
     ::DrawTextW(hdc, titleWithMnemonic.data(), static_cast<int>(titleWithMnemonic.size()), &titleRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
 
     ::SelectObject(hdc, hDescFont);
     ::SetTextColor(hdc, theme.textSecondary);
-    RECT descRc{textLeft, rc.top + S(31), textRight, rc.bottom - S(6)};
+    RECT descRc{textLeft, rc.top + S(27), textRight, rc.bottom - S(4)};
     ::DrawTextW(hdc, description.data(), static_cast<int>(description.size()), &descRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
 
     ::SelectObject(hdc, oldF);

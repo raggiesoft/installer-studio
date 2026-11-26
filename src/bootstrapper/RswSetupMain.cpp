@@ -710,6 +710,7 @@ public:
     std::atomic<bool>       cancelRequested{false};
     std::atomic<bool>       cancelLockedPointOfNoReturn{false};
     std::atomic<bool>       installRunning{false};
+    std::atomic<bool>       awaitingUacElevation{false};
     ULONGLONG               installStartTickMs = 0;
     int                     currentPermille   = 0;
     int                     lastAnnouncedDecile = -1;
@@ -859,7 +860,11 @@ public:
     }
 
     bool IsRetroDockedProgressMode() const noexcept {
-        return rsw::UsesFullScreenRetroBackdrop(cfg.wizardStyle) && (currentPage == WizardPage::Installing);
+        // Stay centered in the full `640x490` wizard dialog until UAC elevation has been approved,
+        // so Windows UAC never anchors to a corner progress bar!
+        return rsw::UsesFullScreenRetroBackdrop(cfg.wizardStyle) &&
+               (currentPage == WizardPage::Installing) &&
+               !awaitingUacElevation.load();
     }
 
     /// Locks or unlocks both the `Cancel` button and the window's `X` / `Alt+F4` (`SC_CLOSE`) command
@@ -1758,8 +1763,8 @@ public:
 
             // `SetupType`: 1..4 Full-Row Vector Option Cards (`Express/Compact/Custom` or `Typical/Compact/Complete/Custom`!)
             const int nCards   = std::clamp<int>(static_cast<int>(cfg.setupTypes.size()), 1, 4);
-            const int optStart = bodyTop + ((nCards >= 4) ? S(28) : S(36));
-            const int optH     = (nCards >= 4) ? (isWin95Sheet ? S(68) : S(62)) : S(72);
+            const int optStart = bodyTop + ((nCards >= 4) ? S(26) : S(36));
+            const int optH     = (nCards >= 4) ? (isWin95Sheet ? S(74) : S(64)) : S(74);
             const int optGap   = (nCards >= 4) ? S(6)  : S(10);
             for (int i = 0; i < 4; ++i) {
                 if (hModeCards[i]) {
@@ -1803,26 +1808,31 @@ public:
             }
 
             // `CustomFolder`: Path `EDIT` + `&Browse...` (Disk Space Card painted below!)
-            const int dirLblOff = isWin95Sheet ? S(44) : S(38);
-            const int dirEdtOff = isWin95Sheet ? S(68) : S(64);
+            const int dirLblOff = isWin95Sheet ? S(66) : S(38);
+            const int dirEdtOff = isWin95Sheet ? S(90) : S(64);
             ::MoveWindow(hDirLabel,  cardX, bodyTop + dirLblOff, cardW,          S(22), TRUE);
             ::MoveWindow(hDirEdit,   cardX, bodyTop + dirEdtOff, cardW - S(98),  S(30), TRUE);
             ::MoveWindow(hDirBrowse, cardX + cardW - S(90), bodyTop + dirEdtOff - S(1), S(90), S(32), TRUE);
 
             // `CustomShortcuts`: Start Menu group + Desktop & File Association checkboxes
-            ::MoveWindow(hSmLabel,      cardX, bodyTop + S(42),  cardW, S(22), TRUE);
-            ::MoveWindow(hSmEdit,       cardX, bodyTop + S(68),  cardW, S(30), TRUE);
-            ::MoveWindow(hDeskScChk,    cardX, bodyTop + S(124), cardW, S(28), TRUE);
-            ::MoveWindow(hFileAssocChk, cardX, bodyTop + S(160), cardW, S(28), TRUE);
+            const int smLblOff = isWin95Sheet ? S(62)  : S(42);
+            const int smEdtOff = isWin95Sheet ? S(88)  : S(68);
+            const int dskScOff = isWin95Sheet ? S(138) : S(124);
+            const int flAscOff = isWin95Sheet ? S(172) : S(160);
+            ::MoveWindow(hSmLabel,      cardX, bodyTop + smLblOff, cardW, S(22), TRUE);
+            ::MoveWindow(hSmEdit,       cardX, bodyTop + smEdtOff, cardW, S(30), TRUE);
+            ::MoveWindow(hDeskScChk,    cardX, bodyTop + dskScOff, cardW, S(28), TRUE);
+            ::MoveWindow(hFileAssocChk, cardX, bodyTop + flAscOff, cardW, S(28), TRUE);
 
             // `Installing`: Detailed Progress Card (`ActionText` + multiline `File / Directory / Size` + `ProgressBar` + `TimeRemaining`)
             const int progTopOff = isWin95Sheet ? S(56) : S(128);
             ::MoveWindow(hProgStatus, cardX + S(16), bodyTop + progTopOff,         cardW - S(32), S(64), TRUE);
             ::MoveWindow(hProgBar,    cardX + S(16), bodyTop + progTopOff + S(68), cardW - S(32), S(22), TRUE);
 
-            // `Finished`: Summary + `&Launch` checkbox positioned strictly inside the right-hand column (`S(192)`) when left sidebar is active!
+            // `Finished`: Summary + `&Launch` checkbox positioned strictly inside the right-hand column (`S(192)`)
+            // while reserving `S(168)` on the right so `hFinLaunch` never overlaps `View Setup Log`!
             const int finLeft = UsesClassicWelcomeSidebar() ? S(192) : (cardX + S(10));
-            const int finW    = UsesClassicWelcomeSidebar() ? (W - finLeft - S(18)) : (W - finLeft - S(168));
+            const int finW    = W - finLeft - S(168);
             ::MoveWindow(hFinLaunch,  finLeft, footerY - S(42), finW, S(26), TRUE);
             ::MoveWindow(hFinViewLog, W - S(162), footerY - S(48), S(144), S(30), TRUE);
         }
@@ -2201,6 +2211,15 @@ public:
         cancelLockedPointOfNoReturn.store(false);
         SetCloseAndCancelLocked(false);
 
+        bool anyPendingPrereqElev = false;
+        for (std::size_t idx : pendingPrereqIndices) {
+            if (idx < prereqSpecs.size() && prereqSpecs[idx].requiresElevation) {
+                anyPendingPrereqElev = true;
+            }
+        }
+        const bool willNeedUac = (cfg.perMachine || anyPendingPrereqElev) && !IsCurrentProcessElevated();
+        awaitingUacElevation.store(willNeedUac);
+
         currentPage = WizardPage::Installing;
         ResizeDialogForActiveStyle();
         ::InvalidateRect(hWnd, nullptr, TRUE);
@@ -2526,6 +2545,7 @@ public:
 
     void OnTransactionCompleted() {
         currentPermille = (finalMsiResult == ERROR_SUCCESS || finalMsiResult == ERROR_SUCCESS_REBOOT_REQUIRED) ? 1000 : currentPermille;
+        awaitingUacElevation.store(false);
         cancelLockedPointOfNoReturn.store(false);
         SetCloseAndCancelLocked(false);
         if (IsPassiveToastMode()) {
@@ -3060,6 +3080,10 @@ public:
                 RECT headRc{textLeft, bodyTop + S(84), W - S(22), bodyTop + S(120)};
                 ::DrawTextW(memDc, cfg.welcomeHeadline.c_str(), -1, &headRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
+                // Bottom Trust & Fictitious Disclaimer Strip (`S(66)` tall so 3-line disclaimer never clips!)
+                RECT tipCard{cardX, footerY - S(74), cardX + cardW, footerY - S(8)};
+                DrawGlassPanelBox(g, tipCard, S(8));
+
                 ::SelectObject(memDc, hFontBody);
                 ::SetTextColor(memDc, theme.textSecondary);
                 const std::wstring introCopy = !cfg.welcomeIntro.empty()
@@ -3067,12 +3091,9 @@ public:
                     : (L"This wizard installs " + cfg.productName + L" (v" + cfg.version +
                        L") on your computer using native Windows Installer transaction safety.\r\n\r\n"
                        L"Click Next to choose Express Setup for one-click installation, or Custom Setup to choose your destination folder and shortcuts.");
-                RECT introRc{textLeft, bodyTop + S(124), W - S(22), bodyTop + S(246)};
+                RECT introRc{textLeft, bodyTop + S(122), W - S(22), tipCard.top - S(8)};
                 ::DrawTextW(memDc, introCopy.c_str(), -1, &introRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
 
-                // Bottom Trust & Fictitious Disclaimer Strip
-                RECT tipCard{cardX, footerY - S(62), cardX + cardW, footerY - S(12)};
-                DrawGlassPanelBox(g, tipCard, S(8));
                 ::SelectObject(memDc, hFontSmall);
                 ::SetTextColor(memDc, theme.textSecondary);
                 const bool isRaggie = rsw::ui::UpperWide(cfg.manufacturer).find(L"RAGGIESOFT") != std::wstring::npos;
@@ -3200,7 +3221,7 @@ public:
                     const std::wstring dirIntro =
                         L"Setup will install " + cfg.productName + L" in the following folder.\r\n"
                         L"To install to a different folder, enter it below or click Browse.";
-                    RECT hRc{cardX, bodyTop, cardX + cardW, bodyTop + S(40)};
+                    RECT hRc{cardX, bodyTop, cardX + cardW, bodyTop + S(62)};
                     ::DrawTextW(memDc, dirIntro.c_str(), -1, &hRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
                 } else {
                     ::SelectObject(memDc, hFontSection);
@@ -3219,7 +3240,7 @@ public:
                 std::uint64_t freeBytes = 0;
                 const bool hasDisk = QueryVolumeFreeBytesForPath(livePath, volLabel, freeBytes);
 
-                const int diskTopOff = isWin95Sheet ? S(116) : S(114);
+                const int diskTopOff = isWin95Sheet ? S(138) : S(114);
                 RECT diskCard{cardX, bodyTop + diskTopOff, cardX + cardW, bodyTop + diskTopOff + S(100)};
                 DrawPanelSurface(memDc, g, diskCard, S(10));
                 rsw::ui::DrawOptionBadge48(
@@ -3248,7 +3269,7 @@ public:
                 if (isWin95Sheet) {
                     ::SelectObject(memDc, hFontBody);
                     ::SetTextColor(memDc, theme.textSecondary);
-                    RECT hRc{cardX, bodyTop, cardX + cardW, bodyTop + S(38)};
+                    RECT hRc{cardX, bodyTop, cardX + cardW, bodyTop + S(58)};
                     ::DrawTextW(memDc, L"Setup will add program icons to the Start Menu folder listed below. You may type a new folder name or choose optional shortcuts:", -1, &hRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
                 } else {
                     ::SelectObject(memDc, hFontSection);
@@ -3270,9 +3291,9 @@ public:
                 } else {
                     ::SelectObject(memDc, hFontBody);
                     ::SetTextColor(memDc, theme.textPrimary);
-                    RECT intro95{cardX, bodyTop + S(4), cardX + cardW, bodyTop + S(46)};
+                    RECT intro95{cardX, bodyTop + S(2), cardX + cardW, bodyTop + S(66)};
                     ::DrawTextW(memDc, L"Setup has enough information to start copying the program files. If you want to review or change any settings, click Back. If you are satisfied with the settings, click Install.", -1, &intro95, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
-                    sumTop = bodyTop + S(54);
+                    sumTop = bodyTop + S(72);
                 }
 
                 RECT sumCard{cardX, sumTop, cardX + cardW, footerY - S(14)};
@@ -4014,10 +4035,14 @@ public:
                 ::GetModuleFileNameW(nullptr, selfExe, static_cast<DWORD>(std::size(selfExe)));
                 const std::wstring workerParams = L"--elevated-msi-worker \"" + u->jobFilePath + L"\"";
 
+                // Anchor UAC to the full-screen backdrop window (when active) or centered wizard window
+                // so Windows 11 always centers the UAC prompt in the middle of the screen!
+                const HWND uacOwner = (self->hBackdropWnd && ::IsWindow(self->hBackdropWnd)) ? self->hBackdropWnd : hWnd;
+
                 SHELLEXECUTEINFOW sei{};
                 sei.cbSize       = sizeof(sei);
                 sei.fMask        = SEE_MASK_NOCLOSEPROCESS;
-                sei.hwnd         = hWnd;
+                sei.hwnd         = uacOwner;
                 sei.lpVerb       = L"runas";
                 sei.lpFile       = selfExe;
                 sei.lpParameters = workerParams.c_str();
@@ -4027,6 +4052,10 @@ public:
                     u->canceledByUser = (u->win32Error == ERROR_CANCELLED);
                 } else {
                     u->hChildProcess = sei.hProcess;
+                    // UAC approved! Now transition smoothly into the docked 3D progress meter + centered Billboard!
+                    self->awaitingUacElevation.store(false);
+                    self->ResizeDialogForActiveStyle();
+                    if (self->hBackdropWnd) ::InvalidateRect(self->hBackdropWnd, nullptr, FALSE);
                 }
                 return 0;
             }
@@ -4036,6 +4065,7 @@ public:
                 return 0;
 
             case WM_RSW_INSTALL_DONE:
+                self->awaitingUacElevation.store(false);
                 if (static_cast<UINT>(wParam) == kSentinelUacDeclined) {
                     // User clicked "No" on UAC — restore dialog geometry and return calmly to `pageBeforeInstall`!
                     self->installRunning.store(false);

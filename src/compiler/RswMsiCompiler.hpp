@@ -338,6 +338,54 @@ inline bool VerifyCompiledMsiDatabase(const std::filesystem::path& msiPath, std:
         return false;
     }
 
+    // ICE03 / Error 1324 check: no `Directory.DefaultDir` segment may ever be `".."` or contain
+    // path separators (`/`, `\`) or illegal Windows filename characters (`*`, `?`, `"`, `<`, `>`).
+    {
+        ScopedMsiHandle hDirView;
+        if (::MsiDatabaseOpenViewW(hDb.Get(), L"SELECT `Directory`, `Directory_Parent`, `DefaultDir` FROM `Directory`", hDirView.Put()) == ERROR_SUCCESS &&
+            ::MsiViewExecute(hDirView.Get(), 0) == ERROR_SUCCESS) {
+            ScopedMsiHandle hRec;
+            while (::MsiViewFetch(hDirView.Get(), hRec.Put()) == ERROR_SUCCESS) {
+                wchar_t dirId[128]{}, parentId[128]{}, defDir[512]{};
+                DWORD c1 = 128, c2 = 128, c3 = 512;
+                ::MsiRecordGetStringW(hRec.Get(), 1, dirId, &c1);
+                ::MsiRecordGetStringW(hRec.Get(), 2, parentId, &c2);
+                ::MsiRecordGetStringW(hRec.Get(), 3, defDir, &c3);
+                const std::string defUtf8 = WideToUtf8(defDir);
+
+                auto hasInvalidDirPart = [](std::string_view token) -> bool {
+                    if (token.empty()) return true;
+                    if (token == "..") return true;
+                    for (char ch : token) {
+                        if (ch == '/' || ch == '\\' || ch == '*' || ch == '?' || ch == '"' || ch == '<' || ch == '>') {
+                            return true;
+                        }
+                    }
+                    return false;
+                };
+
+                // Split optional `TargetDir:SourceDir`, then optional `Short83|LongName`
+                std::size_t colonPos = 0;
+                while (colonPos <= defUtf8.size()) {
+                    const auto nextColon = defUtf8.find(':', colonPos);
+                    const std::string_view side = (nextColon == std::string::npos)
+                        ? std::string_view(defUtf8).substr(colonPos)
+                        : std::string_view(defUtf8).substr(colonPos, nextColon - colonPos);
+                    const auto pipePos = side.find('|');
+                    const std::string_view shortPart = (pipePos == std::string::npos) ? side : side.substr(0, pipePos);
+                    const std::string_view longPart  = (pipePos == std::string::npos) ? side : side.substr(pipePos + 1);
+                    if (hasInvalidDirPart(shortPart) || hasInvalidDirPart(longPart)) {
+                        outError = "VerifyMsi (ICE03 / Error 1324): Directory '" + WideToUtf8(dirId) +
+                                   "' has invalid DefaultDir '" + defUtf8 + "'.";
+                        return false;
+                    }
+                    if (nextColon == std::string::npos) break;
+                    colonPos = nextColon + 1;
+                }
+            }
+        }
+    }
+
     // ICE80 + ICE18 check: every component must carry `msidbComponentAttributes64bit` (`256`),
     // and any component with a NULL `KeyPath` must have a matching `CreateFolder` row!
     {
@@ -464,21 +512,40 @@ inline bool CompileManifestToMsi(
     pushDirOnce("TARGETDIR", "", "SourceDir");
     pushDirOnce(rootSystemDirKey, "TARGETDIR", ".");
 
-    std::size_t shortDirSeed = 1;
-    std::vector<std::string> installParts;
-    {
-        std::string normSub = outSummary.defaultSubdir;
-        for (char& c : normSub) if (c == '/') c = '\\';
-        std::size_t s = 0;
-        while (s <= normSub.size()) {
-            auto sep = normSub.find('\\', s);
-            std::string seg = TrimAscii(sep == std::string::npos ? normSub.substr(s) : normSub.substr(s, sep - s));
-            if (!seg.empty()) installParts.push_back(std::move(seg));
-            if (sep == std::string::npos) break;
-            s = sep + 1;
+    auto sanitizeNormalizedSegments = [](std::string_view rawPath) -> std::vector<std::string> {
+        std::string norm(rawPath);
+        for (char& c : norm) if (c == '\\') c = '/';
+        std::vector<std::string> clean;
+        std::size_t pos = 0;
+        while (pos <= norm.size()) {
+            const auto slash = norm.find('/', pos);
+            std::string seg = TrimAscii(slash == std::string::npos ? norm.substr(pos) : norm.substr(pos, slash - pos));
+            // Strip illegal Windows folder characters so `Directory.DefaultDir` never triggers Error 1324
+            std::string safeSeg;
+            safeSeg.reserve(seg.size());
+            for (char ch : seg) {
+                if (ch != ':' && ch != '*' && ch != '?' && ch != '"' && ch != '<' && ch != '>' && ch != '|') {
+                    safeSeg.push_back(ch);
+                }
+            }
+            safeSeg = TrimAscii(safeSeg);
+            if (!safeSeg.empty() && safeSeg != ".") {
+                if (safeSeg == "..") {
+                    if (!clean.empty()) clean.pop_back();
+                } else {
+                    clean.push_back(std::move(safeSeg));
+                }
+            }
+            if (slash == std::string::npos) break;
+            pos = slash + 1;
         }
-    }
-    if (installParts.empty()) installParts.push_back(outSummary.productName);
+        return clean;
+    };
+
+    std::size_t shortDirSeed = 1;
+    std::vector<std::string> installParts = sanitizeNormalizedSegments(outSummary.defaultSubdir);
+    if (installParts.empty()) installParts = sanitizeNormalizedSegments(outSummary.productName);
+    if (installParts.empty()) installParts.push_back("Application");
 
     std::string parentDir = rootSystemDirKey;
     for (std::size_t i = 0; i < installParts.size(); ++i) {
@@ -517,12 +584,16 @@ inline bool CompileManifestToMsi(
     std::map<std::string, std::string> rootAndRelSubToDirKey;
     auto ensureTargetDirKey = [&](const std::string& rawRoot, std::string relSub) -> std::string {
         const std::string rootKey = ensureSystemRootRegistered(rawRoot);
-        for (char& c : relSub) if (c == '\\') c = '/';
-        while (!relSub.empty() && relSub.front() == '/') relSub.erase(relSub.begin());
-        while (!relSub.empty() && relSub.back() == '/') relSub.pop_back();
-        if (relSub.empty()) return rootKey;
+        const std::vector<std::string> cleanSegs = sanitizeNormalizedSegments(relSub);
+        if (cleanSegs.empty()) return rootKey;
 
-        const std::string cacheKey = AsciiLower(rootKey + "::" + relSub);
+        std::string normJoined;
+        for (std::size_t i = 0; i < cleanSegs.size(); ++i) {
+            if (i > 0) normJoined += "/";
+            normJoined += cleanSegs[i];
+        }
+
+        const std::string cacheKey = AsciiLower(rootKey + "::" + normJoined);
         if (auto it = rootAndRelSubToDirKey.find(cacheKey); it != rootAndRelSubToDirKey.end()) {
             return it->second;
         }
@@ -530,26 +601,19 @@ inline bool CompileManifestToMsi(
         const bool isUserSub = IsPerUserProfileRootDir(rootKey) || (rootKey == "INSTALLDIR" && !outSummary.perMachine);
         std::string accum;
         std::string curParent = rootKey;
-        std::size_t pos = 0;
-        while (pos <= relSub.size()) {
-            auto slash = relSub.find('/', pos);
-            std::string seg = (slash == std::string::npos) ? relSub.substr(pos) : relSub.substr(pos, slash - pos);
-            if (!seg.empty()) {
-                if (!accum.empty()) accum += "/";
-                accum += AsciiLower(seg);
-                const std::string stepCache = AsciiLower(rootKey + "::" + accum);
-                auto hit = rootAndRelSubToDirKey.find(stepCache);
-                if (hit != rootAndRelSubToDirKey.end()) {
-                    curParent = hit->second;
-                } else {
-                    std::string newKey = "d_" + std::to_string(rootAndRelSubToDirKey.size() + 1);
-                    pushDirOnce(newKey, curParent, FormatMsiShortLongName(seg, shortDirSeed++), isUserSub);
-                    rootAndRelSubToDirKey[stepCache] = newKey;
-                    curParent = newKey;
-                }
+        for (const auto& seg : cleanSegs) {
+            if (!accum.empty()) accum += "/";
+            accum += AsciiLower(seg);
+            const std::string stepCache = AsciiLower(rootKey + "::" + accum);
+            auto hit = rootAndRelSubToDirKey.find(stepCache);
+            if (hit != rootAndRelSubToDirKey.end()) {
+                curParent = hit->second;
+            } else {
+                std::string newKey = "d_" + std::to_string(rootAndRelSubToDirKey.size() + 1);
+                pushDirOnce(newKey, curParent, FormatMsiShortLongName(seg, shortDirSeed++), isUserSub);
+                rootAndRelSubToDirKey[stepCache] = newKey;
+                curParent = newKey;
             }
-            if (slash == std::string::npos) break;
-            pos = slash + 1;
         }
         return curParent;
     };
@@ -738,10 +802,30 @@ inline bool CompileManifestToMsi(
                     if (de.is_regular_file(ec)) found.push_back(de.path());
                 }
             }
+            std::wstring basePrefix = absSrc.lexically_normal().generic_wstring();
+            while (!basePrefix.empty() && basePrefix.back() == L'/') basePrefix.pop_back();
+
             std::sort(found.begin(), found.end());
             for (const auto& fPath : found) {
-                auto relParent = std::filesystem::relative(fPath.parent_path(), absSrc, ec);
-                std::string relParentStr = (relParent == ".") ? "" : WideToUtf8(relParent.generic_wstring());
+                // Pure lexical prefix slice (NEVER call `std::filesystem::relative`, which invokes OS
+                // `weakly_canonical` / `GetFinalPathNameByHandleW` and can resolve mapped SMB drives like
+                // `Y:\` to UNC `\\Mac\Developer` or dereference symlinks into `..\..\..`, causing MSI Error 1324!).
+                std::wstring parentGen = fPath.parent_path().lexically_normal().generic_wstring();
+                while (!parentGen.empty() && parentGen.back() == L'/') parentGen.pop_back();
+
+                std::string relParentStr;
+                if (parentGen.size() > basePrefix.size() &&
+                    _wcsnicmp(parentGen.c_str(), basePrefix.c_str(), basePrefix.size()) == 0 &&
+                    parentGen[basePrefix.size()] == L'/') {
+                    relParentStr = WideToUtf8(parentGen.substr(basePrefix.size() + 1));
+                } else if (parentGen.size() == basePrefix.size() &&
+                           _wcsnicmp(parentGen.c_str(), basePrefix.c_str(), basePrefix.size()) == 0) {
+                    relParentStr.clear();
+                } else {
+                    auto lexRel = fPath.parent_path().lexically_normal().lexically_relative(absSrc.lexically_normal());
+                    if (lexRel != L".") relParentStr = WideToUtf8(lexRel.generic_wstring());
+                }
+
                 std::string combinedSub = sub.empty()
                     ? relParentStr
                     : (relParentStr.empty() ? sub : (sub + "/" + relParentStr));
