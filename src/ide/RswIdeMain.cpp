@@ -106,6 +106,7 @@ enum IdeId : int {
     IDM_WIZ_RELEASE          = 2008,
     IDM_WIZ_INSERT_PRESET    = 2009,
     IDM_WIZ_PREREQ_MSM       = 2017,
+    IDM_WIZ_SFX_SIMPLE       = 2018,
 
     IDM_BUILD_VALIDATE       = 2010,
     IDM_BUILD_MSI            = 2011,
@@ -776,16 +777,18 @@ public:
     HMENU BuildMenuBar() {
         HMENU hBar  = ::CreateMenu();
         HMENU hFile = ::CreatePopupMenu();
-        ::AppendMenuW(hFile, MF_STRING, IDM_WIZ_PROJECT, L"New Project &Wizard (Aero Project Assistant)...\tCtrl+W");
-        ::AppendMenuW(hFile, MF_STRING, IDM_FILE_NEW,    L"&New Starter .rsip Project\tCtrl+N");
-        ::AppendMenuW(hFile, MF_STRING, IDM_FILE_OPEN,   L"&Open .rsip Project or .rsis Suite...\tCtrl+O");
-        ::AppendMenuW(hFile, MF_STRING, IDM_FILE_SAVE,   L"&Save Project (Lossless AST)\tCtrl+S");
+        ::AppendMenuW(hFile, MF_STRING, IDM_WIZ_PROJECT,    L"New Project &Wizard (Aero Project Assistant)...\tCtrl+W");
+        ::AppendMenuW(hFile, MF_STRING, IDM_WIZ_SFX_SIMPLE, L"New Self-Extracting .E&XE / Simple Native Setup Wizard...");
+        ::AppendMenuW(hFile, MF_STRING, IDM_FILE_NEW,       L"&New Starter .rsip Project\tCtrl+N");
+        ::AppendMenuW(hFile, MF_STRING, IDM_FILE_OPEN,      L"&Open .rsip Project or .rsis Suite...\tCtrl+O");
+        ::AppendMenuW(hFile, MF_STRING, IDM_FILE_SAVE,      L"&Save Project (Lossless AST)\tCtrl+S");
         ::AppendMenuW(hFile, MF_SEPARATOR, 0, nullptr);
-        ::AppendMenuW(hFile, MF_STRING, IDM_FILE_EXIT,   L"E&xit");
+        ::AppendMenuW(hFile, MF_STRING, IDM_FILE_EXIT,      L"E&xit");
 
         HMENU hWiz = ::CreatePopupMenu();
         ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_PROJECT,       L"&New Project AeroWizard (Project Assistant)...\tCtrl+W");
-        ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_PREREQ_MSM,    L"&Runtime Prerequisite & .MSM Merge Module AeroWizard...");
+        ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_SFX_SIMPLE,    L"&Self-Extracting .EXE && Simple Native Setup AeroWizard...");
+        ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_PREREQ_MSM,    L"&Runtime Prerequisite (.NET 11 / 10) & .MSM AeroWizard...");
         ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_COMPONENT,     L"&Component & KeyPath AeroWizard (Microsoft Rules)...");
         ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_FILE_ASSOC,    L"&File Association & Document Icon AeroWizard...");
         ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_RELEASE,       L"&Release, Transform (.MST) & Patch (.MSP) AeroWizard...");
@@ -990,8 +993,12 @@ public:
         hPrTree = mkTree(VIEW_PREREQS, IDC_PR_TREE, L"Application Runtimes and Merge Modules Tree");
         mkLbl(VIEW_PREREQS, L"Runtime Preset:");
         hPrPreset = mkCombo(VIEW_PREREQS, IDC_PR_PRESET_COMBO, {
-            L"DotNet10Desktop (.NET 10 Desktop)",
-            L"DotNet10AspNet (ASP.NET Core 10)",
+            L"DotNet11Desktop (.NET 11 Desktop)",
+            L"DotNet11AspNet (ASP.NET Core 11)",
+            L"DotNet11Runtime (.NET 11 Base)",
+            L"DotNet10Desktop (.NET 10 LTS Desktop)",
+            L"DotNet10AspNet (ASP.NET Core 10 LTS)",
+            L"DotNet10Runtime (.NET 10 LTS Base)",
             L"DotNet9Desktop (.NET 9 Desktop)",
             L"DotNet8Desktop (.NET 8 LTS)",
             L"EdgeWebView2 (WebView2 Evergreen)",
@@ -1001,7 +1008,7 @@ public:
         mkLbl(VIEW_PREREQS, L"Delivery:");
         hPrDist = mkCombo(VIEW_PREREQS, IDC_PR_DIST_COMBO, {L"download", L"embedded", L"side-by-side"}, 0);
         mkLbl(VIEW_PREREQS, L"URL / File:");
-        hPrSource      = mkEd(VIEW_PREREQS, IDC_PR_SOURCE_EDIT, L"https://aka.ms/dotnet/10.0/windowsdesktop-runtime-win-$(ARCH).exe");
+        hPrSource      = mkEd(VIEW_PREREQS, IDC_PR_SOURCE_EDIT, L"https://aka.ms/dotnet/11.0/windowsdesktop-runtime-win-$(ARCH).exe");
         hPrBrowseBtn   = mkBtn(VIEW_PREREQS, L"&Pick...", IDC_PR_BROWSE_BTN);
         mkLbl(VIEW_PREREQS, L"Reboot Codes:");
         hPrRebootCodes = mkEd(VIEW_PREREQS, IDC_PR_REBOOT_CODES, L"3010, 1641, 23");
@@ -2791,11 +2798,11 @@ public:
             HBRUSH hSh = ::CreateSolidBrush(RGB(0, 0, 0));
             ::FillRect(pvDc, &shRc, hSh);
             ::DeleteObject(hSh);
-        } else if (wk == rsw::WizardStyleKind::OneClick || wk == rsw::WizardStyleKind::PassiveToast) {
+        } else if (wk == rsw::WizardStyleKind::OneClick || wk == rsw::WizardStyleKind::PassiveToast || wk == rsw::WizardStyleKind::Simple) {
             HBRUSH hDesk = ::CreateSolidBrush(theme.isDarkMode ? RGB(8, 13, 26) : RGB(219, 228, 240));
             ::FillRect(pvDc, &localRc, hDesk);
             ::DeleteObject(hDesk);
-            const int padY = (wk == rsw::WizardStyleKind::PassiveToast) ? PS(68) : PS(44);
+            const int padY = (wk == rsw::WizardStyleKind::PassiveToast || wk == rsw::WizardStyleKind::Simple) ? PS(68) : PS(44);
             dlgRc = RECT{PS(24), padY, pvW - PS(24), pvH - padY};
         }
 
@@ -2825,7 +2832,41 @@ public:
                 rsw::ui::DrawGlassFooterBar(dlgDc, dlgG, dW, dH, footH, dW - PS(198), pvDpi, pvTheme, pubName, webLbl);
             }
 
-            if (wk == rsw::WizardStyleKind::Autorun16x9 || stepIdx == 4) {
+            if (wk == rsw::WizardStyleKind::Simple) {
+                RECT hdrRc{0, 0, dW, PS(44)};
+                rsw::ui::FillHorizontalGradient(dlgDc, hdrRc, pvTheme.bannerNavyLeft, pvTheme.bannerNavyRight);
+                RECT accRc{0, PS(41), dW, PS(44)};
+                HBRUSH hAc = ::CreateSolidBrush(pvTheme.accentPrimary);
+                ::FillRect(dlgDc, &accRc, hAc);
+                ::DeleteObject(hAc);
+                HFONT fT = rsw::ui::CreateScaledFont(L"Segoe UI", 10, FW_BOLD, pvDpi, 100);
+                HFONT fB = rsw::ui::CreateScaledFont(L"Segoe UI",  8, FW_NORMAL, pvDpi, 100);
+                HGDIOBJ oFs = ::SelectObject(dlgDc, fT);
+                ::SetTextColor(dlgDc, pvTheme.bannerTitleText);
+                RECT tRc{PS(14), PS(6), dW - PS(14), PS(24)};
+                ::DrawTextW(dlgDc, prodName.c_str(), -1, &tRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                ::SelectObject(dlgDc, fB);
+                ::SetTextColor(dlgDc, RGB(203, 213, 225));
+                RECT sRc{PS(14), PS(24), dW - PS(14), PS(40)};
+                ::DrawTextW(dlgDc, L"Ultra-Compact Single-Dialog Setup / Self-Extractor", -1, &sRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+                ::SetTextColor(dlgDc, pvTheme.textPrimary);
+                RECT lRc{PS(14), PS(52), dW - PS(14), PS(68)};
+                ::DrawTextW(dlgDc, L"Destination folder:", -1, &lRc, DT_LEFT | DT_SINGLELINE);
+                Gdiplus::SolidBrush edBr(rsw::ui::ToGpColor(pvTheme.cardBg));
+                Gdiplus::Pen edPen(rsw::ui::ToGpColor(pvTheme.borderSubtle), 1.0f);
+                rsw::ui::FillAndStrokeRoundRect(dlgG, static_cast<float>(PS(14)), static_cast<float>(PS(70)), static_cast<float>(dW - PS(98)), static_cast<float>(PS(24)), static_cast<float>(PS(4)), &edBr, &edPen);
+                RECT pthRc{PS(20), PS(70), dW - PS(90), PS(94)};
+                ::DrawTextW(dlgDc, (L"C:\\Program Files\\" + pubName + L"\\" + prodName).c_str(), -1, &pthRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS | DT_NOPREFIX);
+                RECT brRc{dW - PS(78), PS(70), dW - PS(14), PS(94)};
+                rsw::ui::DrawAccessiblePushButton(dlgDc, dlgG, brRc, pvDpi, pvTheme, L"B&rowse...", false, true, true, false, false, false, false, nullptr);
+                Gdiplus::SolidBrush trackBr(rsw::ui::ToGpColor(pvTheme.borderSubtle));
+                Gdiplus::SolidBrush fillBr(rsw::ui::ToGpColor(rsw::ui::brand::kEmeraldOk));
+                rsw::ui::FillAndStrokeRoundRect(dlgG, static_cast<float>(PS(14)), static_cast<float>(PS(104)), static_cast<float>(dW - PS(28)), static_cast<float>(PS(14)), static_cast<float>(PS(7)), &trackBr);
+                rsw::ui::FillAndStrokeRoundRect(dlgG, static_cast<float>(PS(14)), static_cast<float>(PS(104)), static_cast<float>((dW - PS(28)) * 64 / 100), static_cast<float>(PS(14)), static_cast<float>(PS(7)), &fillBr);
+                ::SelectObject(dlgDc, oFs);
+                ::DeleteObject(fT);
+                ::DeleteObject(fB);
+            } else if (wk == rsw::WizardStyleKind::Autorun16x9 || stepIdx == 4) {
                 const int stageH = std::max(PS(120), relFootY - PS(92));
                 RECT stageRc{0, 0, dW, stageH};
                 rsw::ui::FillHorizontalGradient(dlgDc, stageRc, pvTheme.bannerNavyLeft, pvTheme.bannerNavyRight);
@@ -3560,7 +3601,7 @@ public:
                 }
                 if (id == IDC_PR_PRESET_COMBO && code == CBN_SELCHANGE) {
                     const LRESULT sel = ::SendMessageW(self->hPrPreset, CB_GETCURSEL, 0, 0);
-                    if (sel >= 0 && sel < 6) {
+                    if (sel >= 0 && static_cast<std::size_t>(sel) < rsw::kCuratedRuntimePresets.size()) {
                         const auto& pr = rsw::kCuratedRuntimePresets[static_cast<std::size_t>(sel)];
                         ::SetWindowTextW(self->hPrSource, rsw::Utf8ToWide(pr.urlArm64).c_str());
                         ::SetWindowTextW(self->hPrRebootCodes, rsw::Utf8ToWide(pr.rebootCodes).c_str());
@@ -3604,7 +3645,17 @@ public:
                         return 0;
                     }
 
-                    // --- 5 Guided Native Win32 AeroWizards (`PSH_AEROWIZARD`)! ---
+                    // --- 6 Guided Native Win32 AeroWizards (`PSH_AEROWIZARD`)! ---
+                    case IDM_WIZ_SFX_SIMPLE: {
+                        std::string genText;
+                        bool autoVal = false;
+                        if (rsw::ide_wizards::RunSfxAndSimpleSetupAeroWizard(hWnd, genText, autoVal)) {
+                            self->LoadProjectText(genText, {});
+                            self->AppendConsole(L"[AEROWIZARD] Generated Self-Extracting .EXE / Simple Native Setup .rsip manifest.\r\n");
+                            if (autoVal) self->RunValidation();
+                        }
+                        return 0;
+                    }
                     case IDM_WIZ_PREREQ_MSM:
                     case IDC_PR_WIZ_BTN: {
                         self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
@@ -3720,11 +3771,12 @@ public:
                     case IDC_PR_ADD_BTN: {
                         self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
                         const char* presetIds[] = {
-                            "DotNet10Desktop", "DotNet10AspNet", "DotNet9Desktop",
-                            "DotNet8Desktop", "EdgeWebView2", "VcRedist2022", "Custom"
+                            "DotNet11Desktop", "DotNet11AspNet", "DotNet11Runtime",
+                            "DotNet10Desktop", "DotNet10AspNet", "DotNet10Runtime",
+                            "DotNet9Desktop", "DotNet8Desktop", "EdgeWebView2", "VcRedist2022", "Custom"
                         };
                         const char* distNames[] = {"download", "embedded", "side-by-side"};
-                        const int pIdx = std::clamp(static_cast<int>(::SendMessageW(self->hPrPreset, CB_GETCURSEL, 0, 0)), 0, 6);
+                        const int pIdx = std::clamp(static_cast<int>(::SendMessageW(self->hPrPreset, CB_GETCURSEL, 0, 0)), 0, 10);
                         const int dIdx = std::clamp(static_cast<int>(::SendMessageW(self->hPrDist, CB_GETCURSEL, 0, 0)), 0, 2);
                         const std::string preset = presetIds[pIdx];
                         const std::string dist   = distNames[dIdx];
@@ -4262,6 +4314,22 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
 
     // Headless CI smoke test verifying AST round-trip, `@include` resolution, feature reordering, & VPAT export!
     for (std::size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == L"--export-aerowizard-shot" && i + 1 < args.size()) {
+            ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+            {
+                rsw::ui::ScopedGdiPlusSession gpSession;
+                INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES};
+                ::InitCommonControlsEx(&icc);
+                rsw::ui::ForcedThemeOverride() = 1; // Force Dark Mode for screenshot verification!
+                const std::filesystem::path shotPath(args[i + 1]);
+                std::string dummyRsip;
+                bool dummyVal = false;
+                rsw::ide_wizards::RunSfxAndSimpleSetupAeroWizard(nullptr, dummyRsip, dummyVal, &shotPath);
+                const bool ok = std::filesystem::exists(shotPath) && std::filesystem::file_size(shotPath) > 4096;
+                ::CoUninitialize();
+                return ok ? 0 : 2;
+            }
+        }
         if (args[i] == L"--headless-smoke-test") {
             if (i + 1 >= args.size()) return 2;
             rsw::RswManifestDocument doc;

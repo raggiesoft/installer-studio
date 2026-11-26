@@ -6,7 +6,7 @@
 //
 // PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
 //   What is this file?
-//     This header implements all **4 Guided Native Win32 AeroWizards** inside
+//     This header implements all **6 Guided Native Win32 AeroWizards** inside
 //     `InstallerStudio.exe` using Microsoft's genuine **`PSH_AEROWIZARD`** engine
 //     (`PropertySheetW` in `<prsht.h>` + `comctl32.dll` v6):
 //       1. **New Project Wizard ("Project Assistant")** — 5 guided AeroWizard pages
@@ -25,18 +25,31 @@
 //          AeroWizard pages generating enterprise GPO Transforms (`.mst`), Minor
 //          Upgrade Patches (`.msp`), or Dual-Arch Releases with one-click handoff
 //          into `msiprism.exe`!
+//       5. **Runtime Prerequisite & Merge Module (`.MSM`) Wizard** — 3 guided pages
+//          covering `.NET 11`, `.NET 10 LTS`, `.NET 9`, `.NET 8 LTS`, `WebView2`,
+//          `VC++`, Custom runtimes, and `.msm` Merge Modules!
+//       6. **Self-Extracting `.EXE` (`PackageKind = sfx`) & Simple Native Setup
+//          (`Engine = native`) Wizard** — 3 guided pages turning any folder or `.zip`
+//          archive into an ultra-compact single-dialog self-extractor or instant
+//          zero-MSI `Engine = native` installer with selectable UAC execution levels!
 //
-//   How do we build `PSH_AEROWIZARD` pages without cluttering `.rc` files?
-//     Windows' `PROPSHEETPAGEW` supports `PSP_DLGINDIRECT`, which accepts a compact
-//     `WORD`-aligned `DLGTEMPLATE` struct in memory (`310 x 176` dialog units, `9pt`
-//     `Segoe UI`). Inside `WM_INITDIALOG`, we call `EnableThemeDialogTexture(hDlg,
-//     ETDT_ENABLE)` so controls blend seamlessly onto the AeroWizard canvas and
-//     convert dialog units to Per-Monitor V2 pixels via `MapDialogRect`!
+//   Why do we host AeroWizard pages in our own `ThemedAeroWizardModalHost`
+//   instead of `comctl32.dll`'s legacy `PSH_AEROWIZARD` (`PropertySheetW`)?
+//     Microsoft's Vista-era `PSH_AEROWIZARD` (`AEROWIZARD.msstyles`) hardcodes a
+//     blinding `#FFFFFF` white background, `#F0F0F0` command bar, and `ETDT_ENABLE`
+//     light tab texture even when Windows 11 is in Dark Mode! Our native C++20
+//     `ThemedAeroWizardModalHost` hosts the exact same DLU-mapped `PSP_DLGINDIRECT`
+//     child pages (`WM_INITDIALOG`, `PSN_SETACTIVE`, `PSN_WIZNEXT`, `PSN_WIZFINISH`,
+//     and `PropSheet_SetWizButtons`) inside a Per-Monitor V2 DPI, `DWMWA_USE_IMMERSIVE_DARK_MODE`
+//     AeroWizard frame (`DrawAeroWizardTopHeader` + `DrawGlassFooterBar` + `DarkMode_CFD`
+//     edits/combos + accessible checkboxes/buttons + live `WM_SETTINGCHANGE` hot-swapping
+//     + Windows Contrast Themes `SPI_GETHIGHCONTRAST`)!
 // ================================================================================
 
 #pragma once
 
 #include "../common/RswCryptoAndPe.hpp"
+#include "../common/RswGlassRenderer.hpp"
 #include "../common/RswManifestAst.hpp"
 #include "../common/RswPrerequisites.hpp"
 #include "../common/RswSchema.hpp"
@@ -56,8 +69,73 @@
 
 namespace rsw::ide_wizards {
 
-/// Builds an aligned in-memory `DLGTEMPLATE` (`310 x 176` DLU, `9pt Segoe UI`) for `PSP_DLGINDIRECT`!
-inline std::vector<std::uint8_t> BuildBlankAeroPageTemplate(short widthDlu = 310, short heightDlu = 176) {
+inline constexpr const wchar_t* kAeroHostThemeProp = L"RswIdeAeroThemePtr";
+
+namespace detail {
+
+/// Subclasses each child AeroWizard dialog page (`DS_CONTROL | WS_CHILD`) so its background,
+/// static labels, and `EDIT` / `COMBOBOX` fields honor Dark Mode, Light Mode, & High Contrast!
+inline LRESULT CALLBACK AeroChildPageSubclassProc(
+    HWND hPage,
+    UINT uMsg,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR uIdSubclass,
+    DWORD_PTR dwRefData) noexcept
+{
+    const auto* themePtr = reinterpret_cast<const ui::RswTheme*>(dwRefData);
+    if (!themePtr) {
+        return ::DefSubclassProc(hPage, uMsg, wParam, lParam);
+    }
+
+    switch (uMsg) {
+        case WM_NCDESTROY:
+            ::RemoveWindowSubclass(hPage, &AeroChildPageSubclassProc, uIdSubclass);
+            return ::DefSubclassProc(hPage, uMsg, wParam, lParam);
+
+        case WM_ERASEBKGND: {
+            HDC hdc = reinterpret_cast<HDC>(wParam);
+            RECT rc{};
+            ::GetClientRect(hPage, &rc);
+            ::FillRect(hdc, &rc, themePtr->hbrWindow);
+            return 1;
+        }
+
+        case WM_CTLCOLORDLG:
+            return reinterpret_cast<LRESULT>(themePtr->hbrWindow);
+
+        case WM_CTLCOLORSTATIC:
+        case WM_CTLCOLORBTN: {
+            HDC hdc = reinterpret_cast<HDC>(wParam);
+            ::SetTextColor(hdc, themePtr->textPrimary);
+            ::SetBkColor(hdc, themePtr->windowBg);
+            return reinterpret_cast<LRESULT>(themePtr->hbrWindow);
+        }
+
+        case WM_CTLCOLOREDIT:
+        case WM_CTLCOLORLISTBOX: {
+            HDC hdc = reinterpret_cast<HDC>(wParam);
+            ::SetTextColor(hdc, themePtr->textPrimary);
+            ::SetBkColor(hdc, themePtr->cardBg);
+            return reinterpret_cast<LRESULT>(themePtr->hbrCard);
+        }
+    }
+    return ::DefSubclassProc(hPage, uMsg, wParam, lParam);
+}
+
+inline void ApplyEditControlTheme(HWND hEdit, const ui::RswTheme& theme) noexcept {
+    if (!hEdit) return;
+    if (theme.isHighContrast) {
+        ::SetWindowTheme(hEdit, nullptr, nullptr);
+    } else {
+        ::SetWindowTheme(hEdit, theme.isDarkMode ? L"DarkMode_CFD" : L"Explorer", nullptr);
+    }
+}
+
+} // namespace detail
+
+/// Builds an aligned in-memory `DLGTEMPLATE` (`312 x 176` DLU, `9pt Segoe UI`, `DS_CONTROL | WS_CHILD`)!
+inline std::vector<std::uint8_t> BuildBlankAeroPageTemplate(short widthDlu = 312, short heightDlu = 176) {
     std::vector<std::uint8_t> buf;
     auto pushBytes = [&](const void* p, std::size_t n) {
         const auto* b = static_cast<const std::uint8_t*>(p);
@@ -66,8 +144,8 @@ inline std::vector<std::uint8_t> BuildBlankAeroPageTemplate(short widthDlu = 310
     auto pushU16 = [&](std::uint16_t v) { pushBytes(&v, sizeof(v)); };
 
     DLGTEMPLATE hdr{};
-    hdr.style           = DS_SETFONT | WS_CHILD | WS_DISABLED | WS_CAPTION;
-    hdr.dwExtendedStyle = 0;
+    hdr.style           = DS_SETFONT | DS_CONTROL | WS_CHILD;
+    hdr.dwExtendedStyle = WS_EX_CONTROLPARENT;
     hdr.cdit            = 0;
     hdr.x               = 0;
     hdr.y               = 0;
@@ -77,7 +155,7 @@ inline std::vector<std::uint8_t> BuildBlankAeroPageTemplate(short widthDlu = 310
 
     pushU16(0); // No menu
     pushU16(0); // Default dialog window class
-    pushU16(0); // Empty page caption (`pszHeaderTitle` provides the Aero Main Instruction!)
+    pushU16(0); // Empty page caption (`DrawAeroWizardTopHeader` renders the Aero Main Instruction!)
     pushU16(9); // 9pt font
     const wchar_t face[] = L"Segoe UI";
     for (wchar_t ch : face) {
@@ -87,14 +165,20 @@ inline std::vector<std::uint8_t> BuildBlankAeroPageTemplate(short widthDlu = 310
     return buf;
 }
 
-/// Helper creating DLU-mapped accessible controls inside a `PSH_AEROWIZARD` page!
+/// Helper creating DLU-mapped Dark/Light/High-Contrast accessible controls inside an AeroWizard page!
 struct AeroPageBuilder {
-    HWND  hDlg  = nullptr;
-    HFONT hFont = nullptr;
+    HWND                hDlg     = nullptr;
+    HFONT               hFont    = nullptr;
+    const ui::RswTheme* themePtr = nullptr;
 
     explicit AeroPageBuilder(HWND dlg) noexcept : hDlg(dlg) {
-        ::EnableThemeDialogTexture(hDlg, ETDT_ENABLE);
         hFont = reinterpret_cast<HFONT>(::SendMessageW(hDlg, WM_GETFONT, 0, 0));
+        if (HWND hPar = ::GetParent(hDlg)) {
+            themePtr = reinterpret_cast<const ui::RswTheme*>(::GetPropW(hPar, kAeroHostThemeProp));
+        }
+        if (themePtr) {
+            ::SetWindowSubclass(hDlg, &detail::AeroChildPageSubclassProc, 0x52534157u, reinterpret_cast<DWORD_PTR>(themePtr));
+        }
     }
 
     RECT MapDlu(int x, int y, int w, int h) const noexcept {
@@ -103,7 +187,7 @@ struct AeroPageBuilder {
         return r;
     }
 
-    HWND AddLabel(const wchar_t* text, int x, int y, int w, int h = 10) const {
+    HWND AddLabel(const wchar_t* text, int x, int y, int w, int h = 11) const {
         const RECT r = MapDlu(x, y, w, h);
         HWND hw = ::CreateWindowExW(
             0, L"STATIC", text, WS_CHILD | WS_VISIBLE,
@@ -113,7 +197,7 @@ struct AeroPageBuilder {
         return hw;
     }
 
-    HWND AddEdit(int id, const std::wstring& initial, int x, int y, int w, int h = 13) const {
+    HWND AddEdit(int id, const std::wstring& initial, int x, int y, int w, int h = 14) const {
         const RECT r = MapDlu(x, y, w, h);
         HWND hw = ::CreateWindowExW(
             WS_EX_CLIENTEDGE, L"EDIT", initial.c_str(),
@@ -121,10 +205,11 @@ struct AeroPageBuilder {
             r.left, r.top, r.right - r.left, r.bottom - r.top,
             hDlg, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), ::GetModuleHandleW(nullptr), nullptr);
         if (hFont) ::SendMessageW(hw, WM_SETFONT, reinterpret_cast<WPARAM>(hFont), FALSE);
+        if (themePtr) detail::ApplyEditControlTheme(hw, *themePtr);
         return hw;
     }
 
-    HWND AddCheck(int id, const wchar_t* text, bool checked, int x, int y, int w, int h = 12) const {
+    HWND AddCheck(int id, const wchar_t* text, bool checked, int x, int y, int w, int h = 14) const {
         const RECT r = MapDlu(x, y, w, h);
         HWND hw = ::CreateWindowExW(
             0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
@@ -132,10 +217,11 @@ struct AeroPageBuilder {
             hDlg, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), ::GetModuleHandleW(nullptr), nullptr);
         if (hFont) ::SendMessageW(hw, WM_SETFONT, reinterpret_cast<WPARAM>(hFont), FALSE);
         ::SendMessageW(hw, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
+        if (themePtr) ui::AttachAccessibleCheckboxSubclass(hw, themePtr, false);
         return hw;
     }
 
-    HWND AddCombo(int id, const std::vector<const wchar_t*>& items, int selIdx, int x, int y, int w, int dropH = 90) const {
+    HWND AddCombo(int id, const std::vector<const wchar_t*>& items, int selIdx, int x, int y, int w, int dropH = 110) const {
         const RECT r = MapDlu(x, y, w, dropH);
         HWND hw = ::CreateWindowExW(
             0, L"COMBOBOX", nullptr, WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
@@ -146,19 +232,433 @@ struct AeroPageBuilder {
             ::SendMessageW(hw, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(it));
         }
         ::SendMessageW(hw, CB_SETCURSEL, selIdx, 0);
+        if (themePtr) ui::ApplyDarkComboBoxTheme(hw, *themePtr);
         return hw;
     }
 
-    HWND AddButton(int id, const wchar_t* text, int x, int y, int w, int h = 14) const {
+    HWND AddButton(int id, const wchar_t* text, int x, int y, int w, int h = 15) const {
         const RECT r = MapDlu(x, y, w, h);
         HWND hw = ::CreateWindowExW(
             0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
             r.left, r.top, r.right - r.left, r.bottom - r.top,
             hDlg, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), ::GetModuleHandleW(nullptr), nullptr);
         if (hFont) ::SendMessageW(hw, WM_SETFONT, reinterpret_cast<WPARAM>(hFont), FALSE);
+        if (themePtr) ui::AttachAccessiblePushButtonSubclass(hw, themePtr, false, false);
         return hw;
     }
 };
+
+// ================================================================================
+// NATIVE DARK / LIGHT / HIGH-CONTRAST AEROWIZARD MODAL HOST (`RunThemedAeroWizard`)
+// ================================================================================
+struct ThemedAeroWizardModalHost {
+    static constexpr int IDC_AW_BACK = 3101;
+
+    ui::RswTheme              theme{};
+    HWND                      hOwner          = nullptr;
+    bool                      wasOwnerEnabled = true;
+    HWND                      hWnd            = nullptr;
+    HWND                      hBtnBack        = nullptr;
+    HWND                      hBtnNext        = nullptr;
+    HWND                      hBtnCancel      = nullptr;
+    HICON                     hIconBig        = nullptr;
+    HICON                     hIconSmall      = nullptr;
+    std::wstring              windowCaption;
+    std::vector<std::wstring> pageHeaders;
+    std::vector<HWND>         pageHwnds;
+    ui::GlassGlyph            stepGlyph       = ui::GlassGlyph::Sparkle;
+    COLORREF                  stepBadgeColor  = ui::brand::kRaggieBlue;
+    int                       activePage      = 0;
+    DWORD                     wizBtnFlags     = PSWIZB_NEXT;
+    bool                      modalDone       = false;
+
+    void ApplyWizardButtonFlags(DWORD flags) noexcept {
+        wizBtnFlags = flags;
+        if (hBtnBack) {
+            ::EnableWindow(hBtnBack, (flags & PSWIZB_BACK) ? TRUE : FALSE);
+        }
+        if (hBtnNext) {
+            const bool isFinish = (flags & (PSWIZB_FINISH | PSWIZB_DISABLEDFINISH)) != 0;
+            ::SetWindowTextW(hBtnNext, isFinish ? L"&Finish" : L"&Next >");
+            const bool canAdvance = ((flags & PSWIZB_NEXT) != 0) || ((flags & PSWIZB_FINISH) != 0);
+            ::EnableWindow(hBtnNext, canAdvance ? TRUE : FALSE);
+        }
+    }
+
+    void LayoutHostAndActivePage() noexcept {
+        if (!hWnd) return;
+        const UINT dpi = ::GetDpiForWindow(hWnd);
+        auto S = [&](int px) { return ui::ScalePx(px, dpi, theme.textScalePercent); };
+
+        RECT rc{};
+        ::GetClientRect(hWnd, &rc);
+        const int W = std::max<int>(1, rc.right - rc.left);
+        const int H = std::max<int>(1, rc.bottom - rc.top);
+
+        const int footerH = S(54);
+        const int footerY = H - footerH;
+        const int btnY    = footerY + (footerH - S(32)) / 2;
+
+        if (hBtnBack)   ::MoveWindow(hBtnBack,   W - S(284), btnY, S(84), S(32), TRUE);
+        if (hBtnNext)   ::MoveWindow(hBtnNext,   W - S(192), btnY, S(92), S(32), TRUE);
+        if (hBtnCancel) ::MoveWindow(hBtnCancel, W - S(92),  btnY, S(76), S(32), TRUE);
+
+        const int pageX = S(18);
+        const int pageY = S(96);
+        const int pageW = std::max<int>(S(200), W - S(36));
+        const int pageH = std::max<int>(S(120), footerY - pageY - S(6));
+        for (HWND hp : pageHwnds) {
+            if (hp) ::MoveWindow(hp, pageX, pageY, pageW, pageH, TRUE);
+        }
+    }
+
+    void ActivatePage(int targetIdx, bool focusFirstCtrl) noexcept {
+        if (targetIdx < 0 || targetIdx >= static_cast<int>(pageHwnds.size())) return;
+        activePage = targetIdx;
+
+        const DWORD defFlags = (activePage > 0 ? PSWIZB_BACK : 0u) |
+                               ((activePage + 1 == static_cast<int>(pageHwnds.size())) ? PSWIZB_FINISH : PSWIZB_NEXT);
+        ApplyWizardButtonFlags(defFlags);
+
+        for (int i = 0; i < static_cast<int>(pageHwnds.size()); ++i) {
+            if (!pageHwnds[static_cast<std::size_t>(i)]) continue;
+            ::ShowWindow(pageHwnds[static_cast<std::size_t>(i)], (i == activePage) ? SW_SHOW : SW_HIDE);
+        }
+
+        HWND hActive = pageHwnds[static_cast<std::size_t>(activePage)];
+        if (hActive) {
+            PSHNOTIFY psn{};
+            psn.hdr.hwndFrom = hWnd;
+            psn.hdr.idFrom   = 0;
+            psn.hdr.code     = PSN_SETACTIVE;
+            ::SetWindowLongPtrW(hActive, DWLP_MSGRESULT, 0);
+            ::SendMessageW(hActive, WM_NOTIFY, 0, reinterpret_cast<LPARAM>(&psn));
+            if (focusFirstCtrl) {
+                HWND hFirst = ::GetNextDlgTabItem(hActive, nullptr, FALSE);
+                if (hFirst) ::SetFocus(hFirst);
+            }
+        }
+        ::InvalidateRect(hWnd, nullptr, TRUE);
+    }
+
+    void CloseModal() noexcept {
+        if (modalDone) return;
+        modalDone = true;
+        if (hOwner && ::IsWindow(hOwner) && wasOwnerEnabled) {
+            ::EnableWindow(hOwner, TRUE);
+            ::SetActiveWindow(hOwner);
+        }
+        if (hWnd && ::IsWindow(hWnd)) {
+            ::DestroyWindow(hWnd);
+        }
+    }
+
+    void OnNextOrFinishClicked() noexcept {
+        if (activePage < 0 || activePage >= static_cast<int>(pageHwnds.size())) return;
+        HWND hActive = pageHwnds[static_cast<std::size_t>(activePage)];
+        if (!hActive) return;
+
+        const bool isFinish = (wizBtnFlags & PSWIZB_FINISH) != 0;
+        PSHNOTIFY psn{};
+        psn.hdr.hwndFrom = hWnd;
+        psn.hdr.idFrom   = 0;
+        psn.hdr.code     = isFinish ? PSN_WIZFINISH : PSN_WIZNEXT;
+        ::SetWindowLongPtrW(hActive, DWLP_MSGRESULT, 0);
+        ::SendMessageW(hActive, WM_NOTIFY, 0, reinterpret_cast<LPARAM>(&psn));
+        const LONG_PTR msgRes = ::GetWindowLongPtrW(hActive, DWLP_MSGRESULT);
+        if (msgRes == -1) return; // Page vetoed navigation
+
+        if (isFinish) {
+            CloseModal();
+        } else if (activePage + 1 < static_cast<int>(pageHwnds.size())) {
+            ActivatePage(activePage + 1, true);
+        }
+    }
+
+    void PaintHostChrome(HDC hdcOut) const noexcept {
+        RECT rc{};
+        ::GetClientRect(hWnd, &rc);
+        const int W = std::max<int>(1, rc.right - rc.left);
+        const int H = std::max<int>(1, rc.bottom - rc.top);
+        const UINT dpi = ::GetDpiForWindow(hWnd);
+        auto S = [&](int px) { return ui::ScalePx(px, dpi, theme.textScalePercent); };
+
+        HDC memDc      = ::CreateCompatibleDC(hdcOut);
+        HBITMAP memBmp = ::CreateCompatibleBitmap(hdcOut, W, H);
+        HGDIOBJ oldBmp = ::SelectObject(memDc, memBmp);
+
+        ::FillRect(memDc, &rc, theme.hbrWindow);
+        ::SetBkMode(memDc, TRANSPARENT);
+
+        {
+            Gdiplus::Graphics g(memDc);
+            g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+            g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+            g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
+
+            const std::wstring& curHeader =
+                (activePage >= 0 && activePage < static_cast<int>(pageHeaders.size()))
+                    ? pageHeaders[static_cast<std::size_t>(activePage)]
+                    : windowCaption;
+            ui::DrawAeroWizardTopHeader(
+                memDc, g, W, dpi, theme,
+                windowCaption, curHeader, hIconBig, stepGlyph, stepBadgeColor, L"RaggieSoft");
+
+            const int footerH = S(54);
+            ui::DrawGlassFooterBar(
+                memDc, g, W, H, footerH, W - S(292), dpi, theme,
+                L"RaggieSoft Installer Studio", L"");
+        }
+
+        ::BitBlt(hdcOut, 0, 0, W, H, memDc, 0, 0, SRCCOPY);
+        ::SelectObject(memDc, oldBmp);
+        ::DeleteObject(memBmp);
+        ::DeleteDC(memDc);
+    }
+
+    static BOOL CALLBACK RefreshChildControlThemeCallback(HWND hChild, LPARAM lParam) noexcept {
+        const auto* th = reinterpret_cast<const ui::RswTheme*>(lParam);
+        if (!th) return TRUE;
+        wchar_t cls[64]{};
+        ::GetClassNameW(hChild, cls, static_cast<int>(std::size(cls)));
+        if (_wcsicmp(cls, L"COMBOBOX") == 0) {
+            ui::ApplyDarkComboBoxTheme(hChild, *th);
+        } else if (_wcsicmp(cls, L"EDIT") == 0) {
+            detail::ApplyEditControlTheme(hChild, *th);
+        }
+        ::InvalidateRect(hChild, nullptr, TRUE);
+        return TRUE;
+    }
+
+    static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+        auto* self = reinterpret_cast<ThemedAeroWizardModalHost*>(::GetWindowLongPtrW(hWnd, GWLP_USERDATA));
+        if (msg == WM_NCCREATE) {
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            self = static_cast<ThemedAeroWizardModalHost*>(cs->lpCreateParams);
+            ::SetWindowLongPtrW(hWnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+            self->hWnd = hWnd;
+            ::SetPropW(hWnd, kAeroHostThemeProp, reinterpret_cast<HANDLE>(&self->theme));
+            ui::ApplyWindowChromeAndA11y(hWnd, self->theme);
+        }
+        if (!self) return ::DefWindowProcW(hWnd, msg, wParam, lParam);
+
+        switch (msg) {
+            case WM_CREATE: {
+                HINSTANCE hInst = ::GetModuleHandleW(nullptr);
+                self->hBtnBack = ::CreateWindowExW(
+                    0, L"BUTTON", L"< &Back", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                    0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_AW_BACK)), hInst, nullptr);
+                self->hBtnNext = ::CreateWindowExW(
+                    0, L"BUTTON", L"&Next >", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+                    0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDOK)), hInst, nullptr);
+                self->hBtnCancel = ::CreateWindowExW(
+                    0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                    0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDCANCEL)), hInst, nullptr);
+
+                ui::AttachAccessiblePushButtonSubclass(self->hBtnBack,   &self->theme, false, true);
+                ui::AttachAccessiblePushButtonSubclass(self->hBtnNext,   &self->theme, true,  true);
+                ui::AttachAccessiblePushButtonSubclass(self->hBtnCancel, &self->theme, false, true);
+                return 0;
+            }
+
+            case PSM_SETWIZBUTTONS:
+                self->ApplyWizardButtonFlags(static_cast<DWORD>(lParam));
+                return 0;
+
+            case WM_ERASEBKGND:
+                return 1;
+
+            case WM_PAINT: {
+                PAINTSTRUCT ps{};
+                HDC hdc = ::BeginPaint(hWnd, &ps);
+                self->PaintHostChrome(hdc);
+                ::EndPaint(hWnd, &ps);
+                return 0;
+            }
+
+            case WM_SIZE:
+                self->LayoutHostAndActivePage();
+                return 0;
+
+            case WM_DPICHANGED: {
+                const auto* suggested = reinterpret_cast<const RECT*>(lParam);
+                if (suggested) {
+                    ::SetWindowPos(hWnd, nullptr, suggested->left, suggested->top,
+                                   suggested->right - suggested->left, suggested->bottom - suggested->top,
+                                   SWP_NOZORDER | SWP_NOACTIVATE);
+                }
+                self->LayoutHostAndActivePage();
+                ::InvalidateRect(hWnd, nullptr, TRUE);
+                return 0;
+            }
+
+            case WM_SETTINGCHANGE:
+            case WM_SYSCOLORCHANGE:
+            case WM_THEMECHANGED: {
+                if (ui::IsLiveThemeBroadcast(msg, wParam, lParam)) {
+                    self->theme.Refresh();
+                    ui::ApplyWindowChromeAndA11y(hWnd, self->theme);
+                    for (HWND hp : self->pageHwnds) {
+                        if (hp) {
+                            ::EnumChildWindows(hp, &RefreshChildControlThemeCallback, reinterpret_cast<LPARAM>(&self->theme));
+                        }
+                    }
+                    ::RedrawWindow(hWnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
+                    return 0;
+                }
+                break;
+            }
+
+            case WM_COMMAND: {
+                const int id = LOWORD(wParam);
+                if (id == IDC_AW_BACK) {
+                    if (self->activePage > 0) {
+                        self->ActivatePage(self->activePage - 1, true);
+                    }
+                    return 0;
+                }
+                if (id == IDOK) {
+                    if (self->hBtnNext && ::IsWindowEnabled(self->hBtnNext)) {
+                        self->OnNextOrFinishClicked();
+                    }
+                    return 0;
+                }
+                if (id == IDCANCEL) {
+                    self->CloseModal();
+                    return 0;
+                }
+                break;
+            }
+
+            case WM_CLOSE:
+                self->CloseModal();
+                return 0;
+
+            case WM_NCDESTROY:
+                ::RemovePropW(hWnd, kAeroHostThemeProp);
+                self->hWnd = nullptr;
+                break;
+        }
+        return ::DefWindowProcW(hWnd, msg, wParam, lParam);
+    }
+};
+
+/// Runs a modal, Per-Monitor V2 DPI, Dark/Light/High-Contrast AeroWizard sheet hosting `pageCount` DLU pages!
+inline void RunThemedAeroWizard(
+    HWND hOwner,
+    const wchar_t* windowCaption,
+    int pageCount,
+    const wchar_t* const* pageHeaders,
+    DLGPROC pageDlgProc,
+    const LPARAM* pageLParams,
+    ui::GlassGlyph stepGlyph = ui::GlassGlyph::Sparkle,
+    COLORREF stepBadgeColor  = ui::brand::kRaggieBlue,
+    const std::filesystem::path* exportShotPath = nullptr)
+{
+    if (pageCount <= 0 || !pageHeaders || !pageDlgProc || !pageLParams) return;
+
+    HINSTANCE hInst = ::GetModuleHandleW(nullptr);
+    ThemedAeroWizardModalHost host{};
+    host.theme.Refresh();
+    host.hOwner          = hOwner;
+    host.wasOwnerEnabled = (hOwner && ::IsWindow(hOwner)) ? (::IsWindowEnabled(hOwner) != FALSE) : false;
+    host.windowCaption   = windowCaption ? windowCaption : L"RaggieSoft AeroWizard";
+    host.stepGlyph       = stepGlyph;
+    host.stepBadgeColor  = stepBadgeColor;
+    for (int i = 0; i < pageCount; ++i) {
+        host.pageHeaders.emplace_back(pageHeaders[i] ? pageHeaders[i] : L"");
+    }
+
+    host.hIconBig   = static_cast<HICON>(::LoadImageW(hInst, MAKEINTRESOURCEW(IDI_RAGGIESOFT_APP_ICON), IMAGE_ICON, 48, 48, LR_DEFAULTCOLOR));
+    host.hIconSmall = static_cast<HICON>(::LoadImageW(hInst, MAKEINTRESOURCEW(IDI_RAGGIESOFT_APP_ICON), IMAGE_ICON, 16, 16, LR_DEFAULTCOLOR));
+    if (!host.hIconBig) host.hIconBig = ::LoadIconW(nullptr, IDI_APPLICATION);
+
+    constexpr const wchar_t* kHostCls = L"RaggieSoftThemedAeroWizardWindow";
+    WNDCLASSEXW wc{};
+    wc.cbSize        = sizeof(wc);
+    wc.lpfnWndProc   = &ThemedAeroWizardModalHost::WndProc;
+    wc.hInstance     = hInst;
+    wc.hCursor       = ::LoadCursorW(nullptr, IDC_ARROW);
+    wc.hIcon         = host.hIconBig;
+    wc.hIconSm       = host.hIconSmall ? host.hIconSmall : host.hIconBig;
+    wc.lpszClassName = kHostCls;
+    ::RegisterClassExW(&wc);
+
+    const UINT dpi = (hOwner && ::IsWindow(hOwner)) ? ::GetDpiForWindow(hOwner) : ::GetDpiForSystem();
+    RECT wRc{0, 0,
+             ui::ScalePx(640, dpi, host.theme.textScalePercent),
+             ui::ScalePx(484, dpi, host.theme.textScalePercent)};
+    constexpr DWORD kWinStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
+    constexpr DWORD kExStyle  = WS_EX_DLGMODALFRAME;
+    ::AdjustWindowRectExForDpi(&wRc, kWinStyle, FALSE, kExStyle, dpi);
+    const int winW = wRc.right - wRc.left;
+    const int winH = wRc.bottom - wRc.top;
+
+    int posX = std::max(0, (::GetSystemMetrics(SM_CXSCREEN) - winW) / 2);
+    int posY = std::max(0, (::GetSystemMetrics(SM_CYSCREEN) - winH) / 2);
+    if (hOwner && ::IsWindow(hOwner)) {
+        RECT ow{};
+        if (::GetWindowRect(hOwner, &ow)) {
+            posX = ow.left + ((ow.right - ow.left) - winW) / 2;
+            posY = ow.top  + ((ow.bottom - ow.top) - winH) / 2;
+        }
+        if (host.wasOwnerEnabled && !exportShotPath) {
+            ::EnableWindow(hOwner, FALSE);
+        }
+    }
+
+    HWND hHost = ::CreateWindowExW(
+        kExStyle, kHostCls, host.windowCaption.c_str(), kWinStyle,
+        posX, posY, winW, winH, hOwner, nullptr, hInst, &host);
+    if (!hHost) {
+        if (hOwner && host.wasOwnerEnabled) ::EnableWindow(hOwner, TRUE);
+        return;
+    }
+
+    auto dlgt = BuildBlankAeroPageTemplate();
+    std::vector<PROPSHEETPAGEW> fakePsps(static_cast<std::size_t>(pageCount));
+    host.pageHwnds.resize(static_cast<std::size_t>(pageCount), nullptr);
+    for (int i = 0; i < pageCount; ++i) {
+        PROPSHEETPAGEW& psp = fakePsps[static_cast<std::size_t>(i)];
+        psp.dwSize         = sizeof(psp);
+        psp.hInstance      = hInst;
+        psp.pszHeaderTitle = pageHeaders[i];
+        psp.pfnDlgProc     = pageDlgProc;
+        psp.lParam         = pageLParams[i];
+        host.pageHwnds[static_cast<std::size_t>(i)] = ::CreateDialogIndirectParamW(
+            hInst,
+            reinterpret_cast<LPCDLGTEMPLATEW>(dlgt.data()),
+            hHost,
+            pageDlgProc,
+            reinterpret_cast<LPARAM>(&psp));
+    }
+
+    host.LayoutHostAndActivePage();
+    host.ActivatePage(0, !exportShotPath);
+    ::ShowWindow(hHost, SW_SHOWNORMAL);
+    ::UpdateWindow(hHost);
+
+    if (exportShotPath) {
+        ui::CaptureWindowToPngFile(hHost, *exportShotPath);
+        host.CloseModal();
+        return;
+    }
+
+    MSG msg{};
+    while (!host.modalDone && ::GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE) {
+            host.CloseModal();
+            break;
+        }
+        if (!::IsDialogMessageW(hHost, &msg)) {
+            ::TranslateMessage(&msg);
+            ::DispatchMessageW(&msg);
+        }
+    }
+    if (!host.modalDone) {
+        host.CloseModal();
+    }
+}
 
 inline std::string ReadDlgItemUtf8(HWND hDlg, int id) {
     wchar_t buf[1024]{};
@@ -385,9 +885,13 @@ inline INT_PTR CALLBACK NewProjectAeroPageProc(HWND hDlg, UINT msg, WPARAM wPara
     return FALSE;
 }
 
-inline bool RunNewProjectAeroWizard(HWND hOwner, std::string& outGeneratedRsipUtf8, bool& outAutoValidate) {
+inline bool RunNewProjectAeroWizard(
+    HWND hOwner,
+    std::string& outGeneratedRsipUtf8,
+    bool& outAutoValidate,
+    const std::filesystem::path* exportShotPath = nullptr)
+{
     NewProjectWizardData data{};
-    auto dlgt = BuildBlankAeroPageTemplate();
     const wchar_t* headers[5] = {
         L"Step 1 of 5 — Application Identity & Install Scope",
         L"Step 2 of 5 — Application Files & Destination Folder",
@@ -397,31 +901,15 @@ inline bool RunNewProjectAeroWizard(HWND hOwner, std::string& outGeneratedRsipUt
     };
 
     NewProjPageCtx ctxs[5]{};
-    HPROPSHEETPAGE hPages[5]{};
+    LPARAM lParams[5]{};
     for (int i = 0; i < 5; ++i) {
-        ctxs[i] = {i, &data};
-        PROPSHEETPAGEW psp{};
-        psp.dwSize         = sizeof(psp);
-        psp.dwFlags        = PSP_DEFAULT | PSP_USEHEADERTITLE | PSP_DLGINDIRECT;
-        psp.hInstance      = ::GetModuleHandleW(nullptr);
-        psp.pResource      = reinterpret_cast<LPCDLGTEMPLATEW>(dlgt.data());
-        psp.pszHeaderTitle = headers[i];
-        psp.pfnDlgProc     = &NewProjectAeroPageProc;
-        psp.lParam         = reinterpret_cast<LPARAM>(&ctxs[i]);
-        hPages[i]          = ::CreatePropertySheetPageW(&psp);
+        ctxs[i]    = {i, &data};
+        lParams[i] = reinterpret_cast<LPARAM>(&ctxs[i]);
     }
-
-    PROPSHEETHEADERW psh{};
-    psh.dwSize     = sizeof(psh);
-    psh.dwFlags    = PSH_WIZARD | PSH_AEROWIZARD;
-    psh.hwndParent = hOwner;
-    psh.hInstance  = ::GetModuleHandleW(nullptr);
-    psh.pszCaption = L"RaggieSoft Project Assistant — New .RSIP Installer";
-    psh.nPages     = 5;
-    psh.nStartPage = 0;
-    psh.phpage     = hPages;
-
-    ::PropertySheetW(&psh);
+    RunThemedAeroWizard(
+        hOwner, L"RaggieSoft Project Assistant — New .RSIP Installer",
+        5, headers, &NewProjectAeroPageProc, lParams,
+        ui::GlassGlyph::Sparkle, ui::brand::kRaggieBlue, exportShotPath);
     if (!data.completed) return false;
 
     const char* layoutStr = (data.wizardLayoutIdx == 1) ? "aerowizard" : ((data.wizardLayoutIdx == 2) ? "autorun16x9" : "standard");
@@ -593,36 +1081,21 @@ inline bool RunFileAssociationAeroWizard(HWND hOwner, RswManifestDocument& ioDoc
     const std::string mainExe = ioDoc.GetString("Install", "", "MainExecutable");
     if (!mainExe.empty()) data.targetExe = mainExe;
 
-    auto dlgt = BuildBlankAeroPageTemplate();
     const wchar_t* headers[3] = {
         L"Step 1 of 3 — File Extension, ProgId & MIME Type",
         L"Step 2 of 3 — Handler Executable & Document Icon",
         L"Step 3 of 3 — Explorer Verbs & MSI Registration Mode"
     };
     FileAssocPageCtx ctxs[3]{};
-    HPROPSHEETPAGE hPages[3]{};
+    LPARAM lParams[3]{};
     for (int i = 0; i < 3; ++i) {
-        ctxs[i] = {i, &data};
-        PROPSHEETPAGEW psp{};
-        psp.dwSize         = sizeof(psp);
-        psp.dwFlags        = PSP_DEFAULT | PSP_USEHEADERTITLE | PSP_DLGINDIRECT;
-        psp.hInstance      = ::GetModuleHandleW(nullptr);
-        psp.pResource      = reinterpret_cast<LPCDLGTEMPLATEW>(dlgt.data());
-        psp.pszHeaderTitle = headers[i];
-        psp.pfnDlgProc     = &FileAssocAeroPageProc;
-        psp.lParam         = reinterpret_cast<LPARAM>(&ctxs[i]);
-        hPages[i]          = ::CreatePropertySheetPageW(&psp);
+        ctxs[i]    = {i, &data};
+        lParams[i] = reinterpret_cast<LPARAM>(&ctxs[i]);
     }
-
-    PROPSHEETHEADERW psh{};
-    psh.dwSize     = sizeof(psh);
-    psh.dwFlags    = PSH_WIZARD | PSH_AEROWIZARD;
-    psh.hwndParent = hOwner;
-    psh.hInstance  = ::GetModuleHandleW(nullptr);
-    psh.pszCaption = L"File Association & Document Icon Wizard";
-    psh.nPages     = 3;
-    psh.phpage     = hPages;
-    ::PropertySheetW(&psh);
+    RunThemedAeroWizard(
+        hOwner, L"File Association & Document Icon Wizard",
+        3, headers, &FileAssocAeroPageProc, lParams,
+        ui::GlassGlyph::PinGrid, ui::brand::kVioletTune);
     if (!data.completed || data.sectionId.empty()) return false;
 
     ioDoc.SetString("FileAssociation", data.sectionId, "Extension",   data.extension);
@@ -751,36 +1224,21 @@ inline bool RunComponentKeyPathAeroWizard(HWND hOwner, RswManifestDocument& ioDo
     ComponentWizardData data{};
     data.compId = "Comp" + std::to_string(ioDoc.GetNamedSectionIds("Component").size() + 1);
 
-    auto dlgt = BuildBlankAeroPageTemplate();
     const wchar_t* headers[3] = {
         L"Step 1 of 3 — Component Identity & Destination Directory",
         L"Step 2 of 3 — KeyFile, Registry, or Folder KeyPath",
         L"Step 3 of 3 — Lifecycle Attributes & Condition"
     };
     CompPageCtx ctxs[3]{};
-    HPROPSHEETPAGE hPages[3]{};
+    LPARAM lParams[3]{};
     for (int i = 0; i < 3; ++i) {
-        ctxs[i] = {i, &data};
-        PROPSHEETPAGEW psp{};
-        psp.dwSize         = sizeof(psp);
-        psp.dwFlags        = PSP_DEFAULT | PSP_USEHEADERTITLE | PSP_DLGINDIRECT;
-        psp.hInstance      = ::GetModuleHandleW(nullptr);
-        psp.pResource      = reinterpret_cast<LPCDLGTEMPLATEW>(dlgt.data());
-        psp.pszHeaderTitle = headers[i];
-        psp.pfnDlgProc     = &ComponentAeroPageProc;
-        psp.lParam         = reinterpret_cast<LPARAM>(&ctxs[i]);
-        hPages[i]          = ::CreatePropertySheetPageW(&psp);
+        ctxs[i]    = {i, &data};
+        lParams[i] = reinterpret_cast<LPARAM>(&ctxs[i]);
     }
-
-    PROPSHEETHEADERW psh{};
-    psh.dwSize     = sizeof(psh);
-    psh.dwFlags    = PSH_WIZARD | PSH_AEROWIZARD;
-    psh.hwndParent = hOwner;
-    psh.hInstance  = ::GetModuleHandleW(nullptr);
-    psh.pszCaption = L"Component & KeyPath Wizard (Microsoft MSI Rules)";
-    psh.nPages     = 3;
-    psh.phpage     = hPages;
-    ::PropertySheetW(&psh);
+    RunThemedAeroWizard(
+        hOwner, L"Component & KeyPath Wizard (Microsoft MSI Rules)",
+        3, headers, &ComponentAeroPageProc, lParams,
+        ui::GlassGlyph::Blocks, ui::brand::kEmeraldOk);
     if (!data.completed || data.compId.empty()) return false;
 
     const char* kpNames[] = {"auto", "file", "registry", "folder"};
@@ -890,36 +1348,21 @@ inline INT_PTR CALLBACK ReleaseAeroPageProc(HWND hDlg, UINT msg, WPARAM wParam, 
 
 inline bool RunReleaseMstMspAeroWizard(HWND hOwner, ReleaseWizardResult& outRes) {
     outRes = ReleaseWizardResult{};
-    auto dlgt = BuildBlankAeroPageTemplate();
     const wchar_t* headers[3] = {
         L"Step 1 of 3 — Choose Release, .MST Transform, or .MSP Patch",
         L"Step 2 of 3 — Baseline & Target MSI Packages",
         L"Step 3 of 3 — Generate & Inspect in MSI Prism"
     };
     RelPageCtx ctxs[3]{};
-    HPROPSHEETPAGE hPages[3]{};
+    LPARAM lParams[3]{};
     for (int i = 0; i < 3; ++i) {
-        ctxs[i] = {i, &outRes};
-        PROPSHEETPAGEW psp{};
-        psp.dwSize         = sizeof(psp);
-        psp.dwFlags        = PSP_DEFAULT | PSP_USEHEADERTITLE | PSP_DLGINDIRECT;
-        psp.hInstance      = ::GetModuleHandleW(nullptr);
-        psp.pResource      = reinterpret_cast<LPCDLGTEMPLATEW>(dlgt.data());
-        psp.pszHeaderTitle = headers[i];
-        psp.pfnDlgProc     = &ReleaseAeroPageProc;
-        psp.lParam         = reinterpret_cast<LPARAM>(&ctxs[i]);
-        hPages[i]          = ::CreatePropertySheetPageW(&psp);
+        ctxs[i]    = {i, &outRes};
+        lParams[i] = reinterpret_cast<LPARAM>(&ctxs[i]);
     }
-
-    PROPSHEETHEADERW psh{};
-    psh.dwSize     = sizeof(psh);
-    psh.dwFlags    = PSH_WIZARD | PSH_AEROWIZARD;
-    psh.hwndParent = hOwner;
-    psh.hInstance  = ::GetModuleHandleW(nullptr);
-    psh.pszCaption = L"Release, Transform (.MST) & Patch (.MSP) Wizard";
-    psh.nPages     = 3;
-    psh.phpage     = hPages;
-    ::PropertySheetW(&psh);
+    RunThemedAeroWizard(
+        hOwner, L"Release, Transform (.MST) & Patch (.MSP) Wizard",
+        3, headers, &ReleaseAeroPageProc, lParams,
+        ui::GlassGlyph::ShieldCheck, ui::brand::kEmeraldOk);
     return outRes.completed;
 }
 
@@ -927,10 +1370,10 @@ inline bool RunReleaseMstMspAeroWizard(HWND hOwner, ReleaseWizardResult& outRes)
 // WIZARD 5: RUNTIME PREREQUISITE & MERGE MODULE (`.MSM`) AEROWIZARD (3 PAGES!)
 // ================================================================================
 struct PrereqMsmWizardData {
-    int         kindIdx       = 0; // 0..5 = Curated Presets, 6 = Custom Runtime, 7 = Merge Module (.msm)
-    std::string sectionId     = "DotNet10Desktop";
+    int         kindIdx       = 0; // 0..9 = Curated Presets, 10 = Custom Runtime, 11 = Merge Module (.msm)
+    std::string sectionId     = "DotNet11Desktop";
     int         distIdx       = 0; // 0 = download, 1 = embedded, 2 = side-by-side
-    std::string urlOrSource   = "https://aka.ms/dotnet/10.0/windowsdesktop-runtime-win-$(ARCH).exe";
+    std::string urlOrSource   = "https://aka.ms/dotnet/11.0/windowsdesktop-runtime-win-$(ARCH).exe";
     std::string silentArgs    = "/install /quiet /norestart";
     std::string successCodes  = "0, 1638";
     std::string rebootCodes   = "3010, 1641, 23";
@@ -953,18 +1396,22 @@ inline INT_PTR CALLBACK PrereqMsmAeroPageProc(HWND hDlg, UINT msg, WPARAM wParam
         auto& d = *ctx->data;
 
         if (ctx->pageIndex == 0) {
-            b.AddLabel(L"Choose a curated Microsoft runtime, custom prerequisite, or .MSM Merge Module:", 6, 4, 296, 14);
+            b.AddLabel(L"Choose a curated Microsoft runtime (.NET 11 / .NET 10 LTS), custom runtime, or .MSM:", 6, 4, 296, 14);
             b.AddLabel(L"Runtime / Module &Preset:", 6, 22, 296);
             b.AddCombo(901, {
-                L"Microsoft .NET 10.0 Desktop Runtime (aka.ms x64 & ARM64)",
-                L"Microsoft ASP.NET Core 10.0 Runtime (aka.ms x64 & ARM64)",
+                L"Microsoft .NET 11.0 Desktop Runtime (aka.ms x64 & ARM64)",
+                L"Microsoft ASP.NET Core 11.0 Runtime (aka.ms x64 & ARM64)",
+                L"Microsoft .NET 11.0 Base Console Runtime (aka.ms x64 & ARM64)",
+                L"Microsoft .NET 10.0 LTS Desktop Runtime (aka.ms x64 & ARM64)",
+                L"Microsoft ASP.NET Core 10.0 LTS Runtime (aka.ms x64 & ARM64)",
+                L"Microsoft .NET 10.0 LTS Base Console Runtime (aka.ms x64 & ARM64)",
                 L"Microsoft .NET 9.0 Desktop Runtime (aka.ms x64 & ARM64)",
                 L"Microsoft .NET 8.0 LTS Desktop Runtime (aka.ms x64 & ARM64)",
                 L"Microsoft Edge WebView2 Evergreen Bootstrapper",
                 L"Microsoft Visual C++ 2015-2022 Redistributable (x64 & ARM64)",
                 L"Custom Runtime Installer (.exe or .msi — runs BEFORE Product.msi)",
                 L"Windows Installer Merge Module (.msm — merged into Product.msi)"
-            }, d.kindIdx, 6, 34, 296, 120);
+            }, d.kindIdx, 6, 34, 296, 140);
             b.AddLabel(L"&Section Identifier:", 6, 66, 110);
             b.AddEdit(902, Utf8ToWide(d.sectionId), 120, 64, 150);
             b.AddLabel(L"Note: Runtime prerequisites execute BEFORE msiexec so nested MSI redistributables never hit mutex error 1618.", 6, 94, 296, 28);
@@ -998,10 +1445,12 @@ inline INT_PTR CALLBACK PrereqMsmAeroPageProc(HWND hDlg, UINT msg, WPARAM wParam
         if (id == 901 && code == CBN_SELCHANGE) {
             const int sel = GetComboIndex(hDlg, 901);
             const char* defIds[] = {
-                "DotNet10Desktop", "DotNet10AspNet", "DotNet9Desktop",
-                "DotNet8Desktop", "EdgeWebView2", "VcRedist2022", "CustomRuntime", "SharedModule"
+                "DotNet11Desktop", "DotNet11AspNet", "DotNet11Runtime",
+                "DotNet10Desktop", "DotNet10AspNet", "DotNet10Runtime",
+                "DotNet9Desktop", "DotNet8Desktop", "EdgeWebView2", "VcRedist2022",
+                "CustomRuntime", "SharedModule"
             };
-            if (sel >= 0 && sel < 8) {
+            if (sel >= 0 && sel < 12) {
                 ::SetDlgItemTextW(hDlg, 902, Utf8ToWide(defIds[sel]).c_str());
             }
             return TRUE;
@@ -1018,11 +1467,11 @@ inline INT_PTR CALLBACK PrereqMsmAeroPageProc(HWND hDlg, UINT msg, WPARAM wParam
     if (msg == WM_NOTIFY) {
         const auto* nm = reinterpret_cast<const NMHDR*>(lParam);
         if (nm->code == PSN_SETACTIVE) {
-            if (ctx->pageIndex == 1 && d.kindIdx < 6 && d.distIdx == 0) {
+            if (ctx->pageIndex == 1 && d.kindIdx >= 0 && static_cast<std::size_t>(d.kindIdx) < kCuratedRuntimePresets.size() && d.distIdx == 0) {
                 const auto& pr = kCuratedRuntimePresets[static_cast<std::size_t>(d.kindIdx)];
                 ::SetDlgItemTextW(hDlg, 912, Utf8ToWide(pr.urlArm64).c_str());
             }
-            if (ctx->pageIndex == 2 && d.kindIdx < 6) {
+            if (ctx->pageIndex == 2 && d.kindIdx >= 0 && static_cast<std::size_t>(d.kindIdx) < kCuratedRuntimePresets.size()) {
                 const auto& pr = kCuratedRuntimePresets[static_cast<std::size_t>(d.kindIdx)];
                 ::SetDlgItemTextW(hDlg, 921, Utf8ToWide(pr.silentArgs).c_str());
                 ::SetDlgItemTextW(hDlg, 922, Utf8ToWide(pr.successCodes).c_str());
@@ -1059,54 +1508,40 @@ inline INT_PTR CALLBACK PrereqMsmAeroPageProc(HWND hDlg, UINT msg, WPARAM wParam
 
 inline bool RunPrerequisiteMsmAeroWizard(HWND hOwner, RswManifestDocument& ioDoc) {
     PrereqMsmWizardData data{};
-    auto dlgt = BuildBlankAeroPageTemplate();
     const wchar_t* headers[3] = {
-        L"Step 1 of 3 — Select Runtime Prerequisite or .MSM Merge Module",
+        L"Step 1 of 3 — Select Runtime Prerequisite (.NET 11 / 10) or .MSM",
         L"Step 2 of 3 — Delivery Mode (HTTPS Download, Embedded LZMS, or Redist\\)",
         L"Step 3 of 3 — Silent Switches & Reboot Exit Codes"
     };
     PrereqMsmPageCtx ctxs[3]{};
-    HPROPSHEETPAGE hPages[3]{};
+    LPARAM lParams[3]{};
     for (int i = 0; i < 3; ++i) {
-        ctxs[i] = {i, &data};
-        PROPSHEETPAGEW psp{};
-        psp.dwSize         = sizeof(psp);
-        psp.dwFlags        = PSP_DEFAULT | PSP_USEHEADERTITLE | PSP_DLGINDIRECT;
-        psp.hInstance      = ::GetModuleHandleW(nullptr);
-        psp.pResource      = reinterpret_cast<LPCDLGTEMPLATEW>(dlgt.data());
-        psp.pszHeaderTitle = headers[i];
-        psp.pfnDlgProc     = &PrereqMsmAeroPageProc;
-        psp.lParam         = reinterpret_cast<LPARAM>(&ctxs[i]);
-        hPages[i]          = ::CreatePropertySheetPageW(&psp);
+        ctxs[i]    = {i, &data};
+        lParams[i] = reinterpret_cast<LPARAM>(&ctxs[i]);
     }
-
-    PROPSHEETHEADERW psh{};
-    psh.dwSize     = sizeof(psh);
-    psh.dwFlags    = PSH_WIZARD | PSH_AEROWIZARD;
-    psh.hwndParent = hOwner;
-    psh.hInstance  = ::GetModuleHandleW(nullptr);
-    psh.pszCaption = L"Runtime Prerequisite & Merge Module (.MSM) Wizard";
-    psh.nPages     = 3;
-    psh.phpage     = hPages;
-    ::PropertySheetW(&psh);
+    RunThemedAeroWizard(
+        hOwner, L"Runtime Prerequisite & Merge Module (.MSM) Wizard",
+        3, headers, &PrereqMsmAeroPageProc, lParams,
+        ui::GlassGlyph::Bolt, ui::brand::kSkyCyan);
 
     if (!data.completed) return false;
 
-    if (data.kindIdx == 7) {
+    if (data.kindIdx == 11) {
         ioDoc.SetString("MergeModule", data.sectionId, "Source",     data.urlOrSource);
         ioDoc.SetString("MergeModule", data.sectionId, "Feature",    data.msmFeature.empty() ? "Main" : data.msmFeature);
         ioDoc.SetString("MergeModule", data.sectionId, "TargetRoot", "INSTALLDIR");
     } else {
         const char* presetNames[] = {
-            "DotNet10Desktop", "DotNet10AspNet", "DotNet9Desktop",
-            "DotNet8Desktop", "EdgeWebView2", "VcRedist2022", "Custom"
+            "DotNet11Desktop", "DotNet11AspNet", "DotNet11Runtime",
+            "DotNet10Desktop", "DotNet10AspNet", "DotNet10Runtime",
+            "DotNet9Desktop", "DotNet8Desktop", "EdgeWebView2", "VcRedist2022", "Custom"
         };
         const char* distNames[] = {"download", "embedded", "side-by-side"};
-        const std::string preset = presetNames[std::clamp(data.kindIdx, 0, 6)];
+        const std::string preset = presetNames[std::clamp(data.kindIdx, 0, 10)];
         const std::string dist   = distNames[std::clamp(data.distIdx, 0, 2)];
 
-        ioDoc.SetString("Prerequisite", data.sectionId, "Preset",           preset);
-        ioDoc.SetString("Prerequisite", data.sectionId, "Distribution",     dist);
+        ioDoc.SetString("Prerequisite", data.sectionId, "Preset",       preset);
+        ioDoc.SetString("Prerequisite", data.sectionId, "Distribution", dist);
         if (dist == "embedded" || (dist == "side-by-side" && data.urlOrSource.rfind("http", 0) != 0)) {
             ioDoc.SetString("Prerequisite", data.sectionId, "SourceFile", data.urlOrSource);
         } else if (preset == "Custom" && !data.urlOrSource.empty()) {
@@ -1116,6 +1551,241 @@ inline bool RunPrerequisiteMsmAeroWizard(HWND hOwner, RswManifestDocument& ioDoc
         if (!data.successCodes.empty()) ioDoc.SetString("Prerequisite", data.sectionId, "SuccessExitCodes", data.successCodes);
         if (!data.rebootCodes.empty())  ioDoc.SetString("Prerequisite", data.sectionId, "RebootExitCodes",  data.rebootCodes);
     }
+    return true;
+}
+
+// ================================================================================
+// WIZARD 6: SELF-EXTRACTING `.EXE` (`PackageKind = sfx`) & SIMPLE NATIVE SETUP
+//           (`Engine = native` + `WizardLayout = simple` — 3 GUIDED PAGES!)
+// ================================================================================
+struct SfxSimpleWizardData {
+    int         modeIdx          = 0; // 0 = Self-Extracting .EXE (`sfx`), 1 = Simple Native Setup (`Engine = native`)
+    std::string productName      = "Portable App Pack";
+    std::string version          = "1.0.0";
+    std::string manufacturer     = "Sample Studio";
+    std::string sourcePath       = "..\\..\\bin\\$(ARCH)\\HelloRaggieSoft.exe";
+
+    int         execLevelIdx     = 0; // 0 = asInvoker, 1 = highestAvailable, 2 = requireAdministrator
+    bool        perUserScope     = true;
+    std::string defaultSubdir    = "Sample Studio\\Portable App Pack";
+    bool        extractToTemp    = false;
+    bool        allowChangeDir   = true;
+
+    std::string postRunOrMainExe = "HelloRaggieSoft.exe";
+    std::string postOpenDoc      = "";
+    bool        addShortcuts     = true;
+    bool        autoValidate     = true;
+    bool        completed        = false;
+};
+
+struct SfxSimplePageCtx {
+    int                  pageIndex = 0;
+    SfxSimpleWizardData* data      = nullptr;
+};
+
+inline INT_PTR CALLBACK SfxSimpleAeroPageProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* ctx = reinterpret_cast<SfxSimplePageCtx*>(::GetWindowLongPtrW(hDlg, DWLP_USER));
+    if (msg == WM_INITDIALOG) {
+        const auto* psp = reinterpret_cast<const PROPSHEETPAGEW*>(lParam);
+        ctx = reinterpret_cast<SfxSimplePageCtx*>(psp->lParam);
+        ::SetWindowLongPtrW(hDlg, DWLP_USER, reinterpret_cast<LONG_PTR>(ctx));
+        AeroPageBuilder b(hDlg);
+        auto& d = *ctx->data;
+
+        if (ctx->pageIndex == 0) {
+            b.AddLabel(L"Build an ultra-compact single-dialog Self-Extractor or Simple Native Setup:", 6, 4, 296, 14);
+            b.AddLabel(L"Package &Mode:", 6, 22, 90);
+            b.AddCombo(951, {
+                L"Self-Extracting Archive .EXE (PackageKind = sfx — Zero Installed Apps Entry)",
+                L"Simple Native Setup Project (Engine = native — Instant Rollback + Uninstall.exe)"
+            }, d.modeIdx, 98, 20, 204);
+            b.AddLabel(L"&Product / Archive:", 6, 46, 90); b.AddEdit(952, Utf8ToWide(d.productName),  98, 44, 204);
+            b.AddLabel(L"&Version (X.Y.Z):",   6, 68, 90); b.AddEdit(953, Utf8ToWide(d.version),      98, 66, 86);
+            b.AddLabel(L"P&ublisher:",         6, 90, 90); b.AddEdit(954, Utf8ToWide(d.manufacturer), 98, 88, 204);
+            b.AddLabel(L"Source &Folder, File, or .ZIP Archive:", 6, 114, 296);
+            b.AddEdit(955, Utf8ToWide(d.sourcePath), 6, 126, 202);
+            b.AddButton(956, L".&ZIP/File...", 212, 125, 44);
+            b.AddButton(957, L"&Folder...",    258, 125, 44);
+        } else if (ctx->pageIndex == 1) {
+            b.AddLabel(L"Configure UAC execution level and destination folder behavior:", 6, 4, 296, 14);
+            b.AddLabel(L"&UAC Execution Level:", 6, 22, 296);
+            b.AddCombo(961, {
+                L"asInvoker — Standard user token (Elevate only if needed; zero UAC for SFX / per-user)",
+                L"highestAvailable — Request elevation for Admin accounts, run standard for others",
+                L"requireAdministrator — Always prompt for Administrator UAC at launch"
+            }, d.execLevelIdx, 6, 34, 296);
+            b.AddLabel(L"Install &Scope (for Simple Native Setup):", 6, 60, 296);
+            b.AddCombo(962, {
+                L"user — Current User (%LOCALAPPDATA%, Zero UAC Required)",
+                L"machine — All Users (Program Files, Single UAC Prompt)"
+            }, d.perUserScope ? 0 : 1, 6, 72, 296);
+            b.AddLabel(L"&Default Destination Subfolder:", 6, 98, 296);
+            b.AddEdit(963, Utf8ToWide(d.defaultSubdir), 6, 110, 296);
+            b.AddCheck(964, L"Extract to %&TEMP% staging folder by default (SFX mode)", d.extractToTemp,  6, 128, 296);
+            b.AddCheck(965, L"Allow user to &browse / edit destination folder in dialog", d.allowChangeDir, 6, 146, 296);
+        } else {
+            b.AddLabel(L"Configure optional post-extract launch / document open & shortcuts:", 6, 4, 296, 14);
+            b.AddLabel(L"Optional &Executable to Launch (PostExtractRun / MainExecutable):", 6, 24, 296);
+            b.AddEdit(971, Utf8ToWide(d.postRunOrMainExe), 6, 36, 296);
+            b.AddLabel(L"Optional Bundled &Document to Open (PostExtractOpen, e.g. ReadMe.pdf / Guide.html):", 6, 62, 296);
+            b.AddEdit(972, Utf8ToWide(d.postOpenDoc), 6, 74, 296);
+            b.AddCheck(973, L"Create Start &Menu & Desktop shortcuts (Simple Native Setup mode)", d.addShortcuts, 6, 102, 296);
+            b.AddCheck(974, L"&Validate generated .rsip manifest immediately in IDE",             d.autoValidate, 6, 122, 296);
+        }
+        return TRUE;
+    }
+
+    if (!ctx || !ctx->data) return FALSE;
+    auto& d = *ctx->data;
+
+    if (msg == WM_COMMAND) {
+        const int id = LOWORD(wParam);
+        if (id == 956 || id == 957) {
+            std::wstring chosen;
+            if (BrowsePathModal(
+                    hDlg,
+                    id == 957,
+                    L"ZIP Archives & Executables (*.zip;*.exe;*.*)\0*.zip;*.exe;*.*\0All Files (*.*)\0*.*\0",
+                    chosen)) {
+                ::SetDlgItemTextW(hDlg, 955, chosen.c_str());
+                const std::filesystem::path p(chosen);
+                if (id == 956 && EqualsIgnoreCase(WideToUtf8(p.extension().wstring()), ".exe")) {
+                    d.postRunOrMainExe = WideToUtf8(p.filename().wstring());
+                }
+            }
+            return TRUE;
+        }
+    }
+
+    if (msg == WM_NOTIFY) {
+        const auto* nm = reinterpret_cast<const NMHDR*>(lParam);
+        if (nm->code == PSN_SETACTIVE) {
+            DWORD btns = PSWIZB_BACK | PSWIZB_NEXT;
+            if (ctx->pageIndex == 0) btns = PSWIZB_NEXT;
+            if (ctx->pageIndex == 2) btns = PSWIZB_BACK | PSWIZB_FINISH;
+            PropSheet_SetWizButtons(::GetParent(hDlg), btns);
+            ::SetWindowLongPtrW(hDlg, DWLP_MSGRESULT, 0);
+            return TRUE;
+        }
+        if (nm->code == PSN_WIZNEXT || nm->code == PSN_WIZFINISH) {
+            if (ctx->pageIndex == 0) {
+                d.modeIdx      = GetComboIndex(hDlg, 951);
+                d.productName  = ReadDlgItemUtf8(hDlg, 952);
+                d.version      = ReadDlgItemUtf8(hDlg, 953);
+                d.manufacturer = ReadDlgItemUtf8(hDlg, 954);
+                d.sourcePath   = ReadDlgItemUtf8(hDlg, 955);
+                if (!d.manufacturer.empty() && !d.productName.empty()) {
+                    d.defaultSubdir = d.manufacturer + "\\" + d.productName;
+                }
+            } else if (ctx->pageIndex == 1) {
+                d.execLevelIdx   = GetComboIndex(hDlg, 961);
+                d.perUserScope   = (GetComboIndex(hDlg, 962) == 0);
+                d.defaultSubdir  = ReadDlgItemUtf8(hDlg, 963);
+                d.extractToTemp  = IsDlgItemChecked(hDlg, 964);
+                d.allowChangeDir = IsDlgItemChecked(hDlg, 965);
+            } else {
+                d.postRunOrMainExe = ReadDlgItemUtf8(hDlg, 971);
+                d.postOpenDoc      = ReadDlgItemUtf8(hDlg, 972);
+                d.addShortcuts     = IsDlgItemChecked(hDlg, 973);
+                d.autoValidate     = IsDlgItemChecked(hDlg, 974);
+                d.completed        = true;
+            }
+            ::SetWindowLongPtrW(hDlg, DWLP_MSGRESULT, 0);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+inline bool RunSfxAndSimpleSetupAeroWizard(
+    HWND hOwner,
+    std::string& outGeneratedRsipUtf8,
+    bool& outAutoValidate,
+    const std::filesystem::path* exportShotPath = nullptr)
+{
+    SfxSimpleWizardData data{};
+    const wchar_t* headers[3] = {
+        L"Step 1 of 3 — Self-Extracting .EXE or Simple Native Setup",
+        L"Step 2 of 3 — Selectable UAC Execution Level & Destination",
+        L"Step 3 of 3 — Post-Extract Launch, Document Open & Shortcuts"
+    };
+    SfxSimplePageCtx ctxs[3]{};
+    LPARAM lParams[3]{};
+    for (int i = 0; i < 3; ++i) {
+        ctxs[i]    = {i, &data};
+        lParams[i] = reinterpret_cast<LPARAM>(&ctxs[i]);
+    }
+    RunThemedAeroWizard(
+        hOwner, L"Self-Extracting .EXE & Simple Native Setup Wizard",
+        3, headers, &SfxSimpleAeroPageProc, lParams,
+        ui::GlassGlyph::Cube, ui::brand::kRaggieBlue, exportShotPath);
+    if (!data.completed) return false;
+
+    const bool isSfx = (data.modeIdx == 0);
+    const char* execToks[] = {"asInvoker", "highestAvailable", "requireAdministrator"};
+    const char* execLvl = execToks[std::clamp(data.execLevelIdx, 0, 2)];
+
+    std::ostringstream s;
+    s << "; ==============================================================================\r\n"
+      << "; RaggieSoft " << (isSfx ? "Self-Extracting Archive (.EXE)" : "Simple Native Setup Project") << " (.rsip)\r\n"
+      << "; Ultra-compact single-dialog UI (WizardLayout = simple) with LZMS compression!\r\n"
+      << "; ==============================================================================\r\n\r\n"
+      << "[Package]\r\n"
+      << "Name                    = " << data.productName << "\r\n"
+      << "Version                 = " << data.version << "\r\n"
+      << "Manufacturer            = " << data.manufacturer << "\r\n";
+    if (isSfx) {
+        s << "PackageKind             = sfx\r\n";
+    } else {
+        s << "PackageKind             = msi\r\n"
+          << "Engine                  = native\r\n"
+          << "UpgradeCode             = " << GenerateRandomMsiGuid() << "\r\n"
+          << "Scope                   = " << (data.perUserScope ? "user" : "machine") << "\r\n";
+    }
+    s << "Architecture            = $(ARCH)\r\n"
+      << "RequestedExecutionLevel = " << execLvl << "\r\n\r\n";
+
+    if (!isSfx) {
+        s << "[Install]\r\n"
+          << "DefaultSubdir           = " << data.defaultSubdir << "\r\n"
+          << "AllowChangeFolder       = " << (data.allowChangeDir ? "true" : "false") << "\r\n";
+        if (!data.postRunOrMainExe.empty()) {
+            s << "MainExecutable          = " << data.postRunOrMainExe << "\r\n";
+        }
+        s << "\r\n";
+    } else {
+        s << "[SFX]\r\n"
+          << "DefaultExtractSubdir    = " << data.defaultSubdir << "\r\n"
+          << "ExtractToTemp           = " << (data.extractToTemp ? "true" : "false") << "\r\n"
+          << "AllowChangeFolder       = " << (data.allowChangeDir ? "true" : "false") << "\r\n";
+        if (!data.postRunOrMainExe.empty()) {
+            s << "PostExtractRun          = " << data.postRunOrMainExe << "\r\n";
+        }
+        if (!data.postOpenDoc.empty()) {
+            s << "PostExtractOpen         = " << data.postOpenDoc << "\r\n";
+        }
+        s << "\r\n";
+    }
+
+    s << "[UI]\r\n"
+      << "WizardLayout            = simple\r\n"
+      << "InstallButtonText       = " << (isSfx ? "&Extract" : "&Install") << "\r\n\r\n"
+      << "[Payload.Archive]\r\n"
+      << "Source                  = " << data.sourcePath << "\r\n";
+
+    if (!isSfx && data.addShortcuts && !data.postRunOrMainExe.empty()) {
+        s << "\r\n[Shortcut.StartMenuLink]\r\n"
+          << "Name                    = " << data.productName << "\r\n"
+          << "TargetFile              = " << data.postRunOrMainExe << "\r\n"
+          << "Location                = StartMenu\r\n"
+          << "\r\n[Shortcut.DesktopLink]\r\n"
+          << "Name                    = " << data.productName << "\r\n"
+          << "TargetFile              = " << data.postRunOrMainExe << "\r\n"
+          << "Location                = Desktop\r\n";
+    }
+
+    outGeneratedRsipUtf8 = s.str();
+    outAutoValidate      = data.autoValidate;
     return true;
 }
 

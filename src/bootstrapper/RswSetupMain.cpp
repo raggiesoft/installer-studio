@@ -47,6 +47,7 @@
 #include "../common/RswVersion.hpp"
 #include "../common/RswWcagContrast.hpp"
 #include "../common/RswWizardStyles.hpp"
+#include "RswCompactAndSuiteUi.hpp"
 
 #include <msi.h>
 #include <msiquery.h>
@@ -331,6 +332,7 @@ struct BrandingConfig {
     std::wstring authorOrArtist;
     std::string  setupTypePreset    = "express_custom";
     std::string  requestedExecLevel = "asInvoker";
+    std::string  externalMsiName;
     bool         systemMenuAbout    = false;
     std::vector<rsw::SetupTypeOptionSpec> setupTypes;
     std::vector<rsw::BillboardSlideSpec>  billboards;
@@ -440,6 +442,7 @@ BrandingConfig LoadBrandingConfigFromResource() {
     if (!kv["RequestedExecutionLevel"].empty()) {
         cfg.requestedExecLevel = std::string(rsw::NormalizeRequestedExecutionLevel(kv["RequestedExecutionLevel"]));
     }
+    cfg.externalMsiName = rsw::TrimAscii(kv["ExternalMsiFileName"]);
 
     // Parse optional `[SetupType.<id>]` custom setup type cards (`0..4`)
     std::vector<rsw::SetupTypeOptionSpec> customTypes;
@@ -546,6 +549,16 @@ std::vector<rsw::RuntimePrerequisiteSpec> LoadEmbeddedPrerequisitesFromResource(
         return {};
     }
     return rsw::ParsePrerequisiteTableIni(std::string_view(reinterpret_cast<const char*>(ptr), sz));
+}
+
+/// Loads embedded `.rswpak` on-demand feature pack specs (`#215`) stamped into `Setup.exe`.
+std::vector<rsw::FeaturePackRuntimeEntry> LoadEmbeddedFeaturePacksFromResource() {
+    const std::uint8_t* ptr = nullptr;
+    std::size_t sz = 0;
+    if (!GetEmbeddedRcDataView(rsw::kResIdFeaturePackManifest, ptr, sz) || sz == 0) {
+        return {};
+    }
+    return rsw::ParseFeaturePackManifestIni(std::string_view(reinterpret_cast<const char*>(ptr), sz));
 }
 
 /// Writes an embedded `RT_RCDATA` resource (`#201` `Product.msi` or `#300+i` runtime) to disk,
@@ -961,6 +974,7 @@ public:
     HIMAGELIST                                      hFeatStateIml      = nullptr;
     std::vector<rsw::RuntimePrerequisiteSpec>       prereqSpecs;
     std::vector<std::size_t>                        pendingPrereqIndices;
+    std::vector<rsw::FeaturePackRuntimeEntry>       featurePacks;
 
     // Standard Glass, Classic 3D, Fluent Mica, One-Click, & Autorun child controls
     HWND hModeCards[4] = {nullptr, nullptr, nullptr, nullptr};
@@ -1031,7 +1045,9 @@ public:
     }
 
     bool IsCompactOneClickSplash() const noexcept {
-        return (cfg.wizardStyle == rsw::WizardStyleKind::OneClick) && !oneClickExpanded && !alreadyInstalled;
+        return (cfg.wizardStyle == rsw::WizardStyleKind::OneClick ||
+                cfg.wizardStyle == rsw::WizardStyleKind::Simple) &&
+               !oneClickExpanded && !alreadyInstalled;
     }
 
     bool IsPassiveToastMode() const noexcept {
@@ -1316,6 +1332,15 @@ public:
                           (L"setupwizard-" + std::to_wstring(::GetCurrentProcessId()));
         }
         std::filesystem::create_directories(tempWorkDir, ec);
+        if (!cfg.externalMsiName.empty()) {
+            wchar_t selfBuf[MAX_PATH * 4]{};
+            ::GetModuleFileNameW(nullptr, selfBuf, static_cast<DWORD>(std::size(selfBuf)));
+            const auto sideMsi = std::filesystem::path(selfBuf).parent_path() / rsw::Utf8ToWide(cfg.externalMsiName);
+            if (std::filesystem::exists(sideMsi, ec)) {
+                tempMsiPath = sideMsi;
+                return true;
+            }
+        }
         if (tempMsiPath.empty()) {
             tempMsiPath = tempWorkDir / L"Product.msi";
         }
@@ -1336,6 +1361,14 @@ public:
                 alreadyInstalled ? installedProductCode : std::wstring{},
                 featureNodes)) {
             return;
+        }
+        // Attach `.rswpak` byte costs onto any `Delivery = ondemand` features!
+        for (auto& fn : featureNodes) {
+            for (const auto& fp : featurePacks) {
+                if (rsw::EqualsIgnoreCase(fn.id, fp.featureId) && fp.uncompressedBytes > 0) {
+                    fn.ownBytes += fp.uncompressedBytes;
+                }
+            }
         }
         featuresLoaded = true;
         const std::uint64_t selBytes = rsw::RefreshMsiFeatureRollupsAndTotalBytes(featureNodes);
@@ -1418,11 +1451,16 @@ public:
         constexpr UINT ID_ACT_SUBTREE    = 4002;
         constexpr UINT ID_ACT_ADVERTISED = 4003;
         constexpr UINT ID_ACT_ABSENT     = 4004;
+        constexpr UINT ID_ACT_RUN_SOURCE = 4005;
 
         ::AppendMenuW(hMenu, MF_STRING | ((fn.currentState == rsw::MsiTreeState::Local) ? MF_CHECKED : 0),
                       ID_ACT_LOCAL, L"&Will be installed on local hard drive");
         ::AppendMenuW(hMenu, MF_STRING | ((fn.currentState == rsw::MsiTreeState::EntireSubtree) ? MF_CHECKED : 0),
                       ID_ACT_SUBTREE, L"&Entire feature will be installed on local hard drive");
+        if (fn.allowRunFromSource) {
+            ::AppendMenuW(hMenu, MF_STRING | ((fn.currentState == rsw::MsiTreeState::RunFromSource) ? MF_CHECKED : 0),
+                          ID_ACT_RUN_SOURCE, L"Will be installed to run from &CD / network");
+        }
         if (fn.AllowAdvertise()) {
             ::AppendMenuW(hMenu, MF_STRING | ((fn.currentState == rsw::MsiTreeState::Advertised) ? MF_CHECKED : 0),
                           ID_ACT_ADVERTISED, L"Feature will be installed when &required");
@@ -1443,6 +1481,7 @@ public:
 
         if (picked == ID_ACT_LOCAL)           rsw::ApplyMsiFeatureActionRecursive(featureNodes, idx, rsw::MsiTreeState::Local);
         else if (picked == ID_ACT_SUBTREE)    rsw::ApplyMsiFeatureActionRecursive(featureNodes, idx, rsw::MsiTreeState::EntireSubtree);
+        else if (picked == ID_ACT_RUN_SOURCE) rsw::ApplyMsiFeatureActionRecursive(featureNodes, idx, rsw::MsiTreeState::RunFromSource);
         else if (picked == ID_ACT_ADVERTISED) rsw::ApplyMsiFeatureActionRecursive(featureNodes, idx, rsw::MsiTreeState::Advertised);
         else if (picked == ID_ACT_ABSENT)     rsw::ApplyMsiFeatureActionRecursive(featureNodes, idx, rsw::MsiTreeState::Absent);
         else return;
@@ -2880,6 +2919,51 @@ public:
                 });
 
             ::MsiSetExternalUIRecord(prevHandler, 0, nullptr, nullptr);
+
+            // Unpack any selected `Delivery = ondemand` `.rswpak` feature packs into `installDir`!
+            if ((rc == ERROR_SUCCESS || rc == ERROR_SUCCESS_REBOOT_REQUIRED) &&
+                selectedAction != SelectedAction::MaintUninstall &&
+                !featurePacks.empty() && !installDir.empty()) {
+                for (const auto& fp : featurePacks) {
+                    bool wantPack = (selectedAction != SelectedAction::InstallCompact);
+                    if (featuresLoaded && !featureNodes.empty()) {
+                        wantPack = false;
+                        for (const auto& fn : featureNodes) {
+                            if (rsw::EqualsIgnoreCase(fn.id, fp.featureId)) {
+                                wantPack = (fn.currentState == rsw::MsiTreeState::Local ||
+                                            fn.currentState == rsw::MsiTreeState::EntireSubtree);
+                                break;
+                            }
+                        }
+                    }
+                    if (!wantPack) continue;
+
+                    std::filesystem::path pakFile = selfExeDir / rsw::Utf8ToWide(fp.fileName);
+                    if (!std::filesystem::exists(pakFile, thEc) && !fp.downloadUrl.empty()) {
+                        pakFile = tempWorkDir / rsw::Utf8ToWide(fp.fileName);
+                        postStatus(L"Downloading feature pack: " + rsw::Utf8ToWide(fp.featureId) + L"...");
+                        std::string dlErr;
+                        if (!rsw::DownloadFileViaWinHttp(fp.downloadUrl, pakFile, &cancelRequested, nullptr, dlErr)) {
+                            std::lock_guard<std::mutex> lk(msgMutex);
+                            capturedErrorText = rsw::Utf8ToWide(dlErr);
+                            rc = ERROR_INSTALL_FAILURE;
+                            break;
+                        }
+                    }
+                    if (std::filesystem::exists(pakFile, thEc)) {
+                        postStatus(L"Verifying & unpacking feature pack: " + rsw::Utf8ToWide(fp.featureId) + L"...");
+                        std::string pkErr;
+                        if (!rsw::VerifyFeaturePackIntegrity(pakFile, fp.sha256Hex, false, pkErr) ||
+                            !rsw::ExtractRswPakFileToDirectory(pakFile, std::filesystem::path(installDir), &cancelRequested, nullptr, pkErr)) {
+                            std::lock_guard<std::mutex> lk(msgMutex);
+                            capturedErrorText = rsw::Utf8ToWide(pkErr);
+                            rc = ERROR_INSTALL_FAILURE;
+                            break;
+                        }
+                    }
+                }
+            }
+
             if (rc == ERROR_SUCCESS && anyPrereqRequestedReboot) {
                 rc = ERROR_SUCCESS_REBOOT_REQUIRED; // Latch prerequisite reboot request!
             }
@@ -5491,15 +5575,49 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         ::LocalFree(argv);
     }
 
-    // Fast automated self-check & `--elevated-msi-worker` flags
+    // Fast automated self-check, `--elevated-msi-worker`, `--elevated-native-worker`, & `--native-uninstall` flags
     for (std::size_t i = 0; i < args.size(); ++i) {
         if (args[i] == L"--elevated-msi-worker") {
             if (i + 1 >= args.size()) return ERROR_BAD_ARGUMENTS;
             return RunElevatedMsiWorkerFromJobFile(std::filesystem::path(args[i + 1]));
         }
+        if (args[i] == L"--elevated-native-worker") {
+            if (i + 1 >= args.size()) return ERROR_BAD_ARGUMENTS;
+            return rsw::compact_suite::RunElevatedNativeWorkerJob(std::filesystem::path(args[i + 1]));
+        }
+        if (args[i] == L"--native-uninstall") {
+            bool quietUninst = false;
+            for (const auto& ua : args) {
+                if (ua == L"/s" || ua == L"/S" || ua == L"/qn" || ua == L"/quiet" || ua == L"--silent") quietUninst = true;
+            }
+            wchar_t selfBuf[MAX_PATH * 4]{};
+            ::GetModuleFileNameW(nullptr, selfBuf, static_cast<DWORD>(std::size(selfBuf)));
+            const auto metaPath = std::filesystem::path(selfBuf).parent_path() / L"Uninstall.rswm";
+            if (!quietUninst) {
+                int chosen = IDNO;
+                ::TaskDialog(nullptr, hInstance, L"Application Uninstall",
+                             L"Remove Application?",
+                             L"Do you want to cleanly uninstall this application from your computer? Your personal documents will not be deleted.",
+                             TDCBF_YES_BUTTON | TDCBF_NO_BUTTON, TD_INFORMATION_ICON, &chosen);
+                if (chosen != IDYES) return ERROR_INSTALL_USEREXIT;
+            }
+            std::string unErr;
+            return rsw::ExecuteNativeUninstallFromMeta(metaPath, true, unErr) ? 0 : ERROR_INSTALL_FAILURE;
+        }
         if (args[i] == L"--self-check") {
             const auto hp = rsw::QueryHostPlatform();
             return (hp.majorVersion >= 10) ? 0 : 1;
+        }
+    }
+
+    // Unified Suite Chainer Mode (`PackageKind = suite` -> `kResIdSuiteManifest` `#230`!)
+    {
+        const std::uint8_t* suitePtr = nullptr;
+        std::size_t suiteSz = 0;
+        if (GetEmbeddedRcDataView(rsw::kResIdSuiteManifest, suitePtr, suiteSz) && suiteSz > 0) {
+            return rsw::compact_suite::RunSuiteChainerEntrypoint(
+                hInstance, nCmdShow, args,
+                std::string_view(reinterpret_cast<const char*>(suitePtr), suiteSz));
         }
     }
 
@@ -5511,6 +5629,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
             return RunUniversalInstallerDispatcher(
                 hInstance, nCmdShow, args,
                 std::string_view(reinterpret_cast<const char*>(univPtr), univSz));
+        }
+    }
+
+    // Lightweight Self-Extractor (`PackageKind = sfx`) & Zero-MSI Native Direct Engine (`Engine = native` — `#221`)!
+    {
+        const std::uint8_t* natPtr = nullptr;
+        std::size_t natSz = 0;
+        if (GetEmbeddedRcDataView(rsw::kResIdNativeManifest, natPtr, natSz) && natSz > 0) {
+            return rsw::compact_suite::RunNativeOrSfxEntrypoint(
+                hInstance, nCmdShow, args,
+                std::string_view(reinterpret_cast<const char*>(natPtr), natSz));
         }
     }
 
@@ -5666,9 +5795,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     ::InitCommonControlsEx(&icc);
 
     SetupWizardApp app{};
-    app.cfg         = LoadBrandingConfigFromResource();
-    app.prereqSpecs = LoadEmbeddedPrerequisitesFromResource();
-    app.instanceKey = rsw::DeriveProductInstanceKey(app.cfg.upgradeCode, app.cfg.manufacturer, app.cfg.productName);
+    app.cfg          = LoadBrandingConfigFromResource();
+    app.prereqSpecs  = LoadEmbeddedPrerequisitesFromResource();
+    app.featurePacks = LoadEmbeddedFeaturePacksFromResource();
+    app.instanceKey  = rsw::DeriveProductInstanceKey(app.cfg.upgradeCode, app.cfg.manufacturer, app.cfg.productName);
     if (!cliStyleOverride.empty()) {
         app.cfg.wizardStyle   = rsw::ParseWizardStyleKind(cliStyleOverride);
         app.cfg.isAutorun16x9 = (app.cfg.wizardStyle == rsw::WizardStyleKind::Autorun16x9);

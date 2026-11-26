@@ -287,6 +287,8 @@ inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>
      "Change-media prompt written to `Media.DiskPrompt` and `Property.DiskPrompt` (`Error 1302`)."},
 
     // --- [SFX] (Self-Extracting `.EXE` Options when `PackageKind = sfx`!) ---
+    {"SFX",      "DefaultExtractSubdir", FieldValueKind::RelativePath,false, "",                  "",
+     "Optional default subfolder name created next to the self-extracting `.exe` when `ExtractToTemp = false`."},
     {"SFX",      "PostExtractRun",       FieldValueKind::RelativePath,false, "",                  "",
      "Optional bundled `.exe` or `.cmd` (relative to the extraction folder) launched automatically after extraction completes."},
     {"SFX",      "PostExtractArgs",      FieldValueKind::String,      false, "",                  "",

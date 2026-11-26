@@ -128,8 +128,10 @@ int ProcessSingleProject(
         doc.SetString("Package", "", "UniversalDownloadBaseUrl", expandVer(pkgOverrides.webBaseUrl));
     }
 
+    const std::string pkgKind = rsw::AsciiLower(rsw::TrimAscii(doc.GetString("Package", "", "PackageKind", "msi")));
+    const std::string engine  = rsw::AsciiLower(rsw::TrimAscii(doc.GetString("Package", "", "Engine", "msi")));
     const bool buildUniversal = archOverride.empty() &&
-                                !rsw::EqualsIgnoreCase(doc.GetString("Package", "", "PackageKind", "msi"), "msm") &&
+                                pkgKind != "msm" && pkgKind != "suite" &&
                                 (forceUniversal || doc.GetBool("Package", "", "BuildUniversal", false));
 
     if (buildUniversal && !validateOnly) {
@@ -146,12 +148,20 @@ int ProcessSingleProject(
         rsw::CompiledMsiSummary x64Sum{}, arm64Sum{};
         std::filesystem::path x64Setup, arm64Setup;
         std::string buildErr;
-        if (!rsw::CompileManifestToMsi(doc, "x64", x64Sum, buildErr) ||
-            !rsw::PackageSelfExtractingBootstrapper(doc, x64Sum, compilerExeDir, x64Setup, buildErr) ||
-            !rsw::CompileManifestToMsi(doc, "arm64", arm64Sum, buildErr) ||
-            !rsw::PackageSelfExtractingBootstrapper(doc, arm64Sum, compilerExeDir, arm64Setup, buildErr)) {
-            std::cerr << "[ERROR] " << buildErr << "\n";
-            return 1;
+        if (pkgKind == "sfx" || engine == "native") {
+            if (!rsw::PackageNativeOrSfxExecutable(doc, "x64", compilerExeDir, x64Sum, x64Setup, buildErr) ||
+                !rsw::PackageNativeOrSfxExecutable(doc, "arm64", compilerExeDir, arm64Sum, arm64Setup, buildErr)) {
+                std::cerr << "[ERROR] " << buildErr << "\n";
+                return 1;
+            }
+        } else {
+            if (!rsw::CompileManifestToMsi(doc, "x64", x64Sum, buildErr) ||
+                !rsw::PackageSelfExtractingBootstrapper(doc, x64Sum, compilerExeDir, x64Setup, buildErr) ||
+                !rsw::CompileManifestToMsi(doc, "arm64", arm64Sum, buildErr) ||
+                !rsw::PackageSelfExtractingBootstrapper(doc, arm64Sum, compilerExeDir, arm64Setup, buildErr)) {
+                std::cerr << "[ERROR] " << buildErr << "\n";
+                return 1;
+            }
         }
 
         rsw::UniversalPackageOutputs univOut{};
@@ -195,7 +205,7 @@ int ProcessSingleProject(
         return report.IsOk() ? 0 : 1;
     }
 
-    if (rsw::EqualsIgnoreCase(doc.GetString("Package", "", "PackageKind", "msi"), "msm")) {
+    if (pkgKind == "msm") {
         std::filesystem::path outMsm;
         std::string err;
         if (!rsw::CompileManifestToMsm(doc, archOverride, {}, outMsm, err)) {
@@ -203,6 +213,41 @@ int ProcessSingleProject(
             return 1;
         }
         std::cout << "[OK] Compiled Merge Module (.msm): " << rsw::WideToUtf8(outMsm.wstring()) << "\n";
+        return 0;
+    }
+
+    if (pkgKind == "sfx" || engine == "native") {
+        rsw::CompiledMsiSummary natSum{};
+        std::filesystem::path outExe;
+        std::string buildErr;
+        if (!rsw::PackageNativeOrSfxExecutable(doc, archOverride, compilerExeDir, natSum, outExe, buildErr)) {
+            std::cerr << "[ERROR] " << buildErr << "\n";
+            return 1;
+        }
+        std::cout << "[OK] Compiled " << (pkgKind == "sfx" ? "Self-Extracting Archive (.exe)" : "Native Direct Installer (-setup.exe)")
+                  << " (" << natSum.architecture << ", " << natSum.fileCount << " file(s)):\n"
+                  << "     EXE  : " << rsw::WideToUtf8(outExe.wstring()) << "\n";
+        for (const auto& fp : natSum.featurePacks) {
+            std::cout << "     PACK : " << fp.fileName << " (SHA-256: " << fp.sha256Hex.substr(0, 16) << "...)\n";
+        }
+        if (emitVpatAlongside) {
+            std::filesystem::path vpatHtml;
+            if (rsw::EmitProjectInstallerVpatHtml(doc, outExe.parent_path(), vpatHtml, buildErr)) {
+                std::cout << "     VPAT : " << rsw::WideToUtf8(vpatHtml.wstring()) << "\n";
+            }
+        }
+        return 0;
+    }
+
+    if (pkgKind == "suite") {
+        std::filesystem::path suiteExe;
+        std::string buildErr;
+        if (!rsw::PackageUnifiedSuiteExecutable(doc, archOverride, compilerExeDir, suiteExe, buildErr)) {
+            std::cerr << "[ERROR] " << buildErr << "\n";
+            return 1;
+        }
+        std::cout << "[OK] Compiled Unified Suite Setup (ARPSYSTEMCOMPONENT adoption): "
+                  << rsw::WideToUtf8(suiteExe.wstring()) << "\n";
         return 0;
     }
 

@@ -34,6 +34,7 @@
 
 #include "../common/RswLzmsCompression.hpp"
 #include "../common/RswManifestAst.hpp"
+#include "../common/RswNativeAndSuiteEngine.hpp"
 #include "../common/RswPlatform.hpp"
 #include "../common/RswPrerequisites.hpp"
 #include "../common/RswVersion.hpp"
@@ -87,31 +88,6 @@ struct PeGrpIconDirEntry {
     std::uint16_t nID;        // Ordinal ID of corresponding `RT_ICON` resource!
 };
 #pragma pack(pop)
-
-/// Reads an entire binary file from disk into a `std::vector<std::uint8_t>`.
-inline bool ReadBinaryFileBytes(
-    const std::filesystem::path& path,
-    std::vector<std::uint8_t>& outBytes,
-    std::string& outError)
-{
-    std::ifstream in(path, std::ios::binary | std::ios::ate);
-    if (!in) {
-        outError = "Failed opening binary file for reading: " + WideToUtf8(path.wstring());
-        return false;
-    }
-    const auto sz = in.tellg();
-    if (sz < 0) {
-        outError = "Failed determining size of file: " + WideToUtf8(path.wstring());
-        return false;
-    }
-    outBytes.resize(static_cast<std::size_t>(sz));
-    in.seekg(0, std::ios::beg);
-    if (!outBytes.empty() && !in.read(reinterpret_cast<char*>(outBytes.data()), sz)) {
-        outError = "Failed reading bytes from file: " + WideToUtf8(path.wstring());
-        return false;
-    }
-    return true;
-}
 
 /// Parses `"Major.Minor.Build"` into 4 numeric 16-bit components `(Major, Minor, Build, 0)`
 /// for `VS_FIXEDFILEINFO` inside `RT_VERSION`.
@@ -759,7 +735,8 @@ inline bool PackageSelfExtractingBootstrapper(
                   "Choose a custom destination folder, Start Menu group, and shortcuts step by step before installing.")) << "\n"
              << "AuthorOrArtist="     << sanitizeSingleLine(doc.GetString("UI", "", "AuthorOrArtist", "")) << "\n"
              << "SetupTypePreset="    << sanitizeSingleLine(doc.GetString("UI", "", "SetupTypePreset", "express_custom")) << "\n"
-             << "SystemMenuAbout="    << (doc.GetBool("UI", "", "SystemMenuAbout", false) ? "true" : "false") << "\n";
+             << "SystemMenuAbout="    << (doc.GetBool("UI", "", "SystemMenuAbout", false) ? "true" : "false") << "\n"
+             << "ExternalMsiFileName="<< (msiSummary.usesExternalMedia ? sanitizeSingleLine(WideToUtf8(msiSummary.msiPath.filename().wstring())) : std::string{}) << "\n";
 
     // Serialize optional author-defined `[SetupType.<id>]` cards (`Typical`, `Compact`, `Complete`, custom presets)
     const auto setupTypeIds = doc.GetNamedSectionIds("SetupType");
@@ -824,6 +801,14 @@ inline bool PackageSelfExtractingBootstrapper(
     ok = ok && ::UpdateResourceW(
         hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdPrereqManifest), kLangNeutral,
         const_cast<char*>(prereqStr.data()), static_cast<DWORD>(prereqStr.size()));
+
+    std::string featPackStr;
+    if (!msiSummary.featurePacks.empty()) {
+        featPackStr = SerializeFeaturePackManifestIni(msiSummary.featurePacks);
+        ok = ok && ::UpdateResourceW(
+            hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdFeaturePackManifest), kLangNeutral,
+            const_cast<char*>(featPackStr.data()), static_cast<DWORD>(featPackStr.size()));
+    }
 
     for (const auto& ep : embeddedPrereqs) {
         ok = ok && ::UpdateResourceW(
@@ -944,6 +929,25 @@ inline bool IsX64PortableExecutable(const std::filesystem::path& exePath) noexce
         return false;
     }
     return fh.Machine == IMAGE_FILE_MACHINE_AMD64;
+}
+
+/// Locates the `SetupWizard.exe` native bootstrapper template matching `arch` (`"x64"` or `"arm64"`).
+inline std::filesystem::path LocateSetupBootstrapperTemplate(
+    const std::filesystem::path& compilerExeDir,
+    std::string_view arch)
+{
+    std::error_code ec;
+    const std::vector<std::filesystem::path> stubCandidates = {
+        compilerExeDir.parent_path() / Utf8ToWide(arch) / L"SetupWizard.exe",
+        compilerExeDir / Utf8ToWide(arch) / L"SetupWizard.exe",
+        compilerExeDir / L"SetupWizard.exe"
+    };
+    for (const auto& c : stubCandidates) {
+        if (std::filesystem::exists(c, ec)) {
+            return c;
+        }
+    }
+    return {};
 }
 
 /// Locates the `x64` (`IMAGE_FILE_MACHINE_AMD64`) `SetupWizard.exe` template used as the outer
@@ -1272,6 +1276,497 @@ inline bool PackageUniversalInstallers(
     }
 
     (void)arm64Summary;
+    return true;
+}
+
+/// Compiles either a lightweight Self-Extracting Archive (`PackageKind = sfx` -> `<OutputName>.exe`)
+/// OR a zero-`msi.dll` Direct Native Installer (`Engine = native` -> `<OutputName>-setup.exe`),
+/// supporting folder + `.zip` `[Payload.*]` inputs, `.rswpak` on-demand feature packs, selectable
+/// `RequestedExecutionLevel` (`asInvoker | highestAvailable | requireAdministrator`), custom `.ico`,
+/// publisher-owned `VERSIONINFO`, and Authenticode signing!
+inline bool PackageNativeOrSfxExecutable(
+    const RswManifestDocument& doc,
+    std::string_view cliArchOverride,
+    const std::filesystem::path& compilerExeDir,
+    CompiledMsiSummary& outSummary,
+    std::filesystem::path& outExePath,
+    std::string& outError)
+{
+    const ValidationReport val = ValidateManifestDocument(doc, cliArchOverride);
+    if (!val.IsOk()) {
+        outError = "Manifest validation failed (" + std::to_string(val.ErrorCount()) +
+                   " error(s)): " + val.diagnostics.front().message;
+        return false;
+    }
+
+    const std::string arch       = val.resolvedArchitecture;
+    const std::string pkgKindLow = AsciiLower(TrimAscii(doc.GetString("Package", "", "PackageKind", "msi")));
+    const bool isSfx             = (pkgKindLow == "sfx");
+
+    const std::filesystem::path baseDir = doc.sourcePath.empty()
+        ? std::filesystem::current_path()
+        : doc.sourcePath.parent_path();
+    auto resolvePath = [&](std::string_view raw) -> std::filesystem::path {
+        if (raw.empty()) return {};
+        std::string exp = ExpandArchToken(raw, arch);
+        std::filesystem::path p(Utf8ToWide(exp));
+        return (p.is_absolute() ? p : (baseDir / p)).lexically_normal();
+    };
+
+    outSummary = CompiledMsiSummary{};
+    outSummary.architecture        = arch;
+    outSummary.productName         = ExpandArchToken(doc.GetString("Package", "", "Name"), arch);
+    outSummary.productVersion      = ExpandArchToken(doc.GetString("Package", "", "Version"), arch);
+    outSummary.manufacturer        = ExpandArchToken(doc.GetString("Package", "", "Manufacturer"), arch);
+    outSummary.perMachine          = !isSfx && EqualsIgnoreCase(doc.GetString("Package", "", "Scope", "machine"), "machine");
+    outSummary.minWindowsBuild     = doc.GetInt("Requirements", "", "MinWindowsBuild", 22000);
+    outSummary.osLaunchMessage     = doc.GetString("Requirements", "", "OsLaunchMessage", "This application requires Windows 11 (Build 22000) or later.");
+    const std::string rawDefaultSub = isSfx
+        ? doc.GetString("SFX", "", "DefaultExtractSubdir", doc.GetString("Install", "", "DefaultSubdir"))
+        : doc.GetString("Install", "", "DefaultSubdir");
+    outSummary.defaultSubdir       = ExpandArchToken(rawDefaultSub, arch);
+    outSummary.mainExeRel          = ExpandArchToken(doc.GetString("Install", "", "MainExecutable"), arch);
+    outSummary.installBtnText      = doc.GetString("UI", "", "InstallButtonText", isSfx ? "&Extract" : "&Install");
+    outSummary.launchChkText       = doc.GetString("UI", "", "FinishLaunchCheckbox", "&Launch application when finished");
+    outSummary.offerLaunchOnFinish = doc.GetBool("UI", "", "OfferLaunchOnFinish", true);
+    outSummary.iconFilePath        = resolvePath(doc.GetString("UI", "", "IconFile"));
+
+    const std::string rawUpg = doc.GetString("Package", "", "UpgradeCode");
+    if (!rawUpg.empty()) {
+        NormalizeMsiGuid(rawUpg, outSummary.upgradeCode);
+    } else {
+        outSummary.upgradeCode = ComputeDeterministicComponentGuid(
+            "{A18F4E20-7C93-4D62-9B44-524147474945}", arch,
+            "sfx:" + outSummary.manufacturer + ":" + outSummary.productName);
+    }
+    outSummary.productCode = ComputeDeterministicComponentGuid(
+        outSummary.upgradeCode, arch, "productcode:" + outSummary.productVersion);
+
+    const std::string rawOutName = ExpandArchToken(doc.GetString("Package", "", "OutputName"), arch);
+    const std::string outStem    = rawOutName.empty()
+        ? (SlugifyName(outSummary.productName) + "-" + arch)
+        : rawOutName;
+    const std::filesystem::path outDir = resolvePath(doc.GetString("Package", "", "OutputDir", "out"));
+    std::error_code ec;
+    std::filesystem::create_directories(outDir, ec);
+    outExePath = outDir / Utf8ToWide(isSfx ? (outStem + ".exe") : (outStem + "-setup.exe"));
+
+    const std::filesystem::path stubTemplate = LocateSetupBootstrapperTemplate(compilerExeDir, arch);
+    if (stubTemplate.empty()) {
+        outError = "Could not locate SetupWizard.exe template binary for '" + arch + "'.";
+        return false;
+    }
+
+    // Collect on-demand feature IDs (`[Feature.<Id>] Delivery = ondemand`)
+    std::set<std::string> onDemandFeatLower;
+    for (const auto& fid : doc.GetNamedSectionIds("Feature")) {
+        if (!isSfx && EqualsIgnoreCase(doc.GetString("Feature", fid, "Delivery", "embedded"), "ondemand")) {
+            onDemandFeatLower.insert(AsciiLower(fid));
+        }
+    }
+
+    // Harvest `[Payload.*]` files, folders, and `.zip` archives into `RSWPAK1`!
+    const auto scratchDir = std::filesystem::temp_directory_path(ec) /
+                            (L"rsw-natpkg-" + std::to_wstring(::GetCurrentProcessId()));
+    std::filesystem::create_directories(scratchDir, ec);
+
+    std::vector<RswPakInputItem> embeddedItems;
+    std::vector<RswPakInputItem> onDemandItems;
+    std::size_t zipCounter = 0;
+
+    for (const auto& pid : doc.GetNamedSectionIds("Payload")) {
+        const auto absSrc       = resolvePath(doc.GetString("Payload", pid, "Source"));
+        const std::string tRoot = doc.GetString("Payload", pid, "TargetRoot", "INSTALLDIR");
+        const std::string sub   = ExpandArchToken(doc.GetString("Payload", pid, "TargetSubdir"), arch);
+        const bool recursive    = doc.GetBool("Payload", pid, "Recursive", true);
+        const std::string feat  = doc.GetString("Payload", pid, "Feature", "Main");
+        const bool isOnDemand   = (onDemandFeatLower.count(AsciiLower(feat)) > 0);
+
+        auto pushFile = [&](const std::filesystem::path& srcFile, const std::string& relDir) {
+            const std::string fn = WideToUtf8(srcFile.filename().wstring());
+            std::string relPath  = relDir.empty() ? fn : (relDir + "/" + fn);
+            std::string archPath = isSfx ? relPath : (tRoot + "/" + relPath);
+            if (isOnDemand) onDemandItems.push_back({srcFile, archPath, feat});
+            else embeddedItems.push_back({srcFile, archPath, feat});
+        };
+
+        auto harvestDir = [&](const std::filesystem::path& rootDir) {
+            std::vector<std::filesystem::path> found;
+            if (recursive) {
+                for (const auto& de : std::filesystem::recursive_directory_iterator(rootDir, ec)) {
+                    if (de.is_regular_file(ec)) found.push_back(de.path());
+                }
+            } else {
+                for (const auto& de : std::filesystem::directory_iterator(rootDir, ec)) {
+                    if (de.is_regular_file(ec)) found.push_back(de.path());
+                }
+            }
+            std::wstring basePfx = rootDir.lexically_normal().generic_wstring();
+            while (!basePfx.empty() && basePfx.back() == L'/') basePfx.pop_back();
+            std::sort(found.begin(), found.end());
+            for (const auto& fp : found) {
+                std::wstring parGen = fp.parent_path().lexically_normal().generic_wstring();
+                while (!parGen.empty() && parGen.back() == L'/') parGen.pop_back();
+                std::string relPar;
+                if (parGen.size() > basePfx.size() &&
+                    _wcsnicmp(parGen.c_str(), basePfx.c_str(), basePfx.size()) == 0 &&
+                    parGen[basePfx.size()] == L'/') {
+                    relPar = WideToUtf8(parGen.substr(basePfx.size() + 1));
+                }
+                std::string combined = sub.empty() ? relPar : (relPar.empty() ? sub : (sub + "/" + relPar));
+                pushFile(fp, combined);
+            }
+        };
+
+        if (std::filesystem::is_regular_file(absSrc, ec) && IsZipArchivePath(absSrc)) {
+            const auto zDir = scratchDir / ("zip-" + std::to_string(++zipCounter));
+            std::vector<std::filesystem::path> zFiles;
+            if (!ExtractZipArchiveToDirectory(absSrc, zDir, zFiles, outError)) {
+                std::filesystem::remove_all(scratchDir, ec);
+                return false;
+            }
+            harvestDir(zDir);
+        } else if (std::filesystem::is_regular_file(absSrc, ec)) {
+            pushFile(absSrc, sub);
+        } else if (std::filesystem::is_directory(absSrc, ec)) {
+            harvestDir(absSrc);
+        }
+    }
+
+    if (embeddedItems.empty() && onDemandItems.empty()) {
+        std::filesystem::remove_all(scratchDir, ec);
+        outError = "No payload files were matched by [Payload.*] for " + std::string(isSfx ? "SFX" : "Native") + " packaging.";
+        return false;
+    }
+
+    std::vector<std::uint8_t> pakBytes;
+    std::uint64_t uncompTotal = 0;
+    if (!BuildRswPakBytes(embeddedItems, pakBytes, uncompTotal, outError)) {
+        std::filesystem::remove_all(scratchDir, ec);
+        return false;
+    }
+    outSummary.fileCount = embeddedItems.size() + onDemandItems.size();
+
+    // Emit any external `.rswpak` feature packs (`[Feature.<Id>] Delivery = ondemand`)
+    std::string univDlBase = TrimAscii(doc.GetString("Package", "", "UniversalDownloadBaseUrl"));
+    while (!univDlBase.empty() && univDlBase.back() == '/') univDlBase.pop_back();
+    for (const auto& fid : doc.GetNamedSectionIds("Feature")) {
+        if (onDemandFeatLower.count(AsciiLower(fid)) == 0) continue;
+        std::vector<RswPakInputItem> fItems;
+        for (const auto& it : onDemandItems) {
+            if (EqualsIgnoreCase(it.featureId, fid)) fItems.push_back(it);
+        }
+        if (fItems.empty()) continue;
+        const std::string pakName = outStem + "-" + SlugifyName(fid) + ".rswpak";
+        const auto pakPath = outDir / Utf8ToWide(pakName);
+        std::uint64_t fBytes = 0;
+        std::string fSha;
+        if (!WriteRswPakFile(fItems, pakPath, fBytes, fSha, outError)) {
+            std::filesystem::remove_all(scratchDir, ec);
+            return false;
+        }
+        std::string url = ExpandArchToken(doc.GetString("Feature", fid, "PackUrl"), arch);
+        if (url.empty() && !univDlBase.empty()) url = univDlBase + "/" + pakName;
+        outSummary.featurePacks.push_back({fid, pakName, url, fSha, fBytes});
+    }
+
+    // Build `NativeOrSfxManifest` (`#221`)
+    const std::string requestedExecLvl = std::string(
+        NormalizeRequestedExecutionLevel(doc.GetString("Package", "", "RequestedExecutionLevel", "asInvoker")));
+
+    NativeOrSfxManifest nm{};
+    nm.mode                  = isSfx ? "sfx" : "native";
+    nm.productName           = outSummary.productName;
+    nm.tagline               = ExpandArchToken(doc.GetString("Package", "", "Tagline"), arch);
+    nm.websiteLabel          = doc.GetString("Package", "", "WebsiteLabel");
+    nm.version               = outSummary.productVersion;
+    nm.manufacturer          = outSummary.manufacturer;
+    nm.upgradeCode           = outSummary.upgradeCode;
+    nm.productCode           = outSummary.productCode;
+    nm.architecture          = arch;
+    nm.perMachine            = outSummary.perMachine;
+    nm.requestedExecLevel    = requestedExecLvl;
+    nm.hideFromInstalledApps = doc.GetBool("Package", "", "HideFromInstalledApps", false);
+    nm.aboutUrl              = doc.GetString("Package", "", "AboutUrl");
+    nm.minWindowsBuild       = outSummary.minWindowsBuild;
+    nm.osLaunchMessage       = outSummary.osLaunchMessage;
+    nm.silentRebootCode      = doc.GetInt("Requirements", "", "SilentRebootExitCode", 3010);
+    nm.defaultSubdir         = outSummary.defaultSubdir;
+    nm.startMenuFolder       = ExpandArchToken(doc.GetString("Install", "", "StartMenuFolder", outSummary.manufacturer), arch);
+    nm.mainExecutable        = outSummary.mainExeRel;
+    nm.wizardLayout          = doc.GetString("UI", "", "WizardLayout", "simple");
+    nm.accentPrimaryHex      = doc.GetString("UI", "", "AccentPrimaryHex", "#2563EB");
+    nm.accentSecondaryHex    = doc.GetString("UI", "", "AccentSecondaryHex", "#FBBF24");
+    nm.installBtnText        = outSummary.installBtnText;
+    nm.finishLaunchText      = outSummary.launchChkText;
+    nm.offerLaunchOnFinish   = outSummary.offerLaunchOnFinish;
+    nm.uncompressedBytes     = uncompTotal;
+
+    nm.postExtractRun    = ExpandArchToken(doc.GetString("SFX", "", "PostExtractRun"), arch);
+    nm.postExtractArgs   = ExpandArchToken(doc.GetString("SFX", "", "PostExtractArgs"), arch);
+    nm.postExtractOpen   = ExpandArchToken(doc.GetString("SFX", "", "PostExtractOpen"), arch);
+    nm.extractToTemp     = doc.GetBool("SFX", "", "ExtractToTemp", false);
+    nm.allowChangeFolder = doc.GetBool("SFX", "", "AllowChangeFolder", true);
+    nm.silentOverwrite   = doc.GetBool("SFX", "", "SilentOverwrite", true);
+
+    if (!isSfx) {
+        for (const auto& flId : doc.GetNamedSectionIds("Folder")) {
+            nm.folders.push_back({
+                doc.GetString("Folder", flId, "TargetRoot", "INSTALLDIR"),
+                ExpandArchToken(doc.GetString("Folder", flId, "TargetSubdir"), arch),
+                doc.GetString("Folder", flId, "Feature", "Main"),
+                doc.GetBool("Folder", flId, "RemoveOnUninstall", true)
+            });
+        }
+        for (const auto& sid : doc.GetNamedSectionIds("Shortcut")) {
+            nm.shortcuts.push_back({
+                sid,
+                ExpandArchToken(doc.GetString("Shortcut", sid, "Name"), arch),
+                ExpandArchToken(doc.GetString("Shortcut", sid, "TargetFile"), arch),
+                doc.GetString("Shortcut", sid, "Location", "StartMenu"),
+                ExpandArchToken(doc.GetString("Shortcut", sid, "Arguments"), arch),
+                ExpandArchToken(doc.GetString("Shortcut", sid, "Description"), arch),
+                doc.GetString("Shortcut", sid, "Feature", "Main")
+            });
+        }
+        for (const auto& rid : doc.GetNamedSectionIds("Registry")) {
+            nm.registries.push_back({
+                doc.GetString("Registry", rid, "Root", outSummary.perMachine ? "HKLM" : "HKCU"),
+                ExpandArchToken(doc.GetString("Registry", rid, "Key"), arch),
+                ExpandArchToken(doc.GetString("Registry", rid, "Name"), arch),
+                ExpandArchToken(doc.GetString("Registry", rid, "Value"), arch),
+                doc.GetString("Registry", rid, "Type", "string"),
+                doc.GetString("Registry", rid, "Feature", "Main")
+            });
+        }
+        for (const auto& aid : doc.GetNamedSectionIds("FileAssociation")) {
+            nm.fileAssocs.push_back({
+                ExpandArchToken(doc.GetString("FileAssociation", aid, "Extension"), arch),
+                ExpandArchToken(doc.GetString("FileAssociation", aid, "ProgId"), arch),
+                ExpandArchToken(doc.GetString("FileAssociation", aid, "Description"), arch),
+                ExpandArchToken(doc.GetString("FileAssociation", aid, "TargetFile"), arch),
+                ExpandArchToken(doc.GetString("FileAssociation", aid, "Verbs", "open:&Open:\"%1\""), arch),
+                doc.GetString("FileAssociation", aid, "ContentType"),
+                doc.GetString("FileAssociation", aid, "PerceivedType"),
+                doc.GetInt("FileAssociation", aid, "IconIndex", 0),
+                doc.GetString("FileAssociation", aid, "Feature", "Main")
+            });
+        }
+    }
+
+    const std::string nmText = SerializeNativeOrSfxManifestIni(nm);
+    const std::filesystem::path stageExe = scratchDir / L"stage-out.exe";
+    if (!std::filesystem::copy_file(stubTemplate, stageExe, std::filesystem::copy_options::overwrite_existing, ec)) {
+        std::filesystem::remove_all(scratchDir, ec);
+        outError = "Failed copying SetupWizard.exe stub to scratch staging.";
+        return false;
+    }
+    StripExistingPeCertificates(stageExe);
+    const auto existingLangs = QueryExistingPeManifestLangIds(stageExe);
+
+    HANDLE hRes = ::BeginUpdateResourceW(stageExe.wstring().c_str(), FALSE);
+    if (!hRes) {
+        std::filesystem::remove_all(scratchDir, ec);
+        outError = "BeginUpdateResourceW failed while building " + std::string(isSfx ? "SFX" : "Native") + " EXE.";
+        return false;
+    }
+
+    constexpr WORD kLangNeutral = MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL);
+    bool ok = true;
+    ok = ok && ::UpdateResourceW(
+        hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdSfxOrNativeArchive), kLangNeutral,
+        pakBytes.data(), static_cast<DWORD>(pakBytes.size()));
+    ok = ok && ::UpdateResourceW(
+        hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdNativeManifest), kLangNeutral,
+        const_cast<char*>(nmText.data()), static_cast<DWORD>(nmText.size()));
+
+    std::string fpStr;
+    if (!outSummary.featurePacks.empty()) {
+        fpStr = SerializeFeaturePackManifestIni(outSummary.featurePacks);
+        ok = ok && ::UpdateResourceW(
+            hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdFeaturePackManifest), kLangNeutral,
+            const_cast<char*>(fpStr.data()), static_cast<DWORD>(fpStr.size()));
+    }
+
+    const std::string origFileName = WideToUtf8(outExePath.filename().wstring());
+    const std::string fileDesc     = doc.GetString("Package", "", "Description",
+                                       outSummary.productName + (isSfx ? " Self-Extracting Archive" : " Setup"));
+    ok = ok && StampIconAndVersionOnExeResource(
+        hRes, outSummary.iconFilePath, outSummary.manufacturer, fileDesc,
+        outSummary.productVersion, outStem, origFileName, outSummary.productName, outError);
+    ok = ok && StampExecutionLevelManifestOnResource(hRes, existingLangs, requestedExecLvl);
+
+    if (!::EndUpdateResourceW(hRes, !ok) || !ok) {
+        std::filesystem::remove_all(scratchDir, ec);
+        outError = "EndUpdateResourceW failed while stamping '" + origFileName + "'.";
+        return false;
+    }
+
+    if (!RunAuthenticodeSignTool(doc, stageExe, outError)) {
+        std::filesystem::remove_all(scratchDir, ec);
+        return false;
+    }
+    std::filesystem::remove(outExePath, ec);
+    if (!std::filesystem::copy_file(stageExe, outExePath, std::filesystem::copy_options::overwrite_existing, ec)) {
+        std::filesystem::remove_all(scratchDir, ec);
+        outError = "Could not write output executable to '" + WideToUtf8(outExePath.wstring()) + "'.";
+        return false;
+    }
+    std::filesystem::remove_all(scratchDir, ec);
+    return true;
+}
+
+/// Compiles a Unified Suite Setup (`PackageKind = suite` -> `<OutputName>-setup.exe`) chaining
+/// multiple child `.msi` and `Engine = native` packages under ONE UAC prompt and ONE Suite
+/// Maintenance entry in Windows *Installed apps* (`RS_SUITE_MANAGED=1` adoption)!
+inline bool PackageUnifiedSuiteExecutable(
+    const RswManifestDocument& doc,
+    std::string_view cliArchOverride,
+    const std::filesystem::path& compilerExeDir,
+    std::filesystem::path& outSuiteExePath,
+    std::string& outError)
+{
+    const ValidationReport val = ValidateManifestDocument(doc, cliArchOverride);
+    if (!val.IsOk()) {
+        outError = "Suite manifest validation failed (" + std::to_string(val.ErrorCount()) +
+                   " error(s)): " + val.diagnostics.front().message;
+        return false;
+    }
+
+    const std::string arch = val.resolvedArchitecture;
+    const std::filesystem::path baseDir = doc.sourcePath.empty()
+        ? std::filesystem::current_path()
+        : doc.sourcePath.parent_path();
+    auto resolvePath = [&](std::string_view raw) -> std::filesystem::path {
+        if (raw.empty()) return {};
+        std::string exp = ExpandArchToken(raw, arch);
+        std::filesystem::path p(Utf8ToWide(exp));
+        return (p.is_absolute() ? p : (baseDir / p)).lexically_normal();
+    };
+
+    const std::filesystem::path stubTemplate = LocateSetupBootstrapperTemplate(compilerExeDir, arch);
+    if (stubTemplate.empty()) {
+        outError = "Could not locate SetupWizard.exe template binary for '" + arch + "'.";
+        return false;
+    }
+
+    SuiteChainerManifest sm{};
+    sm.suiteName          = ExpandArchToken(doc.GetString("Package", "", "Name"), arch);
+    sm.tagline            = ExpandArchToken(doc.GetString("Package", "", "Tagline", "Unified Application Suite"), arch);
+    sm.websiteLabel       = doc.GetString("Package", "", "WebsiteLabel");
+    sm.version            = ExpandArchToken(doc.GetString("Package", "", "Version", "1.0.0"), arch);
+    sm.manufacturer       = ExpandArchToken(doc.GetString("Package", "", "Manufacturer", "RaggieSoft"), arch);
+    NormalizeMsiGuid(doc.GetString("Package", "", "UpgradeCode"), sm.upgradeCode);
+    sm.architecture       = arch;
+    sm.perMachine         = EqualsIgnoreCase(doc.GetString("Package", "", "Scope", "machine"), "machine");
+    sm.requestedExecLevel = std::string(NormalizeRequestedExecutionLevel(
+        doc.GetString("Package", "", "RequestedExecutionLevel", "asInvoker")));
+    sm.minWindowsBuild    = doc.GetInt("Requirements", "", "MinWindowsBuild", 22000);
+    sm.osLaunchMessage    = doc.GetString("Requirements", "", "OsLaunchMessage", "This suite requires Windows 11 (Build 22000) or later.");
+    sm.defaultSubdir      = ExpandArchToken(doc.GetString("Install", "", "DefaultSubdir", sm.manufacturer + "\\" + sm.suiteName), arch);
+    sm.accentPrimaryHex   = doc.GetString("UI", "", "AccentPrimaryHex", "#2563EB");
+    sm.accentSecondaryHex = doc.GetString("UI", "", "AccentSecondaryHex", "#FBBF24");
+
+    struct EmbeddedSuiteBlob {
+        int                       resId = 0;
+        std::vector<std::uint8_t> compBytes;
+    };
+    std::vector<EmbeddedSuiteBlob> childBlobs;
+
+    const auto spIds = doc.GetNamedSectionIds("SuitePackage");
+    for (std::size_t i = 0; i < spIds.size(); ++i) {
+        const auto& spId   = spIds[i];
+        const auto srcPath = resolvePath(doc.GetString("SuitePackage", spId, "Source"));
+        std::vector<std::uint8_t> rawBytes;
+        if (!ReadBinaryFileBytes(srcPath, rawBytes, outError)) {
+            return false;
+        }
+        std::string shaHex;
+        if (!ComputeFileSha256Hex(srcPath, shaHex)) {
+            outError = "Failed computing SHA-256 for SuitePackage '" + spId + "'.";
+            return false;
+        }
+
+        SuiteChildSpec ch{};
+        ch.id                = spId;
+        ch.name              = ExpandArchToken(doc.GetString("SuitePackage", spId, "Name", spId), arch);
+        ch.description       = ExpandArchToken(doc.GetString("SuitePackage", spId, "Description"), arch);
+        ch.fileName          = WideToUtf8(srcPath.filename().wstring());
+        const std::string rawChUpg = doc.GetString("SuitePackage", spId, "UpgradeCode");
+        if (!rawChUpg.empty()) NormalizeMsiGuid(rawChUpg, ch.upgradeCode);
+        ch.engine            = AsciiLower(doc.GetString("SuitePackage", spId, "Engine",
+                                   EqualsIgnoreCase(WideToUtf8(srcPath.extension().wstring()), ".msi") ? "msi" : "native"));
+        ch.installArgs       = ExpandArchToken(doc.GetString("SuitePackage", spId, "InstallArgs"), arch);
+        ch.sha256Hex         = shaHex;
+        ch.uncompressedBytes = static_cast<std::uint64_t>(rawBytes.size());
+        ch.embeddedResId     = kResIdSuiteChildBase + static_cast<int>(i);
+        ch.required          = doc.GetBool("SuitePackage", spId, "Required", false);
+        ch.selectedByDefault = doc.GetBool("SuitePackage", spId, "SelectedByDefault", true);
+        ch.adoptStandalone   = doc.GetBool("SuitePackage", spId, "AdoptStandalone", true);
+
+        sm.children.push_back(std::move(ch));
+        childBlobs.push_back({kResIdSuiteChildBase + static_cast<int>(i), CompressWithLzmsIfSmaller(rawBytes)});
+    }
+
+    const std::string rawOutName = ExpandArchToken(doc.GetString("Package", "", "OutputName"), arch);
+    const std::string outStem    = rawOutName.empty()
+        ? (SlugifyName(sm.suiteName) + "-" + arch)
+        : rawOutName;
+    const std::filesystem::path outDir = resolvePath(doc.GetString("Package", "", "OutputDir", "out"));
+    std::error_code ec;
+    std::filesystem::create_directories(outDir, ec);
+    outSuiteExePath = outDir / Utf8ToWide(outStem + "-setup.exe");
+
+    const auto scratchStage = std::filesystem::temp_directory_path(ec) /
+                              (L"rsw-suite-stage-" + std::to_wstring(::GetCurrentProcessId()) + L".exe");
+    if (!std::filesystem::copy_file(stubTemplate, scratchStage, std::filesystem::copy_options::overwrite_existing, ec)) {
+        outError = "Failed copying SetupWizard.exe stub for Suite packaging.";
+        return false;
+    }
+    StripExistingPeCertificates(scratchStage);
+    const auto existingLangs = QueryExistingPeManifestLangIds(scratchStage);
+
+    HANDLE hRes = ::BeginUpdateResourceW(scratchStage.wstring().c_str(), FALSE);
+    if (!hRes) {
+        std::filesystem::remove(scratchStage, ec);
+        outError = "BeginUpdateResourceW failed on Suite setup EXE.";
+        return false;
+    }
+
+    constexpr WORD kLangNeutral = MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL);
+    const std::string smText = SerializeSuiteChainerManifestIni(sm);
+    bool ok = ::UpdateResourceW(
+        hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdSuiteManifest), kLangNeutral,
+        const_cast<char*>(smText.data()), static_cast<DWORD>(smText.size()));
+    for (const auto& cb : childBlobs) {
+        ok = ok && ::UpdateResourceW(
+            hRes, RT_RCDATA, MAKEINTRESOURCEW(cb.resId), kLangNeutral,
+            const_cast<std::uint8_t*>(cb.compBytes.data()), static_cast<DWORD>(cb.compBytes.size()));
+    }
+
+    const auto iconPath        = resolvePath(doc.GetString("UI", "", "IconFile"));
+    const std::string origFile = WideToUtf8(outSuiteExePath.filename().wstring());
+    const std::string desc     = doc.GetString("Package", "", "Description", sm.suiteName + " Unified Suite Setup");
+    ok = ok && StampIconAndVersionOnExeResource(
+        hRes, iconPath, sm.manufacturer, desc, sm.version, outStem, origFile, sm.suiteName, outError);
+    ok = ok && StampExecutionLevelManifestOnResource(hRes, existingLangs, sm.requestedExecLevel);
+
+    if (!::EndUpdateResourceW(hRes, !ok) || !ok) {
+        std::filesystem::remove(scratchStage, ec);
+        outError = "EndUpdateResourceW failed while stamping Suite setup EXE.";
+        return false;
+    }
+    if (!RunAuthenticodeSignTool(doc, scratchStage, outError)) {
+        std::filesystem::remove(scratchStage, ec);
+        return false;
+    }
+    std::filesystem::remove(outSuiteExePath, ec);
+    if (!std::filesystem::copy_file(scratchStage, outSuiteExePath, std::filesystem::copy_options::overwrite_existing, ec)) {
+        std::filesystem::remove(scratchStage, ec);
+        outError = "Failed copying Suite setup EXE to '" + WideToUtf8(outSuiteExePath.wstring()) + "'.";
+        return false;
+    }
+    std::filesystem::remove(scratchStage, ec);
     return true;
 }
 

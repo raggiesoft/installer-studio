@@ -159,6 +159,31 @@ inline std::string ComputeDeterministicComponentGuid(
     return FormatRfc4122BytesAsMsiGuid(uuidBytes);
 }
 
+/// Reads an entire binary file from disk into a `std::vector<std::uint8_t>`.
+inline bool ReadBinaryFileBytes(
+    const std::filesystem::path& path,
+    std::vector<std::uint8_t>& outBytes,
+    std::string& outError)
+{
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    if (!in) {
+        outError = "Failed opening binary file for reading: " + WideToUtf8(path.wstring());
+        return false;
+    }
+    const auto sz = in.tellg();
+    if (sz < 0) {
+        outError = "Failed determining size of file: " + WideToUtf8(path.wstring());
+        return false;
+    }
+    outBytes.resize(static_cast<std::size_t>(sz));
+    in.seekg(0, std::ios::beg);
+    if (!outBytes.empty() && !in.read(reinterpret_cast<char*>(outBytes.data()), sz)) {
+        outError = "Failed reading bytes from file: " + WideToUtf8(path.wstring());
+        return false;
+    }
+    return true;
+}
+
 /// Computes an uppercase SHA-256 hex digest of a file on disk using `bcrypt.dll`.
 inline std::string ComputeFileSha256Hex(const std::filesystem::path& filePath) {
     std::ifstream in(filePath, std::ios::binary);

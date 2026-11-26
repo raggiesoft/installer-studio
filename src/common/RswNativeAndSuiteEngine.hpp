@@ -156,6 +156,95 @@ struct NativeOrSfxManifest {
 
 namespace native_detail {
 
+/// Optional dependency-injected virtual registry backing folder (`RSW_TEST_REG_STORE_DIR`) used
+/// exclusively by `insttests.exe` when running inside zero-registry CI sandboxes (`ERROR_ACCESS_DENIED`).
+/// Returns an empty path in 100% of normal desktop runs so real Win32 `HKLM`/`HKCU` APIs are used directly.
+inline std::filesystem::path GetVirtualRegistryStoreRoot() {
+    wchar_t buf[MAX_PATH * 4]{};
+    const DWORD n = ::GetEnvironmentVariableW(L"RSW_TEST_REG_STORE_DIR", buf, static_cast<DWORD>(std::size(buf)));
+    if (n == 0 || n >= std::size(buf)) return {};
+    return std::filesystem::path(buf);
+}
+
+inline std::filesystem::path ResolveVirtualRegKeyDir(
+    const std::filesystem::path& storeRoot,
+    std::string_view rootCode,
+    std::wstring_view subKey)
+{
+    std::wstring normSub(subKey);
+    for (wchar_t& ch : normSub) {
+        if (ch == L'/') ch = L'\\';
+    }
+    while (!normSub.empty() && normSub.front() == L'\\') normSub.erase(normSub.begin());
+    return (storeRoot / Utf8ToWide(AsciiLower(rootCode)) / normSub).lexically_normal();
+}
+
+inline std::wstring VirtualRegValueFileName(std::wstring_view valName) {
+    if (valName.empty()) return L"_default_.regval";
+    std::wstring clean(valName);
+    for (wchar_t& ch : clean) {
+        if (ch == L'\\' || ch == L'/' || ch == L':' || ch == L'*' || ch == L'?' || ch == L'"' || ch == L'<' || ch == L'>' || ch == L'|') {
+            ch = L'_';
+        }
+    }
+    return clean + L".regval";
+}
+
+inline bool VirtualRegWriteValue(
+    const std::filesystem::path& storeRoot,
+    std::string_view rootCode,
+    std::wstring_view subKey,
+    std::wstring_view valName,
+    std::string_view utf8Val,
+    bool& outCreatedNewKey)
+{
+    std::error_code ec;
+    const auto keyDir = ResolveVirtualRegKeyDir(storeRoot, rootCode, subKey);
+    outCreatedNewKey  = !std::filesystem::exists(keyDir, ec);
+    std::filesystem::create_directories(keyDir, ec);
+    std::ofstream out(keyDir / VirtualRegValueFileName(valName), std::ios::binary | std::ios::trunc);
+    if (!out) return false;
+    out.write(utf8Val.data(), static_cast<std::streamsize>(utf8Val.size()));
+    return out.good();
+}
+
+inline bool VirtualRegReadValue(
+    const std::filesystem::path& storeRoot,
+    std::string_view rootCode,
+    std::wstring_view subKey,
+    std::wstring_view valName,
+    std::string& outVal)
+{
+    std::error_code ec;
+    const auto vf = ResolveVirtualRegKeyDir(storeRoot, rootCode, subKey) / VirtualRegValueFileName(valName);
+    if (!std::filesystem::is_regular_file(vf, ec)) return false;
+    std::ifstream in(vf, std::ios::binary);
+    if (!in) return false;
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    outVal = ss.str();
+    return true;
+}
+
+inline void VirtualRegDeleteValue(
+    const std::filesystem::path& storeRoot,
+    std::string_view rootCode,
+    std::wstring_view subKey,
+    std::wstring_view valName) noexcept
+{
+    std::error_code ec;
+    std::filesystem::remove(ResolveVirtualRegKeyDir(storeRoot, rootCode, subKey) / VirtualRegValueFileName(valName), ec);
+}
+
+inline void VirtualRegDeleteTree(
+    const std::filesystem::path& storeRoot,
+    std::string_view rootCode,
+    std::wstring_view subKey) noexcept
+{
+    std::error_code ec;
+    std::filesystem::remove_all(ResolveVirtualRegKeyDir(storeRoot, rootCode, subKey), ec);
+}
+
 inline std::string EscapeSingleLine(std::string_view s) {
     std::string out;
     out.reserve(s.size());
@@ -554,9 +643,16 @@ inline bool ExecuteNativeOrSfxTransaction(
         return true;
     };
 
+    const std::filesystem::path virtRegRoot = native_detail::GetVirtualRegistryStoreRoot();
     auto performLifoRollback = [&]() {
         if (onProgress) onProgress(0, L"Rolling back changes to restore previous system state...");
         for (auto it = regUndoStack.rbegin(); it != regUndoStack.rend(); ++it) {
+            if (!virtRegRoot.empty()) {
+                const std::string rc = (it->hRoot == HKEY_LOCAL_MACHINE) ? "HKLM" : "HKCU";
+                if (it->createdKey) native_detail::VirtualRegDeleteTree(virtRegRoot, rc, it->subKey);
+                else native_detail::VirtualRegDeleteValue(virtRegRoot, rc, it->subKey, it->valueName);
+                continue;
+            }
             if (it->createdKey) {
                 ::RegDeleteTreeW(it->hRoot, it->subKey.c_str());
             } else {
@@ -622,7 +718,9 @@ inline bool ExecuteNativeOrSfxTransaction(
         if (!isSfx && std::filesystem::exists(dstPath, ec)) {
             const auto bakPath = std::filesystem::path(dstPath.wstring() + L".rswbak." + std::to_wstring(::GetCurrentProcessId()));
             std::filesystem::remove(bakPath, ec);
-            if (std::filesystem::rename(dstPath, bakPath, ec)) {
+            ec.clear();
+            std::filesystem::rename(dstPath, bakPath, ec);
+            if (!ec) {
                 backedUpFiles.push_back({dstPath, bakPath});
             }
         }
@@ -791,6 +889,17 @@ inline bool ExecuteNativeOrSfxTransaction(
 
     auto setRegValueTracked = [&](HKEY hRoot, const std::string& rootCode, const std::wstring& subKey,
                                   const std::wstring& valName, const std::string& typeStr, const std::string& rawVal) -> bool {
+        const std::string expanded = native_detail::ExpandInstallTokens(rawVal, opts.targetDir, manifest.version);
+        if (!virtRegRoot.empty()) {
+            bool createdNew = false;
+            if (!native_detail::VirtualRegWriteValue(virtRegRoot, rootCode, subKey, valName, expanded, createdNew)) {
+                outError = "Virtual registry write failed under '" + rootCode + "\\" + WideToUtf8(subKey) + "'.";
+                return false;
+            }
+            regUndoStack.push_back({hRoot, subKey, valName, createdNew});
+            recordedRegKeysForUninstall.push_back({rootCode, subKey});
+            return true;
+        }
         HKEY hk = nullptr;
         DWORD disp = 0;
         if (::RegCreateKeyExW(hRoot, subKey.c_str(), 0, nullptr, 0, KEY_WRITE | KEY_WOW64_64KEY, nullptr, &hk, &disp) != ERROR_SUCCESS) {
@@ -800,7 +909,6 @@ inline bool ExecuteNativeOrSfxTransaction(
         regUndoStack.push_back({hRoot, subKey, valName, disp == REG_CREATED_NEW_KEY});
         recordedRegKeysForUninstall.push_back({rootCode, subKey});
 
-        const std::string expanded = native_detail::ExpandInstallTokens(rawVal, opts.targetDir, manifest.version);
         LSTATUS st = ERROR_SUCCESS;
         if (EqualsIgnoreCase(typeStr, "dword")) {
             const DWORD dw = static_cast<DWORD>(std::strtoul(expanded.c_str(), nullptr, 10));
@@ -925,10 +1033,14 @@ inline bool ExecuteNativeOrSfxTransaction(
     if (hideEntry) {
         setRegValueTracked(hUninstHive, uninstRootCode, uninstSubKey, L"SystemComponent", "dword", "1");
     } else if (opts.suiteManagedFlag == 0) {
-        HKEY hk = nullptr;
-        if (::RegOpenKeyExW(hUninstHive, uninstSubKey.c_str(), 0, KEY_SET_VALUE | KEY_WOW64_64KEY, &hk) == ERROR_SUCCESS) {
-            ::RegDeleteValueW(hk, L"SystemComponent");
-            ::RegCloseKey(hk);
+        if (!virtRegRoot.empty()) {
+            native_detail::VirtualRegDeleteValue(virtRegRoot, uninstRootCode, uninstSubKey, L"SystemComponent");
+        } else {
+            HKEY hk = nullptr;
+            if (::RegOpenKeyExW(hUninstHive, uninstSubKey.c_str(), 0, KEY_SET_VALUE | KEY_WOW64_64KEY, &hk) == ERROR_SUCCESS) {
+                ::RegDeleteValueW(hk, L"SystemComponent");
+                ::RegCloseKey(hk);
+            }
         }
     }
 
@@ -988,19 +1100,28 @@ inline bool ExecuteNativeUninstallFromMeta(
         std::filesystem::remove(uninstExeInDir, ec);
     }
 
+    const std::filesystem::path virtRegRoot = native_detail::GetVirtualRegistryStoreRoot();
     const int nReg = std::clamp(std::atoi(kv["RegKeyCount"].c_str()), 0, 4096);
     for (int i = nReg - 1; i >= 0; --i) {
         const std::string rc = kv["RegRoot_" + std::to_string(i)];
         const std::string rk = kv["RegKey_"  + std::to_string(i)];
         if (!rk.empty()) {
-            HKEY hRoot = native_detail::ResolveRegistryRootHandle(rc, perMachine);
-            ::RegDeleteTreeW(hRoot, Utf8ToWide(rk).c_str());
+            if (!virtRegRoot.empty()) {
+                native_detail::VirtualRegDeleteTree(virtRegRoot, rc, Utf8ToWide(rk));
+            } else {
+                HKEY hRoot = native_detail::ResolveRegistryRootHandle(rc, perMachine);
+                ::RegDeleteTreeW(hRoot, Utf8ToWide(rk).c_str());
+            }
         }
     }
 
     const std::string uninstKey = kv["UninstallRegKey"];
     if (!uninstKey.empty()) {
-        ::RegDeleteTreeW(perMachine ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER, Utf8ToWide(uninstKey).c_str());
+        if (!virtRegRoot.empty()) {
+            native_detail::VirtualRegDeleteTree(virtRegRoot, perMachine ? "HKLM" : "HKCU", Utf8ToWide(uninstKey));
+        } else {
+            ::RegDeleteTreeW(perMachine ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER, Utf8ToWide(uninstKey).c_str());
+        }
     }
 
     const int nDirs = std::clamp(std::atoi(kv["DirCount"].c_str()), 0, 4096);
@@ -1174,6 +1295,18 @@ inline bool IsSuiteChildCurrentlyInstalled(
 
     // Check `HKLM` and `HKCU` `Uninstall\<UpgradeCode>` for `Engine = native` packages!
     const std::wstring subKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" + wUpg;
+    const auto virtRegRoot = native_detail::GetVirtualRegistryStoreRoot();
+    if (!virtRegRoot.empty()) {
+        for (const char* rc : {"HKLM", "HKCU"}) {
+            std::string quietCmd;
+            if (native_detail::VirtualRegReadValue(virtRegRoot, rc, subKey, L"QuietUninstallString", quietCmd) ||
+                native_detail::VirtualRegReadValue(virtRegRoot, rc, subKey, L"UninstallString", quietCmd)) {
+                outNativeQuietUninstall = Utf8ToWide(quietCmd);
+                return true;
+            }
+        }
+        return false;
+    }
     for (HKEY hRoot : {HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER}) {
         std::string quietCmd;
         if (ReadRegValueStringView(hRoot, subKey, L"QuietUninstallString", KEY_WOW64_64KEY, quietCmd) ||
@@ -1190,6 +1323,21 @@ inline bool IsSuiteChildCurrentlyInstalled(
 inline void SetInstalledAppsSystemComponentFlag(std::wstring_view uninstallKeyLeaf, bool hideUnderSuite) noexcept {
     if (uninstallKeyLeaf.empty()) return;
     const std::wstring subKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" + std::wstring(uninstallKeyLeaf);
+    const auto virtRegRoot = native_detail::GetVirtualRegistryStoreRoot();
+    if (!virtRegRoot.empty()) {
+        std::error_code ec;
+        for (const char* rc : {"HKLM", "HKCU"}) {
+            const auto keyDir = native_detail::ResolveVirtualRegKeyDir(virtRegRoot, rc, subKey);
+            if (!std::filesystem::is_directory(keyDir, ec)) continue;
+            if (hideUnderSuite) {
+                bool dummy = false;
+                native_detail::VirtualRegWriteValue(virtRegRoot, rc, subKey, L"SystemComponent", "1", dummy);
+            } else {
+                native_detail::VirtualRegDeleteValue(virtRegRoot, rc, subKey, L"SystemComponent");
+            }
+        }
+        return;
+    }
     for (HKEY hRoot : {HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER}) {
         HKEY hk = nullptr;
         if (::RegOpenKeyExW(hRoot, subKey.c_str(), 0, KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY, &hk) == ERROR_SUCCESS) {
@@ -1208,6 +1356,16 @@ inline void SetInstalledAppsSystemComponentFlag(std::wstring_view uninstallKeyLe
 inline bool IsInstalledAppHiddenAsSuiteComponent(std::wstring_view uninstallKeyLeaf) noexcept {
     if (uninstallKeyLeaf.empty()) return false;
     const std::wstring subKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" + std::wstring(uninstallKeyLeaf);
+    const auto virtRegRoot = native_detail::GetVirtualRegistryStoreRoot();
+    if (!virtRegRoot.empty()) {
+        for (const char* rc : {"HKLM", "HKCU"}) {
+            std::string val;
+            if (native_detail::VirtualRegReadValue(virtRegRoot, rc, subKey, L"SystemComponent", val) && val == "1") {
+                return true;
+            }
+        }
+        return false;
+    }
     for (HKEY hRoot : {HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER}) {
         std::string val;
         if (ReadRegValueStringView(hRoot, subKey, L"SystemComponent", KEY_WOW64_64KEY, val) && val == "1") {

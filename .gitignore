@@ -17,6 +17,8 @@ Makefile
 *.mst
 *.msp
 *.cab
+*.rswpak
+*.rswm
 *.7z
 *.7zip
 *.pdb

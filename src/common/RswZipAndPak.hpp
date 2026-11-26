@@ -963,7 +963,15 @@ inline bool ExtractRswPakFileToDirectory(
             onProgress(permille, m.archiveRelPath);
         }
 
-        const std::filesystem::path outFile = (destRootDir / Utf8ToWide(m.archiveRelPath)).lexically_normal();
+        std::string relInsideRoot = m.archiveRelPath;
+        for (char& ch : relInsideRoot) {
+            if (ch == '\\') ch = '/';
+        }
+        if (relInsideRoot.size() > 11 &&
+            EqualsIgnoreCase(std::string_view(relInsideRoot).substr(0, 11), "INSTALLDIR/")) {
+            relInsideRoot.erase(0, 11);
+        }
+        const std::filesystem::path outFile = (destRootDir / Utf8ToWide(relInsideRoot)).lexically_normal();
         std::filesystem::create_directories(outFile.parent_path(), ec);
         std::ofstream out(outFile, std::ios::binary | std::ios::trunc);
         if (!out) {
@@ -1010,9 +1018,9 @@ inline LONG QueryFileAuthenticodeTrustStatus(const std::filesystem::path& filePa
     wtd.pFile               = &fileInfo;
     wtd.dwStateAction       = WTD_STATEACTION_VERIFY;
 
-    const LONG status = ::WinVerifyTrust(INVALID_HANDLE_VALUE, &policyGuid, &wtd);
+    const LONG status = ::WinVerifyTrust(static_cast<HWND>(INVALID_HANDLE_VALUE), &policyGuid, &wtd);
     wtd.dwStateAction = WTD_STATEACTION_CLOSE;
-    ::WinVerifyTrust(INVALID_HANDLE_VALUE, &policyGuid, &wtd);
+    ::WinVerifyTrust(static_cast<HWND>(INVALID_HANDLE_VALUE), &policyGuid, &wtd);
     return status;
 }
 
@@ -1035,12 +1043,25 @@ inline bool VerifyFeaturePackIntegrity(
     if (trust == ERROR_SUCCESS) {
         return true;
     }
-    if (!requireAuthenticode &&
-        (trust == TRUST_E_NOSIGNATURE || trust == TRUST_E_SUBJECT_FORM_UNKNOWN || trust == TRUST_E_PROVIDER_UNKNOWN)) {
-        return true;
+    if (!requireAuthenticode) {
+        // Reject any pack carrying a tampered, distrusted, or revoked Authenticode signature,
+        // while allowing unsigned raw `RSWPAK1` LZMS containers once pinned `SHA-256` passes!
+        const bool signatureTamperedOrUntrusted =
+            (trust == TRUST_E_BAD_DIGEST ||
+             trust == TRUST_E_EXPLICIT_DISTRUST ||
+             trust == TRUST_E_TIME_STAMP ||
+             trust == CERT_E_UNTRUSTEDROOT ||
+             trust == CERT_E_REVOKED ||
+             trust == CERT_E_EXPIRED ||
+             trust == CERT_E_CHAINING);
+        if (!signatureTamperedOrUntrusted) {
+            return true;
+        }
     }
+    char hexBuf[24]{};
+    std::snprintf(hexBuf, sizeof(hexBuf), "0x%08X", static_cast<unsigned int>(trust));
     outError = "Authenticode WinVerifyTrust check failed on '" + WideToUtf8(pakPath.filename().wstring()) +
-               "' (HRESULT 0x" + std::to_string(static_cast<std::uint32_t>(trust)) + ").";
+               "' (HRESULT " + hexBuf + ").";
     return false;
 }
 
