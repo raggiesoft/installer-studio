@@ -767,11 +767,99 @@ int wmain() {
     //    `CostFinalize`, & Full Service Transaction when `msiserver` RPC is accessible outside AppContainer!)
     {
         rsw::ScopedMsiHandle hVerifyDb;
-        bool hasSigTable = false;
+        bool hasSigTable        = false;
+        bool uiTextPopulated    = false;
+        bool progBarNonFlat     = false;
+        bool rollbackCancelEvt  = false;
+        bool allCyclesClosed    = true;
+        std::string cycleErr;
+
         if (::MsiOpenDatabaseW(v1Sum.msiPath.wstring().c_str(), MSIDBOPEN_READONLY, hVerifyDb.Put()) == ERROR_SUCCESS) {
             hasSigTable = (::MsiDatabaseIsTablePersistentW(hVerifyDb.Get(), L"Signature") == MSICONDITION_TRUE);
+
+            // Verify `UIText` table contains `MenuLocal`, `MenuAllLocal`, `MenuAbsent`, & `SelLocalLocal`!
+            // (Note: MSI SQL `WHERE` clauses use `OR` rather than ANSI `IN (...)`.)
+            rsw::ScopedMsiHandle hUiView;
+            if (::MsiDatabaseOpenViewW(hVerifyDb.Get(),
+                    L"SELECT `Key` FROM `UIText` WHERE `Key` = 'MenuLocal' OR `Key` = 'MenuAllLocal' OR `Key` = 'MenuAbsent' OR `Key` = 'SelLocalLocal'",
+                    hUiView.Put()) == ERROR_SUCCESS &&
+                ::MsiViewExecute(hUiView.Get(), 0) == ERROR_SUCCESS) {
+                int cnt = 0;
+                rsw::ScopedMsiHandle hRec;
+                while (::MsiViewFetch(hUiView.Get(), hRec.Put()) == ERROR_SUCCESS) ++cnt;
+                uiTextPopulated = (cnt == 4);
+            }
+
+            // Verify `ProgressDlg.ProgressBar` sets `msidbControlAttributesProgress95` (`0x10000`, non-flat!)
+            rsw::ScopedMsiHandle hPbView;
+            if (::MsiDatabaseOpenViewW(hVerifyDb.Get(),
+                    L"SELECT `Attributes` FROM `Control` WHERE `Dialog_` = 'ProgressDlg' AND `Control` = 'ProgressBar'",
+                    hPbView.Put()) == ERROR_SUCCESS &&
+                ::MsiViewExecute(hPbView.Get(), 0) == ERROR_SUCCESS) {
+                rsw::ScopedMsiHandle hRec;
+                if (::MsiViewFetch(hPbView.Get(), hRec.Put()) == ERROR_SUCCESS) {
+                    const int attr = ::MsiRecordGetInteger(hRec.Get(), 1);
+                    progBarNonFlat = ((attr & 0x00010000) != 0);
+                }
+            }
+
+            // Verify `ProgressDlg.Cancel` subscribes to `EnableRollback -> Enable` in `EventMapping`!
+            rsw::ScopedMsiHandle hEmView;
+            if (::MsiDatabaseOpenViewW(hVerifyDb.Get(),
+                    L"SELECT `Control_` FROM `EventMapping` WHERE `Dialog_` = 'ProgressDlg' AND `Control_` = 'Cancel' AND `Event` = 'EnableRollback' AND `Attribute` = 'Enable'",
+                    hEmView.Put()) == ERROR_SUCCESS &&
+                ::MsiViewExecute(hEmView.Get(), 0) == ERROR_SUCCESS) {
+                rsw::ScopedMsiHandle hRec;
+                rollbackCancelEvt = (::MsiViewFetch(hEmView.Get(), hRec.Put()) == ERROR_SUCCESS);
+            }
+
+            // Mathematical Error 2809 Guard: verify EVERY dialog's `Control_Next` pointers form a closed cycle!
+            std::map<std::wstring, std::map<std::wstring, std::wstring>> dlgNext;
+            rsw::ScopedMsiHandle hCtView;
+            if (::MsiDatabaseOpenViewW(hVerifyDb.Get(),
+                    L"SELECT `Dialog_`, `Control`, `Control_Next` FROM `Control`",
+                    hCtView.Put()) == ERROR_SUCCESS &&
+                ::MsiViewExecute(hCtView.Get(), 0) == ERROR_SUCCESS) {
+                rsw::ScopedMsiHandle hRec;
+                while (::MsiViewFetch(hCtView.Get(), hRec.Put()) == ERROR_SUCCESS) {
+                    wchar_t dBuf[128]{}, cBuf[128]{}, nBuf[128]{};
+                    DWORD dL = 128, cL = 128, nL = 128;
+                    ::MsiRecordGetStringW(hRec.Get(), 1, dBuf, &dL);
+                    ::MsiRecordGetStringW(hRec.Get(), 2, cBuf, &cL);
+                    ::MsiRecordGetStringW(hRec.Get(), 3, nBuf, &nL);
+                    if (nBuf[0] != L'\0') {
+                        dlgNext[dBuf][cBuf] = nBuf;
+                    }
+                }
+            }
+            for (const auto& [dlgName, edges] : dlgNext) {
+                for (const auto& [startCtrl, firstTarget] : edges) {
+                    std::wstring cur = firstTarget;
+                    bool returnedToStart = false;
+                    for (std::size_t step = 0; step <= edges.size(); ++step) {
+                        if (cur == startCtrl) { returnedToStart = true; break; }
+                        auto it = edges.find(cur);
+                        if (it == edges.end()) break;
+                        cur = it->second;
+                    }
+                    if (!returnedToStart) {
+                        allCyclesClosed = false;
+                        cycleErr = rsw::WideToUtf8(dlgName + L"." + startCtrl);
+                        break;
+                    }
+                }
+                if (!allCyclesClosed) break;
+            }
         }
         Check(hasSigTable, "Compiled .msi includes persistent 'Signature' table required by AppSearch (no Error 2228)");
+        const std::string uiDiag =
+            "uiText=" + std::to_string(uiTextPopulated) +
+            " prog95=" + std::to_string(progBarNonFlat) +
+            " rbEvt=" + std::to_string(rollbackCancelEvt) +
+            " cycleErr=" + cycleErr;
+        Check(uiTextPopulated && progBarNonFlat && rollbackCancelEvt && allCyclesClosed,
+              "Compiled .msi populates UIText, non-flat ProgressBar (0x10000), EnableRollback Cancel lock, and 100% closed Control_Next cycles (zero Error 2809)",
+              uiDiag);
 
         // 6a. Execute `AppSearch -> LaunchConditions -> CostInitialize -> FileCost -> CostFinalize`
         //     directly inside `System32\msi.dll` (`MsiOpenPackageExW` works even in sandboxed CI!)

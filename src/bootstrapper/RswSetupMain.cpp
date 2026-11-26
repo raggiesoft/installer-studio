@@ -77,6 +77,8 @@ constexpr UINT WM_RSW_STATUS_TEXT     = WM_APP + 11;
 constexpr UINT WM_RSW_INSTALL_DONE    = WM_APP + 12;
 constexpr UINT WM_RSW_ASK_RETRY_DL    = WM_APP + 13;
 constexpr UINT WM_RSW_REQUEST_UAC     = WM_APP + 14;
+constexpr UINT WM_RSW_LOCK_CANCEL     = WM_APP + 15;
+constexpr UINT IDM_SYS_ABOUT_SETUP    = 0x1F10u;
 
 // Accessible Win32 Child Control IDs (supporting `Tab`, `Arrow`, & `Alt+Mnemonic` traversal)
 enum ControlId : int {
@@ -201,6 +203,7 @@ struct BrandingConfig {
     std::wstring customDesc         = L"Choose a custom destination folder, Start Menu group, and shortcuts step by step before installing.";
     std::wstring authorOrArtist;
     std::string  setupTypePreset    = "express_custom";
+    bool         systemMenuAbout    = false;
     std::vector<rsw::SetupTypeOptionSpec> setupTypes;
     std::vector<rsw::BillboardSlideSpec>  billboards;
 };
@@ -334,6 +337,7 @@ BrandingConfig LoadBrandingConfigFromResource() {
     }
     cfg.setupTypes = rsw::BuildEffectiveSetupTypeOptions(
         cfg.setupTypePreset, customTypes, cfg.expressDesc, cfg.compactDesc, cfg.customDesc);
+    cfg.systemMenuAbout = rsw::EqualsIgnoreCase(rsw::TrimAscii(kv["SystemMenuAbout"]), "true");
 
     // Parse optional `[Billboard.<id>]` installation feature showcase cards
     const int bbCount = std::clamp(std::atoi(kv["BillboardCount"].c_str()), 0, 16);
@@ -659,6 +663,7 @@ public:
     // Thread-safe MSI external UI progress state
     std::thread             workerThread;
     std::atomic<bool>       cancelRequested{false};
+    std::atomic<bool>       cancelLockedPointOfNoReturn{false};
     std::atomic<bool>       installRunning{false};
     int                     currentPermille   = 0;
     int                     lastAnnouncedDecile = -1;
@@ -807,8 +812,29 @@ public:
         SyncSelectedSetupTypeIndex(recIdx);
     }
 
+    bool IsRetroDockedProgressMode() const noexcept {
+        return rsw::UsesFullScreenRetroBackdrop(cfg.wizardStyle) && (currentPage == WizardPage::Installing);
+    }
+
+    /// Locks or unlocks both the `Cancel` button and the window's `X` / `Alt+F4` (`SC_CLOSE`) command
+    /// when `MSI.DLL` enters `RollbackCleanup` (removing `.rbf` backup files at the point of no return!).
+    void SetCloseAndCancelLocked(bool locked) noexcept {
+        if (hBtnCancel) {
+            ::EnableWindow(hBtnCancel, locked ? FALSE : TRUE);
+        }
+        if (hWnd) {
+            HMENU hSys = ::GetSystemMenu(hWnd, FALSE);
+            if (hSys) {
+                ::EnableMenuItem(hSys, SC_CLOSE, MF_BYCOMMAND | (locked ? (MF_DISABLED | MF_GRAYED) : MF_ENABLED));
+            }
+            ::DrawMenuBar(hWnd);
+        }
+    }
+
     void ComputeLogicalDialogSize(int& outLogW, int& outLogH) const noexcept {
-        if (cfg.isAutorun16x9) {
+        if (IsRetroDockedProgressMode()) {
+            outLogW = 460; outLogH = 148;
+        } else if (cfg.isAutorun16x9) {
             outLogW = 640; outLogH = 480;
         } else if (IsPassiveToastMode()) {
             outLogW = 500; outLogH = 236;
@@ -824,17 +850,30 @@ public:
     void ResizeDialogForActiveStyle() {
         if (!hWnd) return;
         const UINT dpi = ::GetDpiForWindow(hWnd);
+        auto S = [&](int px) { return rsw::ui::ScalePx(px, dpi, theme.textScalePercent); };
         int logW = 620, logH = 490;
         ComputeLogicalDialogSize(logW, logH);
-        RECT winRc{0, 0,
-                   rsw::ui::ScalePx(logW, dpi, theme.textScalePercent),
-                   rsw::ui::ScalePx(logH, dpi, theme.textScalePercent)};
+        RECT winRc{0, 0, S(logW), S(logH)};
         const DWORD style = static_cast<DWORD>(::GetWindowLongW(hWnd, GWL_STYLE));
         ::AdjustWindowRectExForDpi(&winRc, style, FALSE, 0, dpi);
         const int totalW = winRc.right - winRc.left;
         const int totalH = winRc.bottom - winRc.top;
-        const int posX   = std::max(0, (::GetSystemMetrics(SM_CXSCREEN) - totalW) / 2);
-        const int posY   = std::max(0, (::GetSystemMetrics(SM_CYSCREEN) - totalH) / 2);
+
+        HMONITOR hMon = ::MonitorFromWindow(hWnd, MONITOR_DEFAULTTOPRIMARY);
+        MONITORINFO mi{sizeof(mi)};
+        RECT workRc{0, 0, ::GetSystemMetrics(SM_CXSCREEN), ::GetSystemMetrics(SM_CYSCREEN)};
+        if (hMon && ::GetMonitorInfoW(hMon, &mi)) {
+            workRc = rsw::UsesFullScreenRetroBackdrop(cfg.wizardStyle) ? mi.rcMonitor : mi.rcWork;
+        }
+
+        int posX = workRc.left + std::max<int>(0, ((workRc.right - workRc.left) - totalW) / 2);
+        int posY = workRc.top  + std::max<int>(0, ((workRc.bottom - workRc.top) - totalH) / 2);
+        if (IsRetroDockedProgressMode()) {
+            // Dock the compact classic `#C0C0C0` 3D progress dialog at bottom-right so the
+            // `[Billboard.*]` showcase card sits unobstructed dead-center on the retro screen!
+            posX = std::max<int>(workRc.left + S(16), workRc.right  - totalW - S(24));
+            posY = std::max<int>(workRc.top  + S(16), workRc.bottom - totalH - S(24));
+        }
         ::SetWindowPos(hWnd, nullptr, posX, posY, totalW, totalH, SWP_NOZORDER | SWP_NOACTIVATE);
         ApplyFontsAndLayout();
     }
@@ -1597,6 +1636,10 @@ public:
             // `500 x 236` Non-Interactive `/passive` Toast Banner
             ::MoveWindow(hProgStatus, S(24), S(104), W - S(48), S(24), TRUE);
             ::MoveWindow(hProgBar,    S(24), S(134), W - S(48), S(22), TRUE);
+        } else if (IsRetroDockedProgressMode()) {
+            // `460 x 148` Classic 1995 `#C0C0C0` 3D Docked Bottom-Right Progress Meter + `Cancel`
+            ::MoveWindow(hProgStatus, S(16), S(36), W - S(32), S(20), TRUE);
+            ::MoveWindow(hProgBar,    S(16), S(60), W - S(32), S(20), TRUE);
         } else if (IsCompactOneClickSplash()) {
             // `540 x 310` One-Click Express Splash Card
             ::MoveWindow(hLicAccept,  S(18), footerY - S(34), W - S(36), S(26), TRUE);
@@ -1607,17 +1650,19 @@ public:
         } else {
             // Multi-Step Wizard Canvas (`StandardGlass`, `Wizard95`, `Wizard97`, `AeroWizard`,
             // `FluentMica`, `FullScreenBlue`, `FullScreenTeal`, & expanded `OneClick`):
+            // Note: True Windows 95 (`UsesClassic3dDialogSheet`) uses uniform `#C0C0C0` 3D dialog gray
+            // (`bodyTop = S(52)`), whereas ONLY `Wizard97` uses the `80px` white top header banner!
             const bool isMica       = (cfg.wizardStyle == rsw::WizardStyleKind::FluentMica);
-            const bool isClassicHdr = rsw::UsesClassic3dDialogSheet(cfg.wizardStyle) ||
-                                      (cfg.wizardStyle == rsw::WizardStyleKind::Wizard97);
-            const int bodyTop = isMica ? S(42) : (isClassicHdr ? S(80) : S(104));
+            const bool isWin95Sheet = rsw::UsesClassic3dDialogSheet(cfg.wizardStyle);
+            const bool isWiz97Hdr   = (cfg.wizardStyle == rsw::WizardStyleKind::Wizard97);
+            const int bodyTop = isMica ? S(42) : (isWin95Sheet ? S(52) : (isWiz97Hdr ? S(80) : S(104)));
             const int cardX   = isMica ? S(180) : S(18);
             const int cardW   = W - cardX - S(18);
 
             // `SetupType`: 1..4 Full-Row Vector Option Cards (`Express/Compact/Custom` or `Typical/Compact/Complete/Custom`!)
             const int nCards   = std::clamp<int>(static_cast<int>(cfg.setupTypes.size()), 1, 4);
-            const int optStart = bodyTop + ((nCards >= 4) ? S(30) : S(38));
-            const int optH     = (nCards >= 4) ? S(62) : S(72);
+            const int optStart = bodyTop + ((nCards >= 4) ? S(28) : S(36));
+            const int optH     = (nCards >= 4) ? (isWin95Sheet ? S(68) : S(62)) : S(72);
             const int optGap   = (nCards >= 4) ? S(6)  : S(10);
             for (int i = 0; i < 4; ++i) {
                 if (hModeCards[i]) {
@@ -1625,8 +1670,8 @@ public:
                 }
             }
 
-            // `Maintenance`: Hero Brand Card (`104..166`) + 3 Option Cards (`66px` tall each!)
-            const int mntStart = bodyTop + S(74);
+            // `Maintenance`: 3 Option Cards (no glass HeroBrandCard on `Wizard95`!)
+            const int mntStart = bodyTop + (isWin95Sheet ? S(34) : S(74));
             const int mntH     = S(68);
             const int mntGap   = S(8);
             ::MoveWindow(hMaintModify, cardX, mntStart,                      cardW, mntH, TRUE);
@@ -1639,21 +1684,22 @@ public:
             ::MoveWindow(hRepairQuick, cardX, repStart,               cardW, repH, TRUE);
             ::MoveWindow(hRepairFull,  cardX, repStart + repH + S(12),cardW, repH, TRUE);
 
-            // `SafeUninstall`: Hero Brand Card + 2 safe unchecked checkboxes
-            ::MoveWindow(hUninstCache, cardX + S(10), bodyTop + S(162), cardW - S(20), S(26), TRUE);
-            ::MoveWindow(hUninstPrefs, cardX + S(10), bodyTop + S(196), cardW - S(20), S(26), TRUE);
+            // `SafeUninstall`: 2 safe unchecked checkboxes
+            const int unChkBase = bodyTop + (isWin95Sheet ? S(104) : S(162));
+            ::MoveWindow(hUninstCache, cardX + S(10), unChkBase,         cardW - S(20), S(26), TRUE);
+            ::MoveWindow(hUninstPrefs, cardX + S(10), unChkBase + S(34), cardW - S(20), S(26), TRUE);
 
             // `License`: Step intro + High-Contrast RichEdit + Accept checkbox
             ::MoveWindow(hLicRich,   cardX, bodyTop + S(30), cardW, footerY - bodyTop - S(76), TRUE);
             ::MoveWindow(hLicAccept, cardX, footerY - S(36), cardW, S(26), TRUE);
 
-            // `CustomFeatures` (`SelectionTree` on left + `Feature Details` Glass Card painted on right!)
+            // `CustomFeatures` (`SelectionTree` on left + `Feature Details` Card painted on right!)
             const int treeW = (cardW * 58) / 100;
             const int treeH = footerY - bodyTop - S(78);
             ::MoveWindow(hFeatTree,     cardX, bodyTop + S(32), treeW, treeH, TRUE);
             ::MoveWindow(hFeatResetBtn, cardX, bodyTop + S(38) + treeH, S(132), S(28), TRUE);
 
-            // `CustomFolder`: Path `EDIT` + `&Browse...` (Disk Space Glass Card painted below!)
+            // `CustomFolder`: Path `EDIT` + `&Browse...` (Disk Space Card painted below!)
             ::MoveWindow(hDirLabel,  cardX, bodyTop + S(38), cardW,          S(22), TRUE);
             ::MoveWindow(hDirEdit,   cardX, bodyTop + S(64), cardW - S(98),  S(30), TRUE);
             ::MoveWindow(hDirBrowse, cardX + cardW - S(90), bodyTop + S(63), S(90), S(32), TRUE);
@@ -1664,13 +1710,15 @@ public:
             ::MoveWindow(hDeskScChk,    cardX, bodyTop + S(124), cardW, S(28), TRUE);
             ::MoveWindow(hFileAssocChk, cardX, bodyTop + S(160), cardW, S(28), TRUE);
 
-            // `Installing`: Hero Brand Card + Glass Progress Card (`hProgStatus` + `hProgBar`)
-            ::MoveWindow(hProgStatus, cardX + S(16), bodyTop + S(136), cardW - S(32), S(24), TRUE);
-            ::MoveWindow(hProgBar,    cardX + S(16), bodyTop + S(168), cardW - S(32), S(24), TRUE);
+            // `Installing`: Progress Card (`hProgStatus` + `hProgBar`)
+            const int progTopOff = isWin95Sheet ? S(72) : S(136);
+            ::MoveWindow(hProgStatus, cardX + S(16), bodyTop + progTopOff,         cardW - S(32), S(24), TRUE);
+            ::MoveWindow(hProgBar,    cardX + S(16), bodyTop + progTopOff + S(32), cardW - S(32), S(24), TRUE);
 
-            // `Finished`: Hero Brand Card + Summary Card + `&Launch` checkbox / `&View Setup Log`
-            const int finLeft = UsesClassicWelcomeSidebar() ? S(190) : (cardX + S(10));
-            ::MoveWindow(hFinLaunch,  finLeft, footerY - S(46), W - finLeft - S(168), S(26), TRUE);
+            // `Finished`: Summary + `&Launch` checkbox positioned strictly inside the right-hand column (`S(192)`) when left sidebar is active!
+            const int finLeft = UsesClassicWelcomeSidebar() ? S(192) : (cardX + S(10));
+            const int finW    = UsesClassicWelcomeSidebar() ? (W - finLeft - S(18)) : (W - finLeft - S(168));
+            ::MoveWindow(hFinLaunch,  finLeft, footerY - S(42), finW, S(26), TRUE);
             ::MoveWindow(hFinViewLog, W - S(162), footerY - S(48), S(144), S(30), TRUE);
         }
 
@@ -1847,19 +1895,40 @@ public:
     static INT CALLBACK OnMsiExternalRecord(void* pvContext, UINT iMessageType, MSIHANDLE hRecord) {
         auto* self = static_cast<SetupWizardApp*>(pvContext);
         if (!self) return 0;
-        if (self->cancelRequested.load()) {
+        if (!self->cancelLockedPointOfNoReturn.load() && self->cancelRequested.load()) {
             return IDCANCEL; // Triggers clean Windows Installer transactional rollback!
         }
 
         const UINT msgKind = iMessageType & 0xFF000000u;
         switch (msgKind) {
+            case INSTALLMESSAGE_COMMONDATA: {
+                // `MSI.DLL` sends `COMMONDATA` subtype `2` with `Field 2 == 0` when disabling
+                // Cancel (entering `InstallFinalize` / `.rbf` rollback script cleanup!).
+                if (::MsiRecordGetFieldCount(hRecord) >= 2 &&
+                    ::MsiRecordGetInteger(hRecord, 1) == 2 &&
+                    ::MsiRecordGetInteger(hRecord, 2) == 0) {
+                    if (!self->cancelLockedPointOfNoReturn.exchange(true)) {
+                        ::PostMessageW(self->hWnd, WM_RSW_LOCK_CANCEL, 0, 0);
+                    }
+                }
+                return IDOK;
+            }
             case INSTALLMESSAGE_ACTIONSTART: {
+                wchar_t actBuf[256]{};
                 wchar_t descBuf[512]{};
                 wchar_t tmplBuf[512]{};
+                DWORD cAct  = static_cast<DWORD>(std::size(actBuf));
                 DWORD cDesc = static_cast<DWORD>(std::size(descBuf));
                 DWORD cTmpl = static_cast<DWORD>(std::size(tmplBuf));
+                ::MsiRecordGetStringW(hRecord, 1, actBuf,  &cAct);
                 ::MsiRecordGetStringW(hRecord, 2, descBuf, &cDesc);
                 ::MsiRecordGetStringW(hRecord, 3, tmplBuf, &cTmpl);
+                if (std::wcscmp(actBuf, L"RollbackCleanup") == 0 ||
+                    std::wcsstr(descBuf, L"Removing backup") != nullptr) {
+                    if (!self->cancelLockedPointOfNoReturn.exchange(true)) {
+                        ::PostMessageW(self->hWnd, WM_RSW_LOCK_CANCEL, 0, 0);
+                    }
+                }
                 if (descBuf[0] != L'\0') {
                     const std::wstring cleanDesc = SanitizeUnexpandedMsiTokens(descBuf);
                     std::lock_guard<std::mutex> lk(self->msgMutex);
@@ -2022,11 +2091,15 @@ public:
         capturedErrorText.clear();
         ::SendMessageW(hProgBar, PBM_SETPOS, 0, 0);
 
-        currentPage = WizardPage::Installing;
-        UpdateControlVisibilityForPage();
-        ::InvalidateRect(hWnd, nullptr, TRUE);
-
         cancelRequested.store(false);
+        cancelLockedPointOfNoReturn.store(false);
+        SetCloseAndCancelLocked(false);
+
+        currentPage = WizardPage::Installing;
+        ResizeDialogForActiveStyle();
+        ::InvalidateRect(hWnd, nullptr, TRUE);
+        if (hBackdropWnd) ::InvalidateRect(hBackdropWnd, nullptr, FALSE);
+
         installRunning.store(true);
 
         if (workerThread.joinable()) workerThread.join();
@@ -2219,14 +2292,19 @@ public:
                 auto syncStatusFromDisk = [&]() {
                     std::ifstream in(statusFile, std::ios::binary);
                     if (!in) return;
-                    std::string linePerm, lineStat, lineErr;
+                    std::string linePerm, lineStat, lineErr, lineLock;
                     std::getline(in, linePerm);
                     std::getline(in, lineStat);
                     std::getline(in, lineErr);
+                    std::getline(in, lineLock);
                     if (!linePerm.empty() && linePerm.back() == '\r') linePerm.pop_back();
                     if (!lineStat.empty() && lineStat.back() == '\r') lineStat.pop_back();
                     if (!lineErr.empty()  && lineErr.back()  == '\r') lineErr.pop_back();
+                    if (!lineLock.empty() && lineLock.back() == '\r') lineLock.pop_back();
 
+                    if (lineLock == "1" && !cancelLockedPointOfNoReturn.exchange(true)) {
+                        ::PostMessageW(hWnd, WM_RSW_LOCK_CANCEL, 0, 0);
+                    }
                     if (!linePerm.empty()) {
                         const int perm = std::clamp(std::atoi(linePerm.c_str()), 0, 1000);
                         ::PostMessageW(hWnd, WM_RSW_PROGRESS_UPDATE, static_cast<WPARAM>(perm), 0);
@@ -2244,7 +2322,7 @@ public:
                 };
 
                 while (::WaitForSingleObject(hElevatedChild, 45) == WAIT_TIMEOUT) {
-                    if (cancelRequested.load()) {
+                    if (cancelRequested.load() && !cancelLockedPointOfNoReturn.load()) {
                         std::ofstream cf(cancelFile, std::ios::binary);
                         cf << "cancel\n";
                     }
@@ -2339,12 +2417,14 @@ public:
 
     void OnTransactionCompleted() {
         currentPermille = (finalMsiResult == ERROR_SUCCESS || finalMsiResult == ERROR_SUCCESS_REBOOT_REQUIRED) ? 1000 : currentPermille;
+        cancelLockedPointOfNoReturn.store(false);
+        SetCloseAndCancelLocked(false);
         if (IsPassiveToastMode()) {
             ::DestroyWindow(hWnd);
             return;
         }
         currentPage     = WizardPage::Finished;
-        UpdateControlVisibilityForPage();
+        ResizeDialogForActiveStyle();
         ::SetFocus(hBtnPrimary);
         ::InvalidateRect(hWnd, nullptr, TRUE);
         if (hBackdropWnd) ::InvalidateRect(hBackdropWnd, nullptr, FALSE);
@@ -2629,9 +2709,36 @@ public:
             }
         }
 
-        const StepHeaderInfo hdrInfo = CurrentStepHeaderInfo();
+        auto DrawPanelSurface = [&](HDC hdc, Gdiplus::Graphics& grp, const RECT& rc, int radiusPx) {
+            if (rsw::UsesClassic3dDialogSheet(cfg.wizardStyle)) {
+                HBRUSH hBr = ::CreateSolidBrush(theme.cardBg);
+                ::FillRect(hdc, &rc, hBr);
+                ::DeleteObject(hBr);
+                rsw::ui::DrawClassic3dBevelFrame(hdc, rc, true, theme);
+            } else {
+                DrawGlassPanelBox(grp, rc, radiusPx);
+            }
+        };
 
-        // 1B. Passive Toast (`500 x 236` `/passive` & `/qb` non-interactive progress window!)
+        // 1B. Passive Toast (`500 x 236`) OR Retro Docked Bottom-Right Progress Meter (`460 x 148` on `FullScreenBlue` / `FullScreenTeal`)!
+        const StepHeaderInfo hdrInfo = CurrentStepHeaderInfo();
+        if (IsRetroDockedProgressMode()) {
+            const int pct = std::clamp(currentPermille / 10, 0, 100);
+            std::wstring phaseTitle = L"Installing " + cfg.productName + L"... (" + std::to_wstring(pct) + L"%)";
+            if (selectedAction == SelectedAction::MaintUninstall)     phaseTitle = L"Removing " + cfg.productName + L"... (" + std::to_wstring(pct) + L"%)";
+            if (selectedAction == SelectedAction::MaintQuickRepair ||
+                selectedAction == SelectedAction::MaintFullReinstall) phaseTitle = L"Repairing " + cfg.productName + L"... (" + std::to_wstring(pct) + L"%)";
+            HGDIOBJ oFr = ::SelectObject(memDc, hFontBold);
+            ::SetTextColor(memDc, theme.textPrimary);
+            RECT hRc{S(16), S(10), W - S(16), S(34)};
+            ::DrawTextW(memDc, phaseTitle.c_str(), -1, &hRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            ::SelectObject(memDc, oFr);
+            ::BitBlt(hdcOut, 0, 0, W, H, memDc, 0, 0, SRCCOPY);
+            ::SelectObject(memDc, oldBmp);
+            ::DeleteObject(memBmp);
+            ::DeleteDC(memDc);
+            return;
+        }
         if (IsPassiveToastMode()) {
             rsw::ui::DrawGlassTopHeader(
                 memDc, g, W, dpi, theme,
@@ -2759,8 +2866,8 @@ public:
         }
 
         const bool isMica       = (cfg.wizardStyle == rsw::WizardStyleKind::FluentMica);
-        const bool isClassicHdr = rsw::UsesClassic3dDialogSheet(cfg.wizardStyle) ||
-                                  (cfg.wizardStyle == rsw::WizardStyleKind::Wizard97);
+        const bool isWin95Sheet = rsw::UsesClassic3dDialogSheet(cfg.wizardStyle);
+        const bool isWiz97Hdr   = (cfg.wizardStyle == rsw::WizardStyleKind::Wizard97);
 
         if (cfg.isAutorun16x9) {
             const std::wstring pubUpper = rsw::ui::UpperWide(cfg.manufacturer.empty() ? L"RaggieSoft" : cfg.manufacturer);
@@ -2777,10 +2884,22 @@ public:
             RECT mTitleRc{S(180), S(10), W - S(18), S(38)};
             ::DrawTextW(memDc, hdrInfo.aeroInstruction, -1, &mTitleRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
             ::SelectObject(memDc, oFm);
-        } else if (isClassicHdr) {
+        } else if (isWin95Sheet) {
+            // Authentic Windows 95 (`Wizard95`, `FullScreenBlue`, `FullScreenTeal`) interior header:
+            // uniform `#C0C0C0` 3D dialog gray (NEVER Wizard 97's white top banner!) + etched divider!
+            if (hAppIconSmall || hAppIconBig) {
+                ::DrawIconEx(memDc, S(18), S(12), hAppIconSmall ? hAppIconSmall : hAppIconBig, S(24), S(24), 0, nullptr, DI_NORMAL);
+            }
+            HGDIOBJ oF95 = ::SelectObject(memDc, hFontSection);
+            ::SetTextColor(memDc, theme.textPrimary);
+            RECT t95Rc{S(50), S(10), W - S(18), S(38)};
+            ::DrawTextW(memDc, hdrInfo.aeroInstruction, -1, &t95Rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            ::SelectObject(memDc, oF95);
+            rsw::ui::DrawClassicEtchedHorizontalRule(memDc, S(12), W - S(12), S(44), theme);
+        } else if (isWiz97Hdr) {
             rsw::ui::DrawWizard97TopHeader(
                 memDc, W, dpi, theme,
-                rsw::UsesClassic3dDialogSheet(cfg.wizardStyle),
+                false,
                 hdrInfo.aeroInstruction, cfg.bannerTitle, hAppIconBig);
         } else if (cfg.isAeroWizard) {
             const std::wstring winCap = cfg.productName + L" Setup";
@@ -2795,7 +2914,7 @@ public:
         }
 
         // 3. Page-Specific Content Canvas
-        const int bodyTop = isMica ? S(42) : (isClassicHdr ? S(80) : S(104));
+        const int bodyTop = isMica ? S(42) : (isWin95Sheet ? S(52) : (isWiz97Hdr ? S(80) : S(104)));
         const int cardX   = isMica ? S(180) : S(18);
         const int cardW   = W - cardX - S(18);
         HGDIOBJ oldF      = ::SelectObject(memDc, hFontBody);
@@ -2876,7 +2995,7 @@ public:
                 const int treeW  = (cardW * 58) / 100;
                 const int detX   = cardX + treeW + S(12);
                 RECT detCard{detX, bodyTop + S(32), cardX + cardW, footerY - S(14)};
-                DrawGlassPanelBox(g, detCard, S(10));
+                DrawPanelSurface(memDc, g, detCard, S(10));
 
                 if (!featureNodes.empty() && selectedFeatureIdx < featureNodes.size()) {
                     const auto& fn = featureNodes[selectedFeatureIdx];
@@ -2943,7 +3062,7 @@ public:
                 const bool hasDisk = QueryVolumeFreeBytesForPath(livePath, volLabel, freeBytes);
 
                 RECT diskCard{cardX, bodyTop + S(114), cardX + cardW, bodyTop + S(214)};
-                DrawGlassPanelBox(g, diskCard, S(10));
+                DrawPanelSurface(memDc, g, diskCard, S(10));
                 rsw::ui::DrawOptionBadge48(
                     g, static_cast<float>(diskCard.left + S(14)), static_cast<float>(diskCard.top + S(26)),
                     static_cast<float>(S(46)), rsw::ui::GlassGlyph::Folder,
@@ -2975,14 +3094,30 @@ public:
             }
 
             case WizardPage::ReadyToInstall: {
-                RECT heroRc{cardX, bodyTop, cardX + cardW, bodyTop + S(66)};
-                rsw::ui::DrawHeroBrandCard(
-                    memDc, g, heroRc, dpi, theme,
-                    cfg.manufacturer, cfg.tagline, cfg.websiteLabel,
-                    L"READY TO INSTALL", hAppIconBig);
+                int sumTop = bodyTop + S(78);
+                if (!isWin95Sheet) {
+                    RECT heroRc{cardX, bodyTop, cardX + cardW, bodyTop + S(66)};
+                    rsw::ui::DrawHeroBrandCard(
+                        memDc, g, heroRc, dpi, theme,
+                        cfg.manufacturer, cfg.tagline, cfg.websiteLabel,
+                        L"READY TO INSTALL", hAppIconBig);
+                } else {
+                    ::SelectObject(memDc, hFontBody);
+                    ::SetTextColor(memDc, theme.textPrimary);
+                    RECT intro95{cardX, bodyTop + S(4), cardX + cardW, bodyTop + S(46)};
+                    ::DrawTextW(memDc, L"Setup has enough information to start copying the program files. If you want to review or change any settings, click Back. If you are satisfied with the settings, click Install.", -1, &intro95, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
+                    sumTop = bodyTop + S(54);
+                }
 
-                RECT sumCard{cardX, bodyTop + S(78), cardX + cardW, footerY - S(14)};
-                DrawGlassPanelBox(g, sumCard, S(10));
+                RECT sumCard{cardX, sumTop, cardX + cardW, footerY - S(14)};
+                if (isWin95Sheet) {
+                    HBRUSH hSunk = ::CreateSolidBrush(theme.cardBg);
+                    ::FillRect(memDc, &sumCard, hSunk);
+                    ::DeleteObject(hSunk);
+                    rsw::ui::DrawClassic3dBevelFrame(memDc, sumCard, true, theme);
+                } else {
+                    DrawGlassPanelBox(g, sumCard, S(10));
+                }
 
                 ::SelectObject(memDc, hFontSection);
                 ::SetTextColor(memDc, theme.textPrimary);
@@ -3031,11 +3166,18 @@ public:
             }
 
             case WizardPage::Maintenance: {
-                RECT heroRc{cardX, bodyTop, cardX + cardW, bodyTop + S(62)};
-                rsw::ui::DrawHeroBrandCard(
-                    memDc, g, heroRc, dpi, theme,
-                    cfg.manufacturer, cfg.tagline, cfg.websiteLabel,
-                    L"MAINTENANCE WIZARD", hAppIconBig);
+                if (!isWin95Sheet) {
+                    RECT heroRc{cardX, bodyTop, cardX + cardW, bodyTop + S(62)};
+                    rsw::ui::DrawHeroBrandCard(
+                        memDc, g, heroRc, dpi, theme,
+                        cfg.manufacturer, cfg.tagline, cfg.websiteLabel,
+                        L"MAINTENANCE WIZARD", hAppIconBig);
+                } else {
+                    ::SelectObject(memDc, hFontBody);
+                    ::SetTextColor(memDc, theme.textPrimary);
+                    RECT m95{cardX, bodyTop + S(4), cardX + cardW, bodyTop + S(30)};
+                    ::DrawTextW(memDc, L"Modify, repair, or remove installed program components:", -1, &m95, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+                }
                 break;
             }
 
@@ -3048,14 +3190,23 @@ public:
             }
 
             case WizardPage::SafeUninstall: {
-                RECT heroRc{cardX, bodyTop, cardX + cardW, bodyTop + S(66)};
-                rsw::ui::DrawHeroBrandCard(
-                    memDc, g, heroRc, dpi, theme,
-                    cfg.manufacturer, cfg.tagline, cfg.websiteLabel,
-                    L"SAFE UNINSTALL", hAppIconBig);
+                int boxTop = bodyTop + S(78);
+                if (!isWin95Sheet) {
+                    RECT heroRc{cardX, bodyTop, cardX + cardW, bodyTop + S(66)};
+                    rsw::ui::DrawHeroBrandCard(
+                        memDc, g, heroRc, dpi, theme,
+                        cfg.manufacturer, cfg.tagline, cfg.websiteLabel,
+                        L"SAFE UNINSTALL", hAppIconBig);
+                } else {
+                    boxTop = bodyTop + S(8);
+                }
 
-                RECT boxRc{cardX, bodyTop + S(78), cardX + cardW, footerY - S(16)};
-                DrawGlassPanelBox(g, boxRc, S(10));
+                RECT boxRc{cardX, boxTop, cardX + cardW, footerY - S(16)};
+                if (isWin95Sheet) {
+                    rsw::ui::DrawClassic3dBevelFrame(memDc, boxRc, true, theme);
+                } else {
+                    DrawGlassPanelBox(g, boxRc, S(10));
+                }
 
                 ::SelectObject(memDc, hFontSection);
                 ::SetTextColor(memDc, theme.textPrimary);
@@ -3072,14 +3223,23 @@ public:
             }
 
             case WizardPage::Installing: {
-                RECT heroRc{cardX, bodyTop, cardX + cardW, bodyTop + S(66)};
-                rsw::ui::DrawHeroBrandCard(
-                    memDc, g, heroRc, dpi, theme,
-                    cfg.manufacturer, cfg.tagline, cfg.websiteLabel,
-                    L"CONFIGURING SYSTEM", hAppIconBig);
+                int progTop = bodyTop + S(82);
+                if (!isWin95Sheet) {
+                    RECT heroRc{cardX, bodyTop, cardX + cardW, bodyTop + S(66)};
+                    rsw::ui::DrawHeroBrandCard(
+                        memDc, g, heroRc, dpi, theme,
+                        cfg.manufacturer, cfg.tagline, cfg.websiteLabel,
+                        L"CONFIGURING SYSTEM", hAppIconBig);
+                } else {
+                    progTop = bodyTop + S(18);
+                }
 
-                RECT progCard{cardX, bodyTop + S(82), cardX + cardW, bodyTop + S(218)};
-                DrawGlassPanelBox(g, progCard, S(10));
+                RECT progCard{cardX, progTop, cardX + cardW, progTop + S(136)};
+                if (isWin95Sheet) {
+                    rsw::ui::DrawClassic3dBevelFrame(memDc, progCard, true, theme);
+                } else {
+                    DrawGlassPanelBox(g, progCard, S(10));
+                }
 
                 ::SelectObject(memDc, hFontSection);
                 ::SetTextColor(memDc, theme.textPrimary);
@@ -3204,7 +3364,7 @@ public:
                         memDc, g, rc, ::GetDpiForWindow(hBack), self->theme,
                         self->cfg.wizardStyle == rsw::WizardStyleKind::FullScreenTeal,
                         self->cfg.productName, bbPtr,
-                        self->currentPage == WizardPage::Installing,
+                        false /* Live docked bottom-right hWnd progress meter owns progress + Cancel! */,
                         self->currentPermille, statCopy);
                 }
 
@@ -3357,9 +3517,35 @@ public:
         switch (msg) {
             case WM_CREATE:
                 self->CreateControls();
+                if (self->cfg.systemMenuAbout) {
+                    HMENU hSys = ::GetSystemMenu(hWnd, FALSE);
+                    if (hSys) {
+                        const std::wstring abtLbl = L"&About " + self->cfg.productName + L" Setup...";
+                        ::AppendMenuW(hSys, MF_SEPARATOR, 0, nullptr);
+                        ::AppendMenuW(hSys, MF_STRING, IDM_SYS_ABOUT_SETUP, abtLbl.c_str());
+                    }
+                }
                 self->RefreshEffectiveThemeAndChrome();
                 self->ApplyFontsAndLayout();
                 return 0;
+
+            case WM_SYSCOMMAND: {
+                const UINT cmdId = static_cast<UINT>(wParam & 0xFFF0u);
+                if (cmdId == SC_CLOSE && self->installRunning.load() && self->cancelLockedPointOfNoReturn.load()) {
+                    return 0; // Point of no return (removing `.rbf` rollback files): block Close!
+                }
+                if (cmdId == IDM_SYS_ABOUT_SETUP) {
+                    const std::wstring cap  = L"About " + self->cfg.productName + L" Setup";
+                    const std::wstring head = self->cfg.productName + L" (v" + self->cfg.version + L")";
+                    const std::wstring body = L"Publisher: " + self->cfg.manufacturer +
+                        (self->cfg.websiteLabel.empty() ? L"" : (L"\nWebsite: " + self->cfg.websiteLabel)) +
+                        L"\n\nFull Keyboard Navigation (Tab, Arrow Keys, Alt+Mnemonics) and Windows Contrast Theme Accessibility Enabled.";
+                    ::TaskDialog(hWnd, ::GetModuleHandleW(nullptr), cap.c_str(), head.c_str(), body.c_str(),
+                                 TDCBF_OK_BUTTON, TD_INFORMATION_ICON, nullptr);
+                    return 0;
+                }
+                break;
+            }
 
             case WM_TIMER:
                 if (wParam == kPassiveAutostartTimerId) {
@@ -3585,6 +3771,9 @@ public:
                     case IDC_NAV_CANCEL:
                     case IDCANCEL:
                         if (self->installRunning.load()) {
+                            if (self->cancelLockedPointOfNoReturn.load()) {
+                                return 0; // Point of no return (`.rbf` cleanup in progress)!
+                            }
                             self->cancelRequested.store(true);
                             ::EnableWindow(self->hBtnCancel, FALSE);
                             ::SetWindowTextW(self->hProgStatus, L"Canceling installation and rolling back changes...");
@@ -3675,10 +3864,20 @@ public:
                 return 0;
             }
 
+            case WM_RSW_LOCK_CANCEL:
+                self->SetCloseAndCancelLocked(true);
+                return 0;
+
             case WM_RSW_INSTALL_DONE:
                 if (static_cast<UINT>(wParam) == kSentinelUacDeclined) {
-                    // User clicked "No" on UAC — return calmly to `pageBeforeInstall`!
-                    self->NavigateTo(self->pageBeforeInstall, self->hBtnPrimary);
+                    // User clicked "No" on UAC — restore dialog geometry and return calmly to `pageBeforeInstall`!
+                    self->installRunning.store(false);
+                    self->cancelLockedPointOfNoReturn.store(false);
+                    self->SetCloseAndCancelLocked(false);
+                    self->currentPage = self->pageBeforeInstall;
+                    self->ResizeDialogForActiveStyle();
+                    if (self->hBtnPrimary) ::SetFocus(self->hBtnPrimary);
+                    if (self->hBackdropWnd) ::InvalidateRect(self->hBackdropWnd, nullptr, FALSE);
                     return 0;
                 }
                 self->OnTransactionCompleted();
@@ -3686,6 +3885,9 @@ public:
 
             case WM_CLOSE:
                 if (self->installRunning.load()) {
+                    if (self->cancelLockedPointOfNoReturn.load()) {
+                        return 0; // Cannot cancel or close once `.rbf` rollback files are being removed!
+                    }
                     self->cancelRequested.store(true);
                     return 0;
                 }
@@ -3712,12 +3914,13 @@ namespace {
 struct ElevatedWorkerProgressState {
     std::filesystem::path statusFile;
     std::filesystem::path cancelFile;
-    long long             totalTicks = 1000;
-    long long             curTicks   = 0;
-    long long             stepTicks  = 1;
-    bool                  forward    = true;
-    int                   permille   = 0;
-    std::string           statusUtf8 = "Applying Windows Installer changes...";
+    long long             totalTicks   = 1000;
+    long long             curTicks     = 0;
+    long long             stepTicks    = 1;
+    bool                  forward      = true;
+    bool                  cancelLocked = false;
+    int                   permille     = 0;
+    std::string           statusUtf8   = "Applying Windows Installer changes...";
     std::string           errorUtf8;
     std::wstring          curActionDesc;
     std::wstring          curActionTmpl;
@@ -3734,7 +3937,8 @@ struct ElevatedWorkerProgressState {
         };
         out << permille << "\n"
             << oneLine(statusUtf8) << "\n"
-            << oneLine(errorUtf8)  << "\n";
+            << oneLine(errorUtf8)  << "\n"
+            << (cancelLocked ? "1" : "0") << "\n";
     }
 };
 
@@ -3742,19 +3946,37 @@ INT CALLBACK OnElevatedMsiRecord(void* pvContext, UINT iMessageType, MSIHANDLE h
     auto* st = static_cast<ElevatedWorkerProgressState*>(pvContext);
     if (!st) return 0;
     std::error_code ec;
-    if (!st->cancelFile.empty() && std::filesystem::exists(st->cancelFile, ec)) {
+    if (!st->cancelLocked && !st->cancelFile.empty() && std::filesystem::exists(st->cancelFile, ec)) {
         return IDCANCEL;
     }
 
     const UINT msgKind = iMessageType & 0xFF000000u;
     switch (msgKind) {
+        case INSTALLMESSAGE_COMMONDATA: {
+            if (::MsiRecordGetFieldCount(hRecord) >= 2 &&
+                ::MsiRecordGetInteger(hRecord, 1) == 2 &&
+                ::MsiRecordGetInteger(hRecord, 2) == 0) {
+                if (!st->cancelLocked) {
+                    st->cancelLocked = true;
+                    st->FlushToDisk();
+                }
+            }
+            return IDOK;
+        }
         case INSTALLMESSAGE_ACTIONSTART: {
+            wchar_t actBuf[256]{};
             wchar_t descBuf[512]{};
             wchar_t tmplBuf[512]{};
+            DWORD cAct  = static_cast<DWORD>(std::size(actBuf));
             DWORD cDesc = static_cast<DWORD>(std::size(descBuf));
             DWORD cTmpl = static_cast<DWORD>(std::size(tmplBuf));
+            ::MsiRecordGetStringW(hRecord, 1, actBuf,  &cAct);
             ::MsiRecordGetStringW(hRecord, 2, descBuf, &cDesc);
             ::MsiRecordGetStringW(hRecord, 3, tmplBuf, &cTmpl);
+            if (std::wcscmp(actBuf, L"RollbackCleanup") == 0 ||
+                std::wcsstr(descBuf, L"Removing backup") != nullptr) {
+                st->cancelLocked = true;
+            }
             if (descBuf[0] != L'\0') {
                 st->curActionDesc = SanitizeUnexpandedMsiTokens(descBuf);
                 st->curActionTmpl = tmplBuf;
@@ -3762,6 +3984,8 @@ INT CALLBACK OnElevatedMsiRecord(void* pvContext, UINT iMessageType, MSIHANDLE h
                     st->statusUtf8 = rsw::WideToUtf8(st->curActionDesc);
                     st->FlushToDisk();
                 }
+            } else if (st->cancelLocked) {
+                st->FlushToDisk();
             }
             return IDOK;
         }

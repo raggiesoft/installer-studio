@@ -425,9 +425,29 @@ inline bool RunAuthenticodeSignTool(
         return false;
     }
 
+    // Embed human-readable `ProductName` (`/d`) and `AboutUrl` (`/du`) inside Authenticode `SpcSpOpusInfo`
+    // so Windows 11 UAC (`consent.exe`) displays the real product title instead of a random `C:\Windows\Installer\xxxxxx.msi` cache filename!
+    auto stripQuotesAndCtl = [](std::string s) {
+        std::string clean;
+        clean.reserve(s.size());
+        for (char c : s) {
+            if (c == '"' || c == '\r' || c == '\n') continue;
+            clean.push_back(c);
+        }
+        return TrimAscii(clean);
+    };
+    const std::string opusDesc = stripQuotesAndCtl(doc.GetString("Package", "", "Name"));
+    const std::string opusUrl  = stripQuotesAndCtl(doc.GetString("Package", "", "AboutUrl"));
+
     std::wostringstream cmd;
     cmd << L"\"" << signTool.wstring() << L"\" sign /fd SHA256 /td SHA256 /tr \""
         << Utf8ToWide(tsUrl) << L"\" ";
+    if (!opusDesc.empty()) {
+        cmd << L"/d \"" << Utf8ToWide(opusDesc) << L"\" ";
+    }
+    if (!opusUrl.empty()) {
+        cmd << L"/du \"" << Utf8ToWide(opusUrl) << L"\" ";
+    }
 
     if (!dlibPath.empty() && !metaPath.empty()) {
         cmd << L"/dlib \"" << dlibPath.wstring() << L"\" /dmdf \"" << metaPath.wstring() << L"\" ";
@@ -647,7 +667,8 @@ inline bool PackageSelfExtractingBootstrapper(
              << "CustomDescription="  << sanitizeSingleLine(doc.GetString("UI", "", "CustomDescription",
                   "Choose a custom destination folder, Start Menu group, and shortcuts step by step before installing.")) << "\n"
              << "AuthorOrArtist="     << sanitizeSingleLine(doc.GetString("UI", "", "AuthorOrArtist", "")) << "\n"
-             << "SetupTypePreset="    << sanitizeSingleLine(doc.GetString("UI", "", "SetupTypePreset", "express_custom")) << "\n";
+             << "SetupTypePreset="    << sanitizeSingleLine(doc.GetString("UI", "", "SetupTypePreset", "express_custom")) << "\n"
+             << "SystemMenuAbout="    << (doc.GetBool("UI", "", "SystemMenuAbout", false) ? "true" : "false") << "\n";
 
     // Serialize optional author-defined `[SetupType.<id>]` cards (`Typical`, `Compact`, `Complete`, custom presets)
     const auto setupTypeIds = doc.GetNamedSectionIds("SetupType");

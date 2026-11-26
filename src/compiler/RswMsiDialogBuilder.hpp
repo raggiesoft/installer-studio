@@ -77,13 +77,73 @@ inline bool PopulateMsiInternalUiTables(
 {
     using SqlVal = std::variant<std::monostate, int, std::string>;
 
-    // 1. Standard Wizard 97 Typography (`TextStyle` table)
+    // 1. Standard Wizard 97 Typography (`TextStyle` table) & Complete `UIText` Localization Strings!
+    // Populating `UIText` ensures native `MSI.DLL` `SelectionTree` popup menus (`MenuLocal`,
+    // `MenuAllLocal`, `MenuAbsent`, etc.) and live Feature Details byte-cost summaries never
+    // print `"!MenuLocal is missing from the UIText Table!"` during standalone `.msi` execution!
     insertRow(hDb, "TextStyle", {"TextStyle", "FaceName", "Size", "Color", "StyleBits"},
               std::vector<SqlVal>{std::string("DlgFont8"),      std::string("Segoe UI"), 9,  0, 0}, outError);
     insertRow(hDb, "TextStyle", {"TextStyle", "FaceName", "Size", "Color", "StyleBits"},
               std::vector<SqlVal>{std::string("DlgFontBold8"),  std::string("Segoe UI"), 9,  0, 1}, outError);
     insertRow(hDb, "TextStyle", {"TextStyle", "FaceName", "Size", "Color", "StyleBits"},
               std::vector<SqlVal>{std::string("VerdanaBold13"), std::string("Segoe UI"), 12, 0, 1}, outError);
+
+    static constexpr std::pair<const char*, const char*> kStandardUiTextRows[] = {
+        {"AbsentPath",          ""},
+        {"Bytes",               "B"},
+        {"GB",                  "GB"},
+        {"KB",                  "KB"},
+        {"MB",                  "MB"},
+        {"MenuAbsent",          "Entire feature will be unavailable"},
+        {"MenuAdvertise",       "Feature will be installed when required"},
+        {"MenuAllCD",           "Entire feature will be installed to run from CD"},
+        {"MenuAllLocal",        "Entire feature will be installed on local hard drive"},
+        {"MenuAllNetwork",      "Entire feature will be installed to run from network"},
+        {"MenuCD",              "Will be installed to run from CD"},
+        {"MenuLocal",           "Will be installed on local hard drive"},
+        {"MenuNetwork",         "Will be installed to run from network"},
+        {"ScriptInProgress",    "Gathering required information..."},
+        {"SelAbsentAbsent",     "This feature will not be installed."},
+        {"SelAbsentAdvertise",  "This feature will be set to be installed when required."},
+        {"SelAbsentCD",         "This feature will be installed to run from CD."},
+        {"SelAbsentLocal",      "This feature will be installed on the local hard drive."},
+        {"SelAbsentNetwork",    "This feature will be installed to run from the network."},
+        {"SelAdvertiseAbsent",  "This feature will become unavailable."},
+        {"SelAdvertiseAdvertise","Will be installed when required."},
+        {"SelAdvertiseCD",      "This feature will be available to run from CD."},
+        {"SelAdvertiseLocal",   "This feature will be installed on your local hard drive."},
+        {"SelAdvertiseNetwork", "This feature will be available to run from the network."},
+        {"SelCDAbsent",         "This feature will be uninstalled completely, and you won't be able to run it from CD."},
+        {"SelCDAdvertise",      "This feature will change from run from CD state to set to be installed when required."},
+        {"SelCDCD",             "This feature will remain to be run from CD."},
+        {"SelCDLocal",          "This feature will change from run from CD state to be installed on the local hard drive."},
+        {"SelChildCostNeg",     "This feature frees up [1] on your hard drive."},
+        {"SelChildCostPos",     "This feature requires [1] on your hard drive."},
+        {"SelCostPending",      "Compiling cost for this feature..."},
+        {"SelLocalAbsent",      "This feature will be completely removed."},
+        {"SelLocalAdvertise",   "This feature will be removed from your local hard drive, but will be set to be installed when required."},
+        {"SelLocalCD",          "This feature will be removed from your local hard drive, but will be still available to run from CD."},
+        {"SelLocalLocal",       "This feature will remain on your local hard drive."},
+        {"SelLocalNetwork",     "This feature will be removed from your local hard drive, but will be still available to run from the network."},
+        {"SelNetworkAbsent",    "This feature will be uninstalled completely, and you won't be able to run it from the network."},
+        {"SelNetworkAdvertise", "This feature will change from run from network state to set to be installed when required."},
+        {"SelNetworkLocal",     "This feature will change from run from network state to be installed on the local hard drive."},
+        {"SelNetworkNetwork",   "This feature will remain to be run from the network."},
+        {"SelParentCostNegNeg", "This feature frees up [1] on your hard drive. It has [2] of [3] subfeatures selected. The subfeatures free up [4] on your hard drive."},
+        {"SelParentCostNegPos", "This feature frees up [1] on your hard drive. It has [2] of [3] subfeatures selected. The subfeatures require [4] on your hard drive."},
+        {"SelParentCostPosNeg", "This feature requires [1] on your hard drive. It has [2] of [3] subfeatures selected. The subfeatures free up [4] on your hard drive."},
+        {"SelParentCostPosPos", "This feature requires [1] on your hard drive. It has [2] of [3] subfeatures selected. The subfeatures require [4] on your hard drive."},
+        {"TimeRemaining",       "Time remaining: {[1] minutes }{[2] seconds}"},
+        {"VolumeCostAvailable", "Available"},
+        {"VolumeCostDifference","Differences"},
+        {"VolumeCostRequired",  "Required"},
+        {"VolumeCostSize",      "Disk Size"},
+        {"VolumeCostVolume",    "Volume"}
+    };
+    for (const auto& [uiKey, uiVal] : kStandardUiTextRows) {
+        insertRow(hDb, "UIText", {"Key", "Text"},
+                  std::vector<SqlVal>{std::string(uiKey), std::string(uiVal)}, outError);
+    }
 
     // MSI Control attribute bitmasks
     constexpr int kVisEn      = 3;       // Visible | Enabled
@@ -163,7 +223,7 @@ inline bool PopulateMsiInternalUiTables(
     addEvt("WelcomeDlg", "Cancel", "SpawnDialog", "CancelDlg", "1", 1);
 
     // -------------------------------------------------------------------------
-    // 2. `LicenseAgreementDlg` (370 x 270)
+    // 2. `LicenseAgreementDlg` (370 x 270) — Closed 5-control cycle (`AgreementText -> AgreementChoice -> Back -> Next -> Cancel -> AgreementText`)
     // -------------------------------------------------------------------------
     addDlg("LicenseAgreementDlg", 370, 270, 3, "[ProductName] Setup - License Agreement", "AgreementChoice", "Next", "Cancel");
     addBannerChrome("LicenseAgreementDlg", "End-User License Agreement", "Please review the license terms carefully before continuing.");
@@ -171,7 +231,7 @@ inline bool PopulateMsiInternalUiTables(
     addCtrl("LicenseAgreementDlg", "AgreementChoice", "CheckBox",       20, 196, 330, 18,  kVisEn,  std::string("IAGREECHECK"), std::string("I have &read and accept the terms in the License Agreement"), std::string("Back"));
     addCtrl("LicenseAgreementDlg", "Back",            "PushButton",     180,243, 56,  17,  kVisEn,  std::monostate{}, std::string("< &Back"), std::string("Next"));
     addCtrl("LicenseAgreementDlg", "Next",            "PushButton",     236,243, 56,  17,  kVisEn,  std::monostate{}, std::string("&Next >"), std::string("Cancel"));
-    addCtrl("LicenseAgreementDlg", "Cancel",          "PushButton",     304,243, 56,  17,  kVisEn,  std::monostate{}, std::string("Cancel"),  std::string("AgreementChoice"));
+    addCtrl("LicenseAgreementDlg", "Cancel",          "PushButton",     304,243, 56,  17,  kVisEn,  std::monostate{}, std::string("Cancel"),  std::string("AgreementText"));
     addCond("LicenseAgreementDlg", "Next", "Disable", "NOT IAGREECHECK");
     addCond("LicenseAgreementDlg", "Next", "Enable",  "IAGREECHECK");
     addEvt("LicenseAgreementDlg", "Back",   "NewDialog",   "WelcomeDlg",   "1", 1);
@@ -373,11 +433,11 @@ inline bool PopulateMsiInternalUiTables(
     addEvt("RepairModeDlg", "RepairBtn", "EndDialog",     "Return", "1", 4);
     addEvt("RepairModeDlg", "Cancel",    "SpawnDialog",   "CancelDlg", "1", 1);
 
-    // Safe Uninstall Confirmation (`VerifyRemoveDlg`)
+    // Safe Uninstall Confirmation (`VerifyRemoveDlg` — Closed 5-control cycle without dangling `Note` pointer!)
     addDlg("VerifyRemoveDlg", 370, 270, 3, "[ProductName] - Safe Uninstall", "RemoveBtn", "RemoveBtn", "Cancel");
     addBannerChrome("VerifyRemoveDlg", "Remove [ProductName]", "Your personal documents and projects are never deleted.");
     addCtrl("VerifyRemoveDlg", "Note",      "Text",       20, 60,  330, 44, kVisEn, std::monostate{},
-            std::string("Click Remove to uninstall [ProductName] program files from your computer. Optional cleanup choices below are unchecked by default:"), std::string("CacheChk"));
+            std::string("Click Remove to uninstall [ProductName] program files from your computer. Optional cleanup choices below are unchecked by default:"), std::monostate{});
     addCtrl("VerifyRemoveDlg", "CacheChk",  "CheckBox",   24, 114, 320, 18, kVisEn, std::string("REMOVE_CACHE"), std::string("&Also remove temporary cache and diagnostic logs"), std::string("PrefsChk"));
     addCtrl("VerifyRemoveDlg", "PrefsChk",  "CheckBox",   24, 140, 320, 18, kVisEn, std::string("REMOVE_PREFS"), std::string("A&lso remove saved window layout and preferences"), std::string("Back"));
     addCtrl("VerifyRemoveDlg", "Back",      "PushButton", 180,243, 56,  17, kVisEn,         std::monostate{}, std::string("< &Back"), std::string("RemoveBtn"));
@@ -391,28 +451,43 @@ inline bool PopulateMsiInternalUiTables(
     // -------------------------------------------------------------------------
     // 6. `ProgressDlg`, `ExitDialog`, `CancelDlg`, `UserExit`, & `FatalError`
     // -------------------------------------------------------------------------
+    // Note on `ProgressBar` Attributes:
+    //   Setting `msidbControlAttributesProgress95` (`0x00010000`) instructs `MSI.DLL` to
+    //   instantiate a native Windows Common Controls `msctls_progress32` bar instead of
+    //   MSI's legacy flat white 2D rectangle (unless `[UI] MsiProgressStyle = flat`)!
+    // Note on `EnableRollback -> Enable`:
+    //   Subscribing `Cancel` to `EnableRollback` automatically disables `Cancel` during
+    //   `InstallFinalize` when `.rbf` rollback files are being deleted (point of no return)!
+    const bool wantFlatMsiProgress = EqualsIgnoreCase(doc.GetString("UI", "", "MsiProgressStyle", "standard"), "flat");
+    const int progressBarAttr      = wantFlatMsiProgress ? kVisEn : (kVisEn | 0x00010000 /* Progress95 native ComCtl32 */);
+
     addDlg("ProgressDlg", 370, 270, 1 /* Modeless */, "[ProductName] Setup", "Cancel", "Cancel", "Cancel");
     addBannerChrome("ProgressDlg", "Configuring [ProductName]", "Please wait while Windows Installer applies changes.");
-    addCtrl("ProgressDlg", "ActionText",  "Text",        20, 75,  330, 18, kVisEn, std::monostate{}, std::string("Preparing installation..."), std::monostate{});
-    addCtrl("ProgressDlg", "ProgressBar", "ProgressBar", 20, 100, 330, 16, kVisEn, std::monostate{}, std::monostate{}, std::monostate{});
-    addCtrl("ProgressDlg", "Cancel",      "PushButton",  304,243, 56,  17, kVisEn, std::monostate{}, std::string("Cancel"), std::monostate{});
+    addCtrl("ProgressDlg", "ActionText",  "Text",        20, 75,  330, 18, kVisEn,          std::monostate{}, std::string("Preparing installation..."), std::monostate{});
+    addCtrl("ProgressDlg", "ProgressBar", "ProgressBar", 20, 100, 330, 16, progressBarAttr, std::monostate{}, std::monostate{}, std::monostate{});
+    addCtrl("ProgressDlg", "Cancel",      "PushButton",  304,243, 56,  17, kVisEn,          std::monostate{}, std::string("Cancel"), std::monostate{});
     addEvt("ProgressDlg", "Cancel", "SpawnDialog", "CancelDlg", "1", 1);
     insertRow(hDb, "EventMapping", {"Dialog_", "Control_", "Event", "Attribute"},
-              std::vector<SqlVal>{std::string("ProgressDlg"), std::string("ActionText"),  std::string("ActionText"),  std::string("Text")}, outError);
+              std::vector<SqlVal>{std::string("ProgressDlg"), std::string("ActionText"),  std::string("ActionText"),     std::string("Text")}, outError);
     insertRow(hDb, "EventMapping", {"Dialog_", "Control_", "Event", "Attribute"},
-              std::vector<SqlVal>{std::string("ProgressDlg"), std::string("ProgressBar"), std::string("SetProgress"), std::string("Progress")}, outError);
+              std::vector<SqlVal>{std::string("ProgressDlg"), std::string("ProgressBar"), std::string("SetProgress"),    std::string("Progress")}, outError);
+    insertRow(hDb, "EventMapping", {"Dialog_", "Control_", "Event", "Attribute"},
+              std::vector<SqlVal>{std::string("ProgressDlg"), std::string("Cancel"),      std::string("EnableRollback"), std::string("Enable")}, outError);
 
+    const bool hasExitLaunchCheck = (!opt.mainExeFileKey.empty() && opt.offerLaunchOnFinish);
     addDlg("ExitDialog", 370, 270, 3, "[ProductName] Setup", "Finish", "Finish", "Finish");
     addCtrl("ExitDialog", "Bitmap",      "Bitmap",     0,   0,   370, 234, kBmpFixed, std::monostate{}, std::string("RswWelcomeBmp"), std::monostate{});
     addCtrl("ExitDialog", "BottomLine",  "Line",       0,   234, 370, 0,   1,         std::monostate{}, std::monostate{}, std::monostate{});
     addCtrl("ExitDialog", "Title",       "Text",       135, 20,  220, 60,  kVisTrans, std::monostate{}, std::string("{\\VerdanaBold13}Completed the [ProductName] Setup Wizard"), std::monostate{});
     addCtrl("ExitDialog", "Description", "Text",       135, 85,  220, 60,  kVisTrans, std::monostate{}, std::string("Click Finish to exit the Setup Wizard."), std::monostate{});
-    if (!opt.mainExeFileKey.empty() && opt.offerLaunchOnFinish) {
+    if (hasExitLaunchCheck) {
         addCtrl("ExitDialog", "LaunchCheck", "CheckBox", 135, 160, 220, 18, kVisTrans, std::string("LAUNCHAPP"), opt.launchChkText, std::string("Finish"));
         addCond("ExitDialog", "LaunchCheck", "Hide", "REMOVE=\"ALL\"");
         addEvt("ExitDialog",  "Finish", "DoAction", "RswLaunchMainApp", "LAUNCHAPP = \"1\" AND NOT REMOVE=\"ALL\"", 1);
     }
-    addCtrl("ExitDialog", "Finish", "PushButton", 236, 243, 56, 17, kVisEn, std::monostate{}, std::string("&Finish"), std::monostate{});
+    // CRITICAL FIX FOR MSI ERROR 2809: When `LaunchCheck -> Finish` exists, `Finish` MUST point back to `"LaunchCheck"` to close the cycle!
+    addCtrl("ExitDialog", "Finish", "PushButton", 236, 243, 56, 17, kVisEn, std::monostate{}, std::string("&Finish"),
+            hasExitLaunchCheck ? SqlVal{std::string("LaunchCheck")} : SqlVal{std::monostate{}});
     addEvt("ExitDialog", "Finish", "EndDialog", "Return", "1", 2);
 
     addDlg("CancelDlg", 260, 85, 3, "[ProductName] Setup", "No", "No", "No");
@@ -465,7 +540,8 @@ inline bool PopulateMsiInternalUiTables(
                 }
             }
         }
-        const std::string firstTab = myCtrls.empty() ? "Next" : myCtrls.front();
+        const std::string firstTab       = myCtrls.empty() ? "Next" : myCtrls.front();
+        const std::string cancelNextCtrl = myCtrls.empty() ? "Back" : myCtrls.front();
 
         addDlg(did, w, h, 3, title, firstTab, "Next", "Cancel");
         if (hasBanner) {
@@ -473,7 +549,7 @@ inline bool PopulateMsiInternalUiTables(
         }
         addCtrl(did, "Back",   "PushButton", w - 190, h - 27, 56, 17, kVisEn, std::monostate{}, std::string("< &Back"), std::string("Next"));
         addCtrl(did, "Next",   "PushButton", w - 134, h - 27, 56, 17, kVisEn, std::monostate{}, std::string("&Next >"), std::string("Cancel"));
-        addCtrl(did, "Cancel", "PushButton", w - 66,  h - 27, 56, 17, kVisEn, std::monostate{}, std::string("Cancel"),  firstTab);
+        addCtrl(did, "Cancel", "PushButton", w - 66,  h - 27, 56, 17, kVisEn, std::monostate{}, std::string("Cancel"),  cancelNextCtrl);
 
         addEvt(did, "Back",   "NewDialog",   prevDlg,     "1", 1);
         addEvt(did, "Next",   "NewDialog",   nextDlg,     "1", 1);

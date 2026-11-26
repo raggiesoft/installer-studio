@@ -544,32 +544,45 @@ inline void DrawRetroFullScreenBackdrop(
     RECT fgRc{fullRc.left + padX, fullRc.top + padY, fullRc.right - padX, fullRc.top + padY + S(72)};
     ::DrawTextW(hdc, bannerTitle.c_str(), -1, &fgRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
-    // 3. Optional Floating 3D-Beveled Billboard Card (`[Billboard.*]` during `Installing`!)
+    // 3. Dead-Center 3D-Beveled Billboard Card (`[Billboard.*]` during `Installing`!)
+    //    In authentic 1995 `FullScreenBlue` & Microsoft ACME `FullScreenTeal` setups, the
+    //    feature showcase billboard sits dead-center on the monitor while the compact
+    //    progress meter docks cleanly at the bottom-right corner!
     if (activeBillboard != nullptr && !activeBillboard->headline.empty()) {
-        const int bbW = std::min(S(460), W - S(48));
-        const int bbH = S(118);
-        const int bbX = fullRc.right - bbW - S(28);
-        const int bbY = fullRc.top + S(84);
+        const int bbW = std::min(S(620), W - S(64));
+        const int bbH = S(176);
+        const int bbX = fullRc.left + (W - bbW) / 2;
+        const int bbY = fullRc.top  + (H - bbH) / 2;
+        RECT dropSh{bbX + S(6), bbY + S(6), bbX + bbW + S(6), bbY + bbH + S(6)};
+        if (!theme.isHighContrast) {
+            HBRUSH hSh = ::CreateSolidBrush(RGB(0, 0, 0));
+            ::FillRect(hdc, &dropSh, hSh);
+            ::DeleteObject(hSh);
+        }
         RECT bbRc{bbX, bbY, bbX + bbW, bbY + bbH};
         HBRUSH hFace = ::CreateSolidBrush(theme.isHighContrast ? theme.cardBg : RGB(192, 192, 192));
         ::FillRect(hdc, &bbRc, hFace);
         ::DeleteObject(hFace);
         DrawClassic3dBevelFrame(hdc, bbRc, false, theme);
 
-        DrawOptionBadge48(g, static_cast<float>(bbX + S(14)), static_cast<float>(bbY + S(18)),
-                          static_cast<float>(S(44)), activeBillboard->glyph,
+        // Inner sunken header band inside the dead-center 1995 Billboard card
+        RECT innerRc{bbX + S(12), bbY + S(12), bbRc.right - S(12), bbRc.bottom - S(12)};
+        DrawClassic3dBevelFrame(hdc, innerRc, true, theme);
+
+        DrawOptionBadge48(g, static_cast<float>(bbX + S(26)), static_cast<float>(bbY + S(32)),
+                          static_cast<float>(S(54)), activeBillboard->glyph,
                           isTealAcme ? RGB(0, 128, 128) : RGB(0, 0, 128), brand::kWarmGold, theme);
 
-        HFONT fBh = CreateScaledFont(L"Segoe UI", 11, FW_BOLD,   dpi, theme.textScalePercent);
-        HFONT fBb = CreateScaledFont(L"Segoe UI",  9, FW_NORMAL, dpi, theme.textScalePercent);
+        HFONT fBh = CreateScaledFont(L"Segoe UI", 13, FW_BOLD,   dpi, theme.textScalePercent);
+        HFONT fBb = CreateScaledFont(L"Segoe UI", 10, FW_NORMAL, dpi, theme.textScalePercent);
         ::SelectObject(hdc, fBh);
-        ::SetTextColor(hdc, theme.isHighContrast ? theme.textPrimary : RGB(0, 0, 128));
-        RECT bhRc{bbX + S(68), bbY + S(14), bbRc.right - S(14), bbY + S(38)};
+        ::SetTextColor(hdc, theme.isHighContrast ? theme.textPrimary : (isTealAcme ? RGB(0, 96, 96) : RGB(0, 0, 128)));
+        RECT bhRc{bbX + S(96), bbY + S(28), bbRc.right - S(26), bbY + S(62)};
         ::DrawTextW(hdc, activeBillboard->headline.c_str(), -1, &bhRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
         ::SelectObject(hdc, fBb);
         ::SetTextColor(hdc, theme.isHighContrast ? theme.textSecondary : RGB(15, 23, 42));
-        RECT bdRc{bbX + S(68), bbY + S(40), bbRc.right - S(14), bbRc.bottom - S(10)};
+        RECT bdRc{bbX + S(96), bbY + S(66), bbRc.right - S(26), bbRc.bottom - S(22)};
         ::DrawTextW(hdc, activeBillboard->body.c_str(), -1, &bdRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
         ::DeleteObject(fBh);
         ::DeleteObject(fBb);
