@@ -561,6 +561,27 @@ int wmain() {
             }
             Check(descClean && tmplPresent,
                   "ActionText separates Description from rich '[1]/[9]/[6]' File/Directory/Size Template");
+
+            // Verify `ProgressDlg` `ActionText`, `ActionData`, and `TimeRemaining` set `NoPrefix` (`0x00020000`)
+            // and NEVER set `FormatSize` (`0x00080000` — which would coerce status strings into `"0KB"`!)
+            rsw::ScopedMsiHandle hPrgView, hPrgRec;
+            int prgChecked = 0;
+            bool prgBitsOk = true;
+            if (::MsiDatabaseOpenViewW(
+                    hActDb.Get(),
+                    L"SELECT `Control`, `Attributes` FROM `Control` WHERE `Dialog_` = 'ProgressDlg' AND (`Control` = 'ActionText' OR `Control` = 'ActionData' OR `Control` = 'TimeRemaining')",
+                    hPrgView.Put()) == ERROR_SUCCESS &&
+                ::MsiViewExecute(hPrgView.Get(), 0) == ERROR_SUCCESS) {
+                while (::MsiViewFetch(hPrgView.Get(), hPrgRec.Put()) == ERROR_SUCCESS) {
+                    const int attr = ::MsiRecordGetInteger(hPrgRec.Get(), 2);
+                    if ((attr & 0x00020000) == 0 || (attr & 0x00080000) != 0) {
+                        prgBitsOk = false;
+                    }
+                    ++prgChecked;
+                }
+            }
+            Check(prgChecked == 3 && prgBitsOk,
+                  "ProgressDlg ActionText/ActionData/TimeRemaining use NoPrefix (0x20000) without FormatSize (0x80000)");
         }
 
         // 5C. Verify `v0.4.3` Combined Universal Packaging (`<stem>-offline-setup.exe` + Smart CPU Web Stub `<stem>-setup.exe`)!

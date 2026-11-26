@@ -901,6 +901,8 @@ public:
             outLogW = 540; outLogH = 310;
         } else if (cfg.wizardStyle == rsw::WizardStyleKind::FluentMica) {
             outLogW = 680; outLogH = 496;
+        } else if (rsw::UsesClassic3dDialogSheet(cfg.wizardStyle)) {
+            outLogW = 640; outLogH = 490;
         } else {
             outLogW = 620; outLogH = 490;
         }
@@ -1741,13 +1743,17 @@ public:
         } else {
             // Multi-Step Wizard Canvas (`StandardGlass`, `Wizard95`, `Wizard97`, `AeroWizard`,
             // `FluentMica`, `FullScreenBlue`, `FullScreenTeal`, & expanded `OneClick`):
-            // Note: True Windows 95 (`UsesClassic3dDialogSheet`) uses uniform `#C0C0C0` 3D dialog gray
-            // (`bodyTop = S(52)`), whereas ONLY `Wizard97` uses the `80px` white top header banner!
+            // AUTHENTIC `Wizard95` SPECIFICATION:
+            //   - In `Wizard97`, ONLY `Welcome` & `Finished` have the left graphic rail while interior
+            //     pages switch to an `80px` top white header banner (`cardX = S(18)`).
+            //   - In `Wizard95` (`UsesClassic3dDialogSheet`: `Wizard95`, `FullScreenBlue`, `FullScreenTeal`),
+            //     ALL wizard pages keep the exact same `164px` sunken left graphic rail (`S(12)..S(176)`)
+            //     with ZERO top header strip, placing every control in the right column (`cardX = S(192)`)!
             const bool isMica       = (cfg.wizardStyle == rsw::WizardStyleKind::FluentMica);
             const bool isWin95Sheet = rsw::UsesClassic3dDialogSheet(cfg.wizardStyle);
             const bool isWiz97Hdr   = (cfg.wizardStyle == rsw::WizardStyleKind::Wizard97);
-            const int bodyTop = isMica ? S(42) : (isWin95Sheet ? S(52) : (isWiz97Hdr ? S(80) : S(104)));
-            const int cardX   = isMica ? S(180) : S(18);
+            const int bodyTop = isMica ? S(42) : (isWin95Sheet ? S(50) : (isWiz97Hdr ? S(80) : S(104)));
+            const int cardX   = isMica ? S(180) : (isWin95Sheet ? S(192) : S(18));
             const int cardW   = W - cardX - S(18);
 
             // `SetupType`: 1..4 Full-Row Vector Option Cards (`Express/Compact/Custom` or `Typical/Compact/Complete/Custom`!)
@@ -1776,24 +1782,32 @@ public:
             ::MoveWindow(hRepairFull,  cardX, repStart + repH + S(12),cardW, repH, TRUE);
 
             // `SafeUninstall`: 2 safe unchecked checkboxes
-            const int unChkBase = bodyTop + (isWin95Sheet ? S(104) : S(162));
+            const int unChkBase = bodyTop + (isWin95Sheet ? S(112) : S(162));
             ::MoveWindow(hUninstCache, cardX + S(10), unChkBase,         cardW - S(20), S(26), TRUE);
             ::MoveWindow(hUninstPrefs, cardX + S(10), unChkBase + S(34), cardW - S(20), S(26), TRUE);
 
             // `License`: Step intro + High-Contrast RichEdit + Accept checkbox
-            ::MoveWindow(hLicRich,   cardX, bodyTop + S(30), cardW, footerY - bodyTop - S(76), TRUE);
+            ::MoveWindow(hLicRich,   cardX, bodyTop + S(28), cardW, footerY - bodyTop - S(72), TRUE);
             ::MoveWindow(hLicAccept, cardX, footerY - S(36), cardW, S(26), TRUE);
 
-            // `CustomFeatures` (`SelectionTree` on left + `Feature Details` Card painted on right!)
-            const int treeW = (cardW * 58) / 100;
-            const int treeH = footerY - bodyTop - S(78);
-            ::MoveWindow(hFeatTree,     cardX, bodyTop + S(32), treeW, treeH, TRUE);
-            ::MoveWindow(hFeatResetBtn, cardX, bodyTop + S(38) + treeH, S(132), S(28), TRUE);
+            // `CustomFeatures`: Stacked full-width `SelectionTree` + `Feature Details` on `Wizard95`
+            // (so the right-hand column beside the `164px` rail never looks cramped!), or side-by-side on wide sheets!
+            if (isWin95Sheet) {
+                ::MoveWindow(hFeatTree,     cardX, bodyTop + S(28),  cardW,  S(172), TRUE);
+                ::MoveWindow(hFeatResetBtn, cardX, bodyTop + S(336), S(136), S(28),  TRUE);
+            } else {
+                const int treeW = (cardW * 58) / 100;
+                const int treeH = footerY - bodyTop - S(78);
+                ::MoveWindow(hFeatTree,     cardX, bodyTop + S(32), treeW, treeH, TRUE);
+                ::MoveWindow(hFeatResetBtn, cardX, bodyTop + S(38) + treeH, S(132), S(28), TRUE);
+            }
 
             // `CustomFolder`: Path `EDIT` + `&Browse...` (Disk Space Card painted below!)
-            ::MoveWindow(hDirLabel,  cardX, bodyTop + S(38), cardW,          S(22), TRUE);
-            ::MoveWindow(hDirEdit,   cardX, bodyTop + S(64), cardW - S(98),  S(30), TRUE);
-            ::MoveWindow(hDirBrowse, cardX + cardW - S(90), bodyTop + S(63), S(90), S(32), TRUE);
+            const int dirLblOff = isWin95Sheet ? S(44) : S(38);
+            const int dirEdtOff = isWin95Sheet ? S(68) : S(64);
+            ::MoveWindow(hDirLabel,  cardX, bodyTop + dirLblOff, cardW,          S(22), TRUE);
+            ::MoveWindow(hDirEdit,   cardX, bodyTop + dirEdtOff, cardW - S(98),  S(30), TRUE);
+            ::MoveWindow(hDirBrowse, cardX + cardW - S(90), bodyTop + dirEdtOff - S(1), S(90), S(32), TRUE);
 
             // `CustomShortcuts`: Start Menu group + Desktop & File Association checkboxes
             ::MoveWindow(hSmLabel,      cardX, bodyTop + S(42),  cardW, S(22), TRUE);
@@ -1802,7 +1816,7 @@ public:
             ::MoveWindow(hFileAssocChk, cardX, bodyTop + S(160), cardW, S(28), TRUE);
 
             // `Installing`: Detailed Progress Card (`ActionText` + multiline `File / Directory / Size` + `ProgressBar` + `TimeRemaining`)
-            const int progTopOff = isWin95Sheet ? S(64) : S(128);
+            const int progTopOff = isWin95Sheet ? S(56) : S(128);
             ::MoveWindow(hProgStatus, cardX + S(16), bodyTop + progTopOff,         cardW - S(32), S(64), TRUE);
             ::MoveWindow(hProgBar,    cardX + S(16), bodyTop + progTopOff + S(68), cardW - S(32), S(22), TRUE);
 
@@ -2987,17 +3001,19 @@ public:
             ::DrawTextW(memDc, hdrInfo.aeroInstruction, -1, &mTitleRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
             ::SelectObject(memDc, oFm);
         } else if (isWin95Sheet) {
-            // Authentic Windows 95 (`Wizard95`, `FullScreenBlue`, `FullScreenTeal`) interior header:
-            // uniform `#C0C0C0` 3D dialog gray (NEVER Wizard 97's white top banner!) + etched divider!
-            if (hAppIconSmall || hAppIconBig) {
-                ::DrawIconEx(memDc, S(18), S(12), hAppIconSmall ? hAppIconSmall : hAppIconBig, S(24), S(24), 0, nullptr, DI_NORMAL);
-            }
-            HGDIOBJ oF95 = ::SelectObject(memDc, hFontSection);
+            // Authentic Windows 95 (`Wizard95`, `FullScreenBlue`, `FullScreenTeal`) page layout:
+            // ALL pages share the exact same `164px` sunken left graphic rail (`S(12)..S(176)`)
+            // and bold right-column headline (`S(192)`) as `Welcome` & `Finished` — ZERO Wizard 97 top header!
+            RECT railRc{S(12), S(12), S(176), footerY - S(10)};
+            rsw::ui::DrawClassicLeftSidebarRail(
+                memDc, g, railRc, dpi, theme,
+                cfg.wizardStyle == rsw::WizardStyleKind::FullScreenTeal,
+                hAppIconBig, hArtworkBmp, artworkW, artworkH, cfg.manufacturer);
+            HGDIOBJ oF95 = ::SelectObject(memDc, hFontHeadline);
             ::SetTextColor(memDc, theme.textPrimary);
-            RECT t95Rc{S(50), S(10), W - S(18), S(38)};
+            RECT t95Rc{S(192), S(14), W - S(18), S(46)};
             ::DrawTextW(memDc, hdrInfo.aeroInstruction, -1, &t95Rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
             ::SelectObject(memDc, oF95);
-            rsw::ui::DrawClassicEtchedHorizontalRule(memDc, S(12), W - S(12), S(44), theme);
         } else if (isWiz97Hdr) {
             rsw::ui::DrawWizard97TopHeader(
                 memDc, W, dpi, theme,
@@ -3016,8 +3032,8 @@ public:
         }
 
         // 3. Page-Specific Content Canvas
-        const int bodyTop = isMica ? S(42) : (isWin95Sheet ? S(52) : (isWiz97Hdr ? S(80) : S(104)));
-        const int cardX   = isMica ? S(180) : S(18);
+        const int bodyTop = isMica ? S(42) : (isWin95Sheet ? S(50) : (isWiz97Hdr ? S(80) : S(104)));
+        const int cardX   = isMica ? S(180) : (isWin95Sheet ? S(192) : S(18));
         const int cardW   = W - cardX - S(18);
         HGDIOBJ oldF      = ::SelectObject(memDc, hFontBody);
 
@@ -3090,68 +3106,108 @@ public:
             case WizardPage::CustomFeatures: {
                 ::SelectObject(memDc, hFontBold);
                 ::SetTextColor(memDc, theme.textPrimary);
-                RECT pRc{cardX, bodyTop + S(2), cardX + cardW, bodyTop + S(28)};
+                RECT pRc{cardX, bodyTop + S(2), cardX + cardW, bodyTop + S(26)};
                 ::DrawTextW(memDc, L"Click any feature's drive icon (or press Space) to choose how it is installed:", -1, &pRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
-                // Right-Hand Glass Card (`Feature Details` + Live Byte Cost!)
+                // `Feature Details` + Live Byte Cost Card (stacked below `SelectionTree` on `Wizard95` so both get full width, or side-by-side on wide sheets!)
                 const int treeW  = (cardW * 58) / 100;
                 const int detX   = cardX + treeW + S(12);
-                RECT detCard{detX, bodyTop + S(32), cardX + cardW, footerY - S(14)};
+                RECT detCard = isWin95Sheet
+                    ? RECT{cardX, bodyTop + S(208), cardX + cardW, bodyTop + S(328)}
+                    : RECT{detX,  bodyTop + S(32),  cardX + cardW, footerY - S(14)};
                 DrawPanelSurface(memDc, g, detCard, S(10));
 
                 if (!featureNodes.empty() && selectedFeatureIdx < featureNodes.size()) {
                     const auto& fn = featureNodes[selectedFeatureIdx];
-                    ::SelectObject(memDc, hFontSection);
-                    ::SetTextColor(memDc, theme.textPrimary);
-                    RECT tRc{detCard.left + S(14), detCard.top + S(12), detCard.right - S(14), detCard.top + S(38)};
-                    ::DrawTextW(memDc, fn.title.c_str(), -1, &tRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-
-                    rsw::PaintSingleMsiStateCell(
-                        g,
-                        static_cast<float>(detCard.left + S(14)),
-                        static_cast<float>(detCard.top + S(42)),
-                        static_cast<float>(S(30)),
-                        static_cast<float>(S(18)),
-                        fn.currentState,
-                        theme);
-
-                    ::SelectObject(memDc, hFontSmall);
-                    const COLORREF stateTextCol = theme.isHighContrast
-                        ? theme.textPrimary
-                        : (theme.isDarkMode ? RGB(125, 211, 252) : RGB(30, 64, 175));
-                    ::SetTextColor(memDc, stateTextCol);
-                    const std::wstring stTxt = rsw::DescribeMsiTreeState(fn.currentState);
-                    RECT stRc{detCard.left + S(50), detCard.top + S(39), detCard.right - S(12), detCard.top + S(88)};
-                    ::DrawTextW(memDc, stTxt.c_str(), -1, &stRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
-
-                    ::SelectObject(memDc, hFontBody);
-                    ::SetTextColor(memDc, theme.textSecondary);
-                    RECT dRc{detCard.left + S(14), detCard.top + S(92), detCard.right - S(14), detCard.bottom - S(72)};
-                    ::DrawTextW(memDc, fn.description.c_str(), -1, &dRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
-
                     std::wstring volLbl;
                     std::uint64_t freeB = 0;
                     const bool hasVol = QueryVolumeFreeBytesForPath(installDir, volLbl, freeB);
+                    const COLORREF stateTextCol = theme.isHighContrast
+                        ? theme.textPrimary
+                        : (theme.isDarkMode ? RGB(125, 211, 252) : RGB(30, 64, 175));
+                    const std::wstring stTxt = rsw::DescribeMsiTreeState(fn.currentState);
 
-                    ::SelectObject(memDc, hFontSmall);
-                    ::SetTextColor(memDc, theme.textPrimary);
-                    std::wstring costSummary =
-                        L"Feature size:  " + FormatByteSizeFriendly(fn.ownBytes) +
-                        L"\r\nTotal selected:  " + FormatByteSizeFriendly(estimatedReqBytes);
-                    if (hasVol) {
-                        costSummary += L"\r\nAvailable on drive:  " + FormatByteSizeFriendly(freeB);
+                    if (isWin95Sheet) {
+                        ::SelectObject(memDc, hFontBold);
+                        ::SetTextColor(memDc, theme.textPrimary);
+                        RECT tRc{detCard.left + S(12), detCard.top + S(8), detCard.right - S(12), detCard.top + S(30)};
+                        ::DrawTextW(memDc, fn.title.c_str(), -1, &tRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+                        rsw::PaintSingleMsiStateCell(
+                            g, static_cast<float>(detCard.left + S(12)), static_cast<float>(detCard.top + S(32)),
+                            static_cast<float>(S(30)), static_cast<float>(S(18)), fn.currentState, theme);
+                        ::SelectObject(memDc, hFontSmall);
+                        ::SetTextColor(memDc, stateTextCol);
+                        RECT stRc{detCard.left + S(48), detCard.top + S(32), detCard.right - S(12), detCard.top + S(52)};
+                        ::DrawTextW(memDc, stTxt.c_str(), -1, &stRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+                        ::SelectObject(memDc, hFontBody);
+                        ::SetTextColor(memDc, theme.textSecondary);
+                        RECT dRc{detCard.left + S(12), detCard.top + S(54), detCard.right - S(12), detCard.bottom - S(28)};
+                        ::DrawTextW(memDc, fn.description.c_str(), -1, &dRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
+
+                        ::SelectObject(memDc, hFontSmall);
+                        ::SetTextColor(memDc, theme.textPrimary);
+                        std::wstring costLine = L"Feature: " + FormatByteSizeFriendly(fn.ownBytes) +
+                                                L"  •  Selected: " + FormatByteSizeFriendly(estimatedReqBytes);
+                        if (hasVol) costLine += L"  •  Free: " + FormatByteSizeFriendly(freeB);
+                        RECT cRc{detCard.left + S(12), detCard.bottom - S(24), detCard.right - S(12), detCard.bottom - S(6)};
+                        ::DrawTextW(memDc, costLine.c_str(), -1, &cRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                    } else {
+                        ::SelectObject(memDc, hFontSection);
+                        ::SetTextColor(memDc, theme.textPrimary);
+                        RECT tRc{detCard.left + S(14), detCard.top + S(12), detCard.right - S(14), detCard.top + S(38)};
+                        ::DrawTextW(memDc, fn.title.c_str(), -1, &tRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+                        rsw::PaintSingleMsiStateCell(
+                            g,
+                            static_cast<float>(detCard.left + S(14)),
+                            static_cast<float>(detCard.top + S(42)),
+                            static_cast<float>(S(30)),
+                            static_cast<float>(S(18)),
+                            fn.currentState,
+                            theme);
+
+                        ::SelectObject(memDc, hFontSmall);
+                        ::SetTextColor(memDc, stateTextCol);
+                        RECT stRc{detCard.left + S(50), detCard.top + S(39), detCard.right - S(12), detCard.top + S(88)};
+                        ::DrawTextW(memDc, stTxt.c_str(), -1, &stRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
+
+                        ::SelectObject(memDc, hFontBody);
+                        ::SetTextColor(memDc, theme.textSecondary);
+                        RECT dRc{detCard.left + S(14), detCard.top + S(92), detCard.right - S(14), detCard.bottom - S(72)};
+                        ::DrawTextW(memDc, fn.description.c_str(), -1, &dRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
+
+                        ::SelectObject(memDc, hFontSmall);
+                        ::SetTextColor(memDc, theme.textPrimary);
+                        std::wstring costSummary =
+                            L"Feature size:  " + FormatByteSizeFriendly(fn.ownBytes) +
+                            L"\r\nTotal selected:  " + FormatByteSizeFriendly(estimatedReqBytes);
+                        if (hasVol) {
+                            costSummary += L"\r\nAvailable on drive:  " + FormatByteSizeFriendly(freeB);
+                        }
+                        RECT cRc{detCard.left + S(14), detCard.bottom - S(66), detCard.right - S(14), detCard.bottom - S(10)};
+                        ::DrawTextW(memDc, costSummary.c_str(), -1, &cRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
                     }
-                    RECT cRc{detCard.left + S(14), detCard.bottom - S(66), detCard.right - S(14), detCard.bottom - S(10)};
-                    ::DrawTextW(memDc, costSummary.c_str(), -1, &cRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
                 }
                 break;
             }
 
             case WizardPage::CustomFolder: {
-                ::SelectObject(memDc, hFontSection);
-                ::SetTextColor(memDc, theme.textPrimary);
-                RECT hRc{cardX, bodyTop + S(2), cardX + cardW, bodyTop + S(30)};
-                ::DrawTextW(memDc, L"Select Destination Folder", -1, &hRc, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+                if (isWin95Sheet) {
+                    ::SelectObject(memDc, hFontBody);
+                    ::SetTextColor(memDc, theme.textSecondary);
+                    const std::wstring dirIntro =
+                        L"Setup will install " + cfg.productName + L" in the following folder.\r\n"
+                        L"To install to a different folder, enter it below or click Browse.";
+                    RECT hRc{cardX, bodyTop, cardX + cardW, bodyTop + S(40)};
+                    ::DrawTextW(memDc, dirIntro.c_str(), -1, &hRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
+                } else {
+                    ::SelectObject(memDc, hFontSection);
+                    ::SetTextColor(memDc, theme.textPrimary);
+                    RECT hRc{cardX, bodyTop + S(2), cardX + cardW, bodyTop + S(30)};
+                    ::DrawTextW(memDc, L"Select Destination Folder", -1, &hRc, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+                }
 
                 // Live `GetDiskFreeSpaceExW` Glass Capacity Card!
                 wchar_t editBuf[MAX_PATH * 4]{};
@@ -3163,7 +3219,8 @@ public:
                 std::uint64_t freeBytes = 0;
                 const bool hasDisk = QueryVolumeFreeBytesForPath(livePath, volLabel, freeBytes);
 
-                RECT diskCard{cardX, bodyTop + S(114), cardX + cardW, bodyTop + S(214)};
+                const int diskTopOff = isWin95Sheet ? S(116) : S(114);
+                RECT diskCard{cardX, bodyTop + diskTopOff, cardX + cardW, bodyTop + diskTopOff + S(100)};
                 DrawPanelSurface(memDc, g, diskCard, S(10));
                 rsw::ui::DrawOptionBadge48(
                     g, static_cast<float>(diskCard.left + S(14)), static_cast<float>(diskCard.top + S(26)),
@@ -3188,10 +3245,17 @@ public:
             }
 
             case WizardPage::CustomShortcuts: {
-                ::SelectObject(memDc, hFontSection);
-                ::SetTextColor(memDc, theme.textPrimary);
-                RECT hRc{cardX, bodyTop + S(2), cardX + cardW, bodyTop + S(32)};
-                ::DrawTextW(memDc, L"Configure Start Menu & Shortcuts", -1, &hRc, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+                if (isWin95Sheet) {
+                    ::SelectObject(memDc, hFontBody);
+                    ::SetTextColor(memDc, theme.textSecondary);
+                    RECT hRc{cardX, bodyTop, cardX + cardW, bodyTop + S(38)};
+                    ::DrawTextW(memDc, L"Setup will add program icons to the Start Menu folder listed below. You may type a new folder name or choose optional shortcuts:", -1, &hRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
+                } else {
+                    ::SelectObject(memDc, hFontSection);
+                    ::SetTextColor(memDc, theme.textPrimary);
+                    RECT hRc{cardX, bodyTop + S(2), cardX + cardW, bodyTop + S(32)};
+                    ::DrawTextW(memDc, L"Configure Start Menu & Shortcuts", -1, &hRc, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+                }
                 break;
             }
 

@@ -36,6 +36,7 @@
 
 #include "../common/RswManifestAst.hpp"
 #include <msi.h>
+#include <msidefs.h>
 #include <msiquery.h>
 
 #include <set>
@@ -90,6 +91,7 @@ inline bool PopulateMsiInternalUiTables(
 
     static constexpr std::pair<const char*, const char*> kStandardUiTextRows[] = {
         {"AbsentPath",          ""},
+        {"bytes",               "bytes"},
         {"Bytes",               "B"},
         {"GB",                  "GB"},
         {"KB",                  "KB"},
@@ -460,11 +462,16 @@ inline bool PopulateMsiInternalUiTables(
     // -------------------------------------------------------------------------
     // Detailed `MSI.DLL` `ProgressDlg` (`ActionText` + multiline `ActionData` [`File` / `Directory` / `Size`]
     // + `Progress95` `ProgressBar` + live `TimeRemaining` + `EnableRollback` Cancel lock!):
-    constexpr int kVisNoPrefix     = kVisEn | 0x00080000; // `msidbControlAttributesNoPrefix` prevents `&` path underlines!
+    // CRITICAL `MsiDefs.h` BITMASK GUARDRAIL:
+    //   - `msidbControlAttributesNoPrefix`   == `0x00020000` (`131072`: prevents `&` in file paths from turning into underlines).
+    //   - `msidbControlAttributesFormatSize` == `0x00080000` (`524288`: converts integers to `"0KB"` — NEVER set on `ActionText`/`ActionData`/`TimeRemaining`!).
+    constexpr int kVisNoPrefix     = kVisEn | msidbControlAttributesNoPrefix;
     const bool wantFlatMsiProgress = EqualsIgnoreCase(doc.GetString("UI", "", "MsiProgressStyle", "standard"), "flat");
-    const int progressBarAttr      = wantFlatMsiProgress ? kVisEn : (kVisEn | 0x00010000 /* Progress95 native ComCtl32 */);
+    const int progressBarAttr      = wantFlatMsiProgress
+        ? msidbControlAttributesVisible
+        : (msidbControlAttributesVisible | msidbControlAttributesProgress95);
 
-    addDlg("ProgressDlg", 370, 270, 1 /* Modeless */, "[ProductName] Setup", "Cancel", "Cancel", "Cancel");
+    addDlg("ProgressDlg", 370, 270, msidbDialogAttributesVisible | msidbDialogAttributesMinimize /* Modeless */, "[ProductName] Setup", "Cancel", "Cancel", "Cancel");
     addCtrl("ProgressDlg", "BannerBitmap", "Bitmap", 0,  0,   370, 44, kBmpFixed, std::monostate{}, std::string("RswBannerBmp"), std::monostate{});
     addCtrl("ProgressDlg", "BannerLine",   "Line",   0,  44,  370, 0,  1,         std::monostate{}, std::monostate{}, std::monostate{});
     addCtrl("ProgressDlg", "BottomLine",   "Line",   0,  234, 370, 0,  1,         std::monostate{}, std::monostate{}, std::monostate{});
@@ -479,10 +486,10 @@ inline bool PopulateMsiInternalUiTables(
 
     addCtrl("ProgressDlg", "StatusLabel",   "Text",        20, 58,  42,  14, kVisEn,          std::monostate{}, std::string("{\\DlgFontBold8}Status:"), std::monostate{});
     addCtrl("ProgressDlg", "ActionText",    "Text",        64, 58,  286, 14, kVisNoPrefix,    std::monostate{}, std::string("Preparing installation..."), std::monostate{});
-    addCtrl("ProgressDlg", "ActionData",    "Text",        20, 76,  330, 42, kVisNoPrefix,    std::monostate{}, std::string("Initializing Windows Installer transaction..."), std::monostate{});
-    addCtrl("ProgressDlg", "ProgressBar",   "ProgressBar", 20, 124, 330, 16, progressBarAttr, std::monostate{}, std::monostate{}, std::monostate{});
+    addCtrl("ProgressDlg", "ActionData",    "Text",        20, 76,  330, 44, kVisNoPrefix,    std::monostate{}, std::string("Initializing..."), std::monostate{});
+    addCtrl("ProgressDlg", "ProgressBar",   "ProgressBar", 20, 126, 330, 16, progressBarAttr, std::monostate{}, std::monostate{}, std::monostate{});
     addCtrl("ProgressDlg", "TimeRemaining", "Text",        20, 148, 330, 16, kVisNoPrefix,    std::monostate{}, std::string(""), std::monostate{});
-    addCtrl("ProgressDlg", "Cancel",        "PushButton",  304,243, 56,  17, kVisEn,          std::monostate{}, std::string("Cancel"), std::monostate{});
+    addCtrl("ProgressDlg", "Cancel",        "PushButton",  304,243, 56,  17, kVisEn,          std::monostate{}, std::string("Cancel"), std::string("Cancel"));
     addEvt("ProgressDlg", "Cancel", "SpawnDialog", "CancelDlg", "1", 1);
     insertRow(hDb, "EventMapping", {"Dialog_", "Control_", "Event", "Attribute"},
               std::vector<SqlVal>{std::string("ProgressDlg"), std::string("ActionText"),    std::string("ActionText"),     std::string("Text")}, outError);

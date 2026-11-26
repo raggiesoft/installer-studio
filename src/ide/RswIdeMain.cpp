@@ -2865,18 +2865,32 @@ public:
                 }
                 if (stepIdx == 5) { stepGlyph = rsw::ui::GlassGlyph::Blocks;    stepCol = rsw::ui::brand::kVioletTune; kicker = L"Select Program Features"; }
 
+                const bool win95Rail = rsw::UsesClassic3dDialogSheet(wk);
                 if (micaMode) {
                     rsw::ui::DrawFluentMicaStepRail(dlgDc, dlgG, PS(136), 0, relFootY, (stepIdx == 0) ? 0 : ((stepIdx == 3) ? 5 : 2), pvDpi, pvTheme, prodName, hPreviewIcon);
+                } else if (win95Rail) {
+                    RECT railRc{PS(10), PS(10), PS(142), relFootY - PS(8)};
+                    rsw::ui::DrawClassicLeftSidebarRail(
+                        dlgDc, dlgG, railRc, pvDpi, pvTheme,
+                        wk == rsw::WizardStyleKind::FullScreenTeal,
+                        hPreviewIcon, hPreviewArt, previewArtW, previewArtH, pubName);
+                    HFONT fH95 = rsw::ui::CreateScaledFont(L"Segoe UI", 11, FW_BOLD, pvDpi, 100);
+                    HGDIOBJ oF95 = ::SelectObject(dlgDc, fH95);
+                    ::SetTextColor(dlgDc, pvTheme.textPrimary);
+                    RECT h95Rc{PS(154), PS(12), dW - PS(12), PS(38)};
+                    ::DrawTextW(dlgDc, kicker, -1, &h95Rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                    ::SelectObject(dlgDc, oF95);
+                    ::DeleteObject(fH95);
                 } else if (classicHdr) {
-                    rsw::ui::DrawWizard97TopHeader(dlgDc, dW, pvDpi, pvTheme, rsw::UsesClassic3dDialogSheet(wk), kicker, prodName + L" Setup", hPreviewIcon);
+                    rsw::ui::DrawWizard97TopHeader(dlgDc, dW, pvDpi, pvTheme, false, kicker, prodName + L" Setup", hPreviewIcon);
                 } else if (aeroMode) {
                     rsw::ui::DrawAeroWizardTopHeader(dlgDc, dlgG, dW, pvDpi, pvTheme, prodName + L" Setup", kicker, hPreviewIcon, stepGlyph, stepCol, pubName);
                 } else {
                     rsw::ui::DrawGlassTopHeader(dlgDc, dlgG, dW, pvDpi, pvTheme, pubName, rsw::ui::UpperWide(kicker), prodName, hPreviewIcon, stepGlyph, stepCol);
                 }
 
-                const int bTop = micaMode ? PS(28) : (classicHdr ? PS(74) : PS(96));
-                const int cx   = micaMode ? PS(148) : PS(14);
+                const int bTop = micaMode ? PS(28) : (win95Rail ? PS(42) : (classicHdr ? PS(74) : PS(96)));
+                const int cx   = micaMode ? PS(148) : (win95Rail ? PS(154) : PS(14));
                 const int cw   = dW - cx - PS(14);
 
                 if (wk == rsw::WizardStyleKind::PassiveToast) {
