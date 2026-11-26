@@ -613,10 +613,105 @@ inline void DrawGlassTopHeader(
         static_cast<float>(clientW - S(36)), static_cast<float>(S(4)), theme);
 }
 
-/// Paints the Modern Windows **AeroWizard** Command Header (`WizardLayout = aerowizard`):
-///   - Single clean `AW_HEADERAREA` band (`0..90px`) without duplicating the OS window titlebar!
-///   - `28x28` Brand Squircle Emblem + Kicker Eyebrow + `16pt` Aero Main Instruction + `60x60` Step Medallion!
-///   - `< &Back` stays in the familiar Wizard97 bottom-right footer alongside `Next >` and `Cancel`.
+/// Paints the iconic Windows **AeroWizard** `28x28` circular `<-` Back button (`AW_BACKBUTTON`):
+///   - Always located at the **top-left** of the Aero command bar (`x = 10, y = 5`), NEVER in the bottom footer!
+///   - Luminous Azure/Cobalt circle with crisp white `<-` vector arrow when `isEnabled == true` (Step 2+),
+///     and subtle recessed muted circle when `isEnabled == false` (Step 1).
+inline void DrawAeroWizardBackCircleButton(
+    Gdiplus::Graphics& g,
+    const RECT& rc,
+    UINT dpi,
+    const RswTheme& theme,
+    bool isEnabled,
+    bool hasFocus,
+    bool isHovered,
+    bool isPressed) noexcept
+{
+    auto S = [&](int px) { return ScalePx(px, dpi, theme.textScalePercent); };
+    const float w  = static_cast<float>(std::max<LONG>(8, rc.right - rc.left));
+    const float h  = static_cast<float>(std::max<LONG>(8, rc.bottom - rc.top));
+    const float d  = std::min(w, h) - 2.0f;
+    const float cx = static_cast<float>(rc.left) + w * 0.5f;
+    const float cy = static_cast<float>(rc.top)  + h * 0.5f;
+    const float x0 = cx - d * 0.5f;
+    const float y0 = cy - d * 0.5f;
+
+    // Paint clean command-bar background behind the circle so non-circular corners never artifact
+    const COLORREF barBg = theme.isHighContrast
+        ? theme.windowBg
+        : (theme.isDarkMode ? RGB(11, 17, 32) : RGB(241, 245, 251));
+    Gdiplus::SolidBrush clearBr(ToGpColor(barBg));
+    g.FillRectangle(&clearBr, static_cast<float>(rc.left), static_cast<float>(rc.top), w, h);
+
+    if (theme.isHighContrast) {
+        const COLORREF fg = isEnabled ? (isHovered || isPressed ? ::GetSysColor(COLOR_HIGHLIGHTTEXT) : theme.textPrimary)
+                                      : ::GetSysColor(COLOR_GRAYTEXT);
+        const COLORREF bg = (isEnabled && (isHovered || isPressed)) ? ::GetSysColor(COLOR_HIGHLIGHT) : theme.windowBg;
+        Gdiplus::SolidBrush hcFill(ToGpColor(bg));
+        Gdiplus::Pen hcRim(ToGpColor(fg), hasFocus ? 2.5f : 1.6f);
+        g.FillEllipse(&hcFill, x0, y0, d, d);
+        g.DrawEllipse(&hcRim,  x0, y0, d, d);
+
+        Gdiplus::Pen arrowPen(ToGpColor(fg), std::max(1.8f, static_cast<float>(S(2))));
+        arrowPen.SetStartCap(Gdiplus::LineCapRound);
+        arrowPen.SetEndCap(Gdiplus::LineCapRound);
+        arrowPen.SetLineJoin(Gdiplus::LineJoinRound);
+        const float arm = d * 0.22f;
+        g.DrawLine(&arrowPen, cx - arm, cy, cx + arm, cy);
+        g.DrawLine(&arrowPen, cx - arm, cy, cx - arm * 0.12f, cy - arm * 0.82f);
+        g.DrawLine(&arrowPen, cx - arm, cy, cx - arm * 0.12f, cy + arm * 0.82f);
+        return;
+    }
+
+    if (isEnabled) {
+        const Gdiplus::Color topCol = isPressed
+            ? Gdiplus::Color(255, 29, 78, 216)
+            : (isHovered ? Gdiplus::Color(255, 96, 165, 250) : Gdiplus::Color(255, 59, 130, 246));
+        const Gdiplus::Color botCol = isPressed
+            ? Gdiplus::Color(255, 30, 58, 138)
+            : (isHovered ? Gdiplus::Color(255, 37, 99, 235)  : Gdiplus::Color(255, 29, 78, 216));
+        Gdiplus::LinearGradientBrush grad(
+            Gdiplus::PointF(cx, y0), Gdiplus::PointF(cx, y0 + d), topCol, botCol);
+        Gdiplus::Pen rimPen(Gdiplus::Color(240, 147, 197, 253), 1.2f);
+        g.FillEllipse(&grad, x0, y0, d, d);
+        g.DrawEllipse(&rimPen, x0, y0, d, d);
+
+        // Subtle Aero upper-hemisphere glass sheen
+        Gdiplus::SolidBrush glossBr(Gdiplus::Color(52, 255, 255, 255));
+        g.FillEllipse(&glossBr, x0 + d * 0.14f, y0 + d * 0.06f, d * 0.72f, d * 0.42f);
+    } else {
+        const Gdiplus::Color disFill = theme.isDarkMode ? Gdiplus::Color(255, 23, 33, 54)  : Gdiplus::Color(255, 226, 232, 240);
+        const Gdiplus::Color disRim  = theme.isDarkMode ? Gdiplus::Color(255, 51, 65, 85)  : Gdiplus::Color(255, 203, 213, 225);
+        Gdiplus::SolidBrush fillBr(disFill);
+        Gdiplus::Pen rimPen(disRim, 1.1f);
+        g.FillEllipse(&fillBr, x0, y0, d, d);
+        g.DrawEllipse(&rimPen, x0, y0, d, d);
+    }
+
+    if (hasFocus) {
+        const Gdiplus::Color focCol = theme.isDarkMode ? ToGpColor(brand::kWarmGold) : Gdiplus::Color(255, 29, 78, 216);
+        Gdiplus::Pen focPen(focCol, 2.2f);
+        g.DrawEllipse(&focPen, x0 - 1.0f, y0 - 1.0f, d + 2.0f, d + 2.0f);
+    }
+
+    const Gdiplus::Color arrowCol = isEnabled
+        ? Gdiplus::Color(255, 255, 255, 255)
+        : (theme.isDarkMode ? Gdiplus::Color(255, 100, 116, 139) : Gdiplus::Color(255, 148, 163, 184));
+    Gdiplus::Pen arrowPen(arrowCol, std::max(1.8f, static_cast<float>(S(2))));
+    arrowPen.SetStartCap(Gdiplus::LineCapRound);
+    arrowPen.SetEndCap(Gdiplus::LineCapRound);
+    arrowPen.SetLineJoin(Gdiplus::LineJoinRound);
+    const float arm = d * 0.22f;
+    g.DrawLine(&arrowPen, cx - arm, cy, cx + arm, cy);
+    g.DrawLine(&arrowPen, cx - arm, cy, cx - arm * 0.12f, cy - arm * 0.82f);
+    g.DrawLine(&arrowPen, cx - arm, cy, cx - arm * 0.12f, cy + arm * 0.82f);
+}
+
+/// Paints the Authentic Microsoft Windows **AeroWizard** (`PSH_AEROWIZARD`) Command Bar & Main Instruction:
+///   1. `AW_TITLEBAR` (`y = 0..38px`): Top-left `28x28` circular `<-` Back slot (`x = 10`), `16x16` window
+///      icon (`x = 46`), and wizard window title (`x = 68`) — ZERO Wizard97 banner box or right-side medallion!
+///   2. `AW_HEADERAREA` (`y = 46..82px`): Clean Aero Main Instruction (`13pt` Segoe UI, `#003399` in Light Mode /
+///      `#7DD3FC` in Dark Mode) aligned at `x = 46px` directly on the main content sheet!
 inline void DrawAeroWizardTopHeader(
     HDC hdc,
     Gdiplus::Graphics& g,
@@ -626,63 +721,95 @@ inline void DrawAeroWizardTopHeader(
     std::wstring_view windowCaption,
     std::wstring_view mainInstruction,
     HICON hProductIcon,
-    GlassGlyph stepGlyph,
-    COLORREF stepBadgeColor,
-    std::wstring_view manufacturer = L"RaggieSoft") noexcept
+    GlassGlyph /*stepGlyph*/,
+    COLORREF /*stepBadgeColor*/,
+    std::wstring_view /*manufacturer*/ = L"RaggieSoft",
+    bool paintPreviewBackCircle = false,
+    bool previewBackEnabled     = false) noexcept
 {
     auto S = [&](int px) { return ScalePx(px, dpi, theme.textScalePercent); };
 
-    RECT hdrBand{0, 0, clientW, S(90)};
-    if (theme.isHighContrast) {
-        ::FillRect(hdc, &hdrBand, theme.hbrFooter);
-    } else if (theme.isDarkMode) {
-        FillHorizontalGradient(hdc, hdrBand, RGB(11, 19, 40), RGB(17, 31, 62));
-    } else {
-        HBRUSH hWhite = ::CreateSolidBrush(RGB(255, 255, 255));
-        ::FillRect(hdc, &hdrBand, hWhite);
-        ::DeleteObject(hWhite);
+    // 1. Top `AW_TITLEBAR` Command Strip (`0..38px`)
+    const int cmdBarH = S(38);
+    RECT cmdBand{0, 0, clientW, cmdBarH};
+    const COLORREF cmdBg = theme.isHighContrast
+        ? theme.windowBg
+        : (theme.isDarkMode ? RGB(11, 17, 32) : RGB(241, 245, 251));
+    HBRUSH hCmdBr = ::CreateSolidBrush(cmdBg);
+    ::FillRect(hdc, &cmdBand, hCmdBr);
+    ::DeleteObject(hCmdBr);
+
+    const COLORREF sepCol = theme.isHighContrast
+        ? theme.borderSubtle
+        : (theme.isDarkMode ? RGB(30, 41, 59) : RGB(216, 226, 240));
+    HPEN hSepPen = ::CreatePen(PS_SOLID, 1, sepCol);
+    HGDIOBJ oldP = ::SelectObject(hdc, hSepPen);
+    ::MoveToEx(hdc, 0, cmdBarH - 1, nullptr);
+    ::LineTo(hdc, clientW, cmdBarH - 1);
+    ::SelectObject(hdc, oldP);
+    ::DeleteObject(hSepPen);
+
+    if (paintPreviewBackCircle) {
+        RECT bkRc{S(10), S(5), S(38), S(33)};
+        DrawAeroWizardBackCircleButton(g, bkRc, dpi, theme, previewBackEnabled, false, false, false);
     }
 
-    // 1. `26x26` Brand Squircle Emblem + Uppercase Publisher/Product Eyebrow (`y = 12..36`)
-    DrawBrandSquircleBadge(g, static_cast<float>(S(18)), static_cast<float>(S(12)), static_cast<float>(S(26)), theme, manufacturer);
-    const std::wstring pubUpper = UpperWide(manufacturer.empty() ? L"RaggieSoft" : manufacturer);
-    const std::wstring eyebrow  = pubUpper + L"  \x2022  " + UpperWide(windowCaption);
+    if (hProductIcon) {
+        ::DrawIconEx(hdc, S(46), S(11), hProductIcon, S(16), S(16), 0, nullptr, DI_NORMAL);
+    }
 
-    HFONT hKickFont  = CreateScaledFont(L"Segoe UI",  9, FW_BOLD,     dpi, theme.textScalePercent);
-    HFONT hInstrFont = CreateScaledFont(L"Segoe UI", 16, FW_SEMIBOLD, dpi, theme.textScalePercent);
+    HFONT hCapFont   = CreateScaledFont(L"Segoe UI",  9, FW_NORMAL,  dpi, theme.textScalePercent);
+    HFONT hInstrFont = CreateScaledFont(L"Segoe UI", 13, FW_REGULAR, dpi, theme.textScalePercent);
     ::SetBkMode(hdc, TRANSPARENT);
 
-    const int medalSz = S(60);
-    const int medalX  = clientW - S(18) - medalSz;
+    HGDIOBJ oldF = ::SelectObject(hdc, hCapFont);
+    ::SetTextColor(hdc, theme.isHighContrast ? theme.textPrimary : theme.textSecondary);
+    RECT capRc{S(68), 0, clientW - S(16), cmdBarH};
+    ::DrawTextW(hdc, windowCaption.data(), static_cast<int>(windowCaption.size()), &capRc,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
-    HGDIOBJ oldF = ::SelectObject(hdc, hKickFont);
-    const COLORREF kickCol = theme.isHighContrast
-        ? theme.textSecondary
-        : (theme.isDarkMode ? RGB(186, 230, 253) : RGB(30, 64, 175));
-    ::SetTextColor(hdc, kickCol);
-    RECT capRc{S(52), S(13), medalX - S(12), S(37)};
-    ::DrawTextW(hdc, eyebrow.data(), static_cast<int>(eyebrow.size()), &capRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-
-    // 2. Aero Main Instruction (`AW_HEADERAREA` `TEXT_MAININSTRUCTION` — >= 10.4:1 WCAG AAA contrast!)
+    // 2. Clean `AW_HEADERAREA` Main Instruction directly on the content sheet (`x = 46, y = 46..80`)!
     const COLORREF aeroInstrCol = theme.isHighContrast
         ? theme.textPrimary
         : (theme.isDarkMode ? RGB(125, 211, 252) : RGB(0, 51, 153));
     ::SelectObject(hdc, hInstrFont);
     ::SetTextColor(hdc, aeroInstrCol);
-    RECT insRc{S(18), S(42), medalX - S(12), S(84)};
-    ::DrawTextW(hdc, mainInstruction.data(), static_cast<int>(mainInstruction.size()), &insRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    RECT insRc{S(46), S(46), clientW - S(20), S(82)};
+    ::DrawTextW(hdc, mainInstruction.data(), static_cast<int>(mainInstruction.size()), &insRc,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
     ::SelectObject(hdc, oldF);
-    ::DeleteObject(hKickFont);
+    ::DeleteObject(hCapFont);
     ::DeleteObject(hInstrFont);
+}
 
-    // 3. `60x60` Step-Specific Product Medallion on top-right
-    DrawStepProductMedallion(hdc, g, medalX, S(14), medalSz, hProductIcon, stepGlyph, stepBadgeColor, theme, manufacturer);
+/// Paints the clean, recessed **AeroWizard** Bottom Command Area (`AW_COMMANDAREA`, `height = 48px`)
+/// containing ONLY `[Next]` / `[Finish]` and `[Cancel]` on the right (never a bottom `< Back` button!).
+inline void DrawAeroWizardCommandFooter(
+    HDC hdc,
+    int clientW,
+    int clientH,
+    int footerH,
+    const RswTheme& theme) noexcept
+{
+    const int footerY = clientH - footerH;
+    RECT footRc{0, footerY, clientW, clientH};
+    const COLORREF bg = theme.isHighContrast
+        ? theme.footerBg
+        : (theme.isDarkMode ? RGB(9, 14, 26) : RGB(240, 240, 240));
+    HBRUSH hBr = ::CreateSolidBrush(bg);
+    ::FillRect(hdc, &footRc, hBr);
+    ::DeleteObject(hBr);
 
-    // 4. Crisp Aero accent divider at `y = 88..90`
-    DrawMultiStopAccentBar(
-        g, 0.0f, static_cast<float>(S(88)),
-        static_cast<float>(clientW), static_cast<float>(S(2)), theme);
+    const COLORREF div = theme.isHighContrast
+        ? theme.borderSubtle
+        : (theme.isDarkMode ? RGB(30, 41, 59) : RGB(217, 217, 217));
+    HPEN hPen = ::CreatePen(PS_SOLID, 1, div);
+    HGDIOBJ oP = ::SelectObject(hdc, hPen);
+    ::MoveToEx(hdc, 0, footerY, nullptr);
+    ::LineTo(hdc, clientW, footerY);
+    ::SelectObject(hdc, oP);
+    ::DeleteObject(hPen);
 }
 
 /// Paints the Signature RaggieSoft `Hero Brand Card` (`render_hero_brand_card` 1:1 in native GDI+!)
@@ -1608,12 +1735,13 @@ inline void AttachDarkAwareListViewSubclass(HWND hListView, const RswTheme* them
 namespace detail {
 
 struct SharedPushButtonSubclassState {
-    const RswTheme* themePtr        = nullptr;
-    bool            isPrimaryAccent = false;
-    bool            onFooterSurface = false;
-    bool            isHovered       = false;
-    bool            showUacShield   = false;
-    HICON           hShieldIcon     = nullptr;
+    const RswTheme* themePtr         = nullptr;
+    bool            isPrimaryAccent  = false;
+    bool            onFooterSurface  = false;
+    bool            isHovered        = false;
+    bool            showUacShield    = false;
+    HICON           hShieldIcon      = nullptr;
+    bool            isAeroCircleBack = false;
 
     ~SharedPushButtonSubclassState() {
         if (hShieldIcon) {
@@ -1723,10 +1851,16 @@ inline LRESULT CALLBACK SharedPushButtonSubclassProc(
                 Gdiplus::Graphics g(memDc);
                 g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
                 g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
-                DrawAccessiblePushButton(
-                    memDc, g, RECT{0, 0, w, h}, dpi, *st->themePtr,
-                    txtBuf, isPrimary, st->onFooterSurface, isEnabled, hasFocus,
-                    st->isHovered, isPressed, st->showUacShield, st->hShieldIcon);
+                if (st->isAeroCircleBack) {
+                    DrawAeroWizardBackCircleButton(
+                        g, RECT{0, 0, w, h}, dpi, *st->themePtr,
+                        isEnabled, hasFocus, st->isHovered, isPressed);
+                } else {
+                    DrawAccessiblePushButton(
+                        memDc, g, RECT{0, 0, w, h}, dpi, *st->themePtr,
+                        txtBuf, isPrimary, st->onFooterSurface, isEnabled, hasFocus,
+                        st->isHovered, isPressed, st->showUacShield, st->hShieldIcon);
+                }
             }
 
             ::BitBlt(targetDc, 0, 0, w, h, memDc, 0, 0, SRCCOPY);
@@ -1750,12 +1884,26 @@ inline void AttachAccessiblePushButtonSubclass(
     HWND hButton,
     const RswTheme* themePtr,
     bool isPrimaryAccent = false,
-    bool onFooterSurface = false) noexcept
+    bool onFooterSurface = false,
+    bool isAeroCircleBack = false) noexcept
 {
     if (!hButton || !themePtr) return;
-    auto* st = new detail::SharedPushButtonSubclassState{themePtr, isPrimaryAccent, onFooterSurface, false, false, nullptr};
+    auto* st = new detail::SharedPushButtonSubclassState{
+        themePtr, isPrimaryAccent, onFooterSurface, false, false, nullptr, isAeroCircleBack};
     if (!::SetWindowSubclass(hButton, &detail::SharedPushButtonSubclassProc, 0x52535042u, reinterpret_cast<DWORD_PTR>(st))) {
         delete st;
+    }
+}
+
+/// Switches an already-subclassed Win32 `BUTTON` (`hBtnBack`) between AeroWizard top-left circular `<-` Back
+/// mode and standard rectangular footer `< &Back` mode when live-switching `WizardStyleKind`!
+inline void SetPushButtonAeroCircleBackMode(HWND hButton, bool enableAeroCircle) noexcept {
+    if (!hButton) return;
+    DWORD_PTR refData = 0;
+    if (::GetWindowSubclass(hButton, &detail::SharedPushButtonSubclassProc, 0x52535042u, &refData) && refData != 0) {
+        auto* st = reinterpret_cast<detail::SharedPushButtonSubclassState*>(refData);
+        st->isAeroCircleBack = enableAeroCircle;
+        ::InvalidateRect(hButton, nullptr, FALSE);
     }
 }
 

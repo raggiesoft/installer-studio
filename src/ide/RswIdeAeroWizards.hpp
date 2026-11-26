@@ -279,7 +279,7 @@ struct ThemedAeroWizardModalHost {
         }
         if (hBtnNext) {
             const bool isFinish = (flags & (PSWIZB_FINISH | PSWIZB_DISABLEDFINISH)) != 0;
-            ::SetWindowTextW(hBtnNext, isFinish ? L"&Finish" : L"&Next >");
+            ::SetWindowTextW(hBtnNext, isFinish ? L"&Finish" : L"&Next");
             const bool canAdvance = ((flags & PSWIZB_NEXT) != 0) || ((flags & PSWIZB_FINISH) != 0);
             ::EnableWindow(hBtnNext, canAdvance ? TRUE : FALSE);
         }
@@ -295,18 +295,21 @@ struct ThemedAeroWizardModalHost {
         const int W = std::max<int>(1, rc.right - rc.left);
         const int H = std::max<int>(1, rc.bottom - rc.top);
 
-        const int footerH = S(54);
+        const int footerH = S(48);
         const int footerY = H - footerH;
-        const int btnY    = footerY + (footerH - S(32)) / 2;
+        const int btnY    = footerY + (footerH - S(30)) / 2;
 
-        if (hBtnBack)   ::MoveWindow(hBtnBack,   W - S(284), btnY, S(84), S(32), TRUE);
-        if (hBtnNext)   ::MoveWindow(hBtnNext,   W - S(192), btnY, S(92), S(32), TRUE);
-        if (hBtnCancel) ::MoveWindow(hBtnCancel, W - S(92),  btnY, S(76), S(32), TRUE);
+        // Authentic AeroWizard (`PSH_AEROWIZARD`) Placement:
+        //   - `hBtnBack` is the `28x28` circular `<-` Back button in the TOP-LEFT Aero command bar!
+        //   - Bottom `AW_COMMANDAREA` holds ONLY `[Next]` / `[Finish]` and `[Cancel]` on the right!
+        if (hBtnBack)   ::MoveWindow(hBtnBack,   S(10),     S(5), S(28), S(28), TRUE);
+        if (hBtnNext)   ::MoveWindow(hBtnNext,   W - S(188), btnY, S(86), S(30), TRUE);
+        if (hBtnCancel) ::MoveWindow(hBtnCancel, W - S(94),  btnY, S(78), S(30), TRUE);
 
-        const int pageX = S(18);
-        const int pageY = S(96);
-        const int pageW = std::max<int>(S(200), W - S(36));
-        const int pageH = std::max<int>(S(120), footerY - pageY - S(6));
+        const int pageX = S(40);
+        const int pageY = S(84);
+        const int pageW = std::max<int>(S(200), W - pageX - S(18));
+        const int pageH = std::max<int>(S(120), footerY - pageY - S(8));
         for (HWND hp : pageHwnds) {
             if (hp) ::MoveWindow(hp, pageX, pageY, pageW, pageH, TRUE);
         }
@@ -402,12 +405,10 @@ struct ThemedAeroWizardModalHost {
                     : windowCaption;
             ui::DrawAeroWizardTopHeader(
                 memDc, g, W, dpi, theme,
-                windowCaption, curHeader, hIconBig, stepGlyph, stepBadgeColor, L"RaggieSoft");
+                windowCaption, curHeader, hIconSmall ? hIconSmall : hIconBig,
+                stepGlyph, stepBadgeColor, L"RaggieSoft", false, false);
 
-            const int footerH = S(54);
-            ui::DrawGlassFooterBar(
-                memDc, g, W, H, footerH, W - S(292), dpi, theme,
-                L"RaggieSoft Installer Studio", L"");
+            ui::DrawAeroWizardCommandFooter(memDc, W, H, S(48), theme);
         }
 
         ::BitBlt(hdcOut, 0, 0, W, H, memDc, 0, 0, SRCCOPY);
@@ -439,6 +440,12 @@ struct ThemedAeroWizardModalHost {
             self->hWnd = hWnd;
             ::SetPropW(hWnd, kAeroHostThemeProp, reinterpret_cast<HANDLE>(&self->theme));
             ui::ApplyWindowChromeAndA11y(hWnd, self->theme);
+            // Suppress duplicate Win32 non-client caption text/icon just like Microsoft's `PSH_AEROWIZARD`,
+            // so the Wizard Title + Icon appear ONCE beside the top-left circular `<-` Back button!
+            WTA_OPTIONS wtaOpts{};
+            wtaOpts.dwFlags = WTNCA_NODRAWCAPTION | WTNCA_NODRAWICON;
+            wtaOpts.dwMask  = WTNCA_NODRAWCAPTION | WTNCA_NODRAWICON;
+            ::SetWindowThemeAttribute(hWnd, WTA_NONCLIENT, &wtaOpts, sizeof(wtaOpts));
         }
         if (!self) return ::DefWindowProcW(hWnd, msg, wParam, lParam);
 
@@ -446,16 +453,16 @@ struct ThemedAeroWizardModalHost {
             case WM_CREATE: {
                 HINSTANCE hInst = ::GetModuleHandleW(nullptr);
                 self->hBtnBack = ::CreateWindowExW(
-                    0, L"BUTTON", L"< &Back", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                    0, L"BUTTON", L"&Back", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                     0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_AW_BACK)), hInst, nullptr);
                 self->hBtnNext = ::CreateWindowExW(
-                    0, L"BUTTON", L"&Next >", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+                    0, L"BUTTON", L"&Next", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
                     0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDOK)), hInst, nullptr);
                 self->hBtnCancel = ::CreateWindowExW(
                     0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                     0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDCANCEL)), hInst, nullptr);
 
-                ui::AttachAccessiblePushButtonSubclass(self->hBtnBack,   &self->theme, false, true);
+                ui::AttachAccessiblePushButtonSubclass(self->hBtnBack,   &self->theme, false, false, true /* Aero Circular Back! */);
                 ui::AttachAccessiblePushButtonSubclass(self->hBtnNext,   &self->theme, true,  true);
                 ui::AttachAccessiblePushButtonSubclass(self->hBtnCancel, &self->theme, false, true);
                 return 0;
@@ -586,7 +593,7 @@ inline void RunThemedAeroWizard(
 
     const UINT dpi = (hOwner && ::IsWindow(hOwner)) ? ::GetDpiForWindow(hOwner) : ::GetDpiForSystem();
     RECT wRc{0, 0,
-             ui::ScalePx(640, dpi, host.theme.textScalePercent),
+             ui::ScalePx(656, dpi, host.theme.textScalePercent),
              ui::ScalePx(484, dpi, host.theme.textScalePercent)};
     constexpr DWORD kWinStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
     constexpr DWORD kExStyle  = WS_EX_DLGMODALFRAME;
@@ -640,6 +647,12 @@ inline void RunThemedAeroWizard(
 
     if (exportShotPath) {
         ui::CaptureWindowToPngFile(hHost, *exportShotPath);
+        if (pageCount >= 2) {
+            host.ActivatePage(1, false);
+            const auto step2Path = exportShotPath->parent_path() /
+                                   (exportShotPath->stem().wstring() + L"-step2" + exportShotPath->extension().wstring());
+            ui::CaptureWindowToPngFile(hHost, step2Path);
+        }
         host.CloseModal();
         return;
     }
@@ -649,6 +662,10 @@ inline void RunThemedAeroWizard(
         if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE) {
             host.CloseModal();
             break;
+        }
+        if (msg.message == WM_SYSKEYDOWN && msg.wParam == VK_LEFT && host.activePage > 0) {
+            host.ActivatePage(host.activePage - 1, true);
+            continue;
         }
         if (!::IsDialogMessageW(hHost, &msg)) {
             ::TranslateMessage(&msg);

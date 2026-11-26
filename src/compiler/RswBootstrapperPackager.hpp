@@ -1514,6 +1514,22 @@ inline bool PackageNativeOrSfxExecutable(
     nm.waitSpawnGraceMs    = std::clamp(doc.GetInt("SFX", "", "WaitSpawnGraceMs", 1500), 0, 60000);
     nm.autoStartExtract    = doc.GetBool("SFX", "", "AutoStartExtract", false);
 
+    // Classic 1990s multi-stage `SETUP.EXE` / `_INST32I.EX_` / `_INS*._MP` / `_ISDEL.EXE` auto-tuning:
+    // If an SFX archive unpacks to `%TEMP%` with `CleanupTempAfterRun = true` and contains `_ISDEL.EXE`,
+    // `_INST32I.EX_`, `SETUP.INS`, or `_INS*._MP` markers, automatically tune `WaitForProcess` so the
+    // self-extractor waits until `_ISDEL.EXE` finishes before deleting `%TEMP%`!
+    if (isSfx && nm.extractToTemp && nm.cleanupTempAfterRun && nm.waitForProcess.empty()) {
+        for (const auto& item : embeddedItems) {
+            const std::string leafLow = AsciiLower(WideToUtf8(std::filesystem::path(Utf8ToWide(item.archiveRelPath)).filename().wstring()));
+            if (leafLow == "_isdel.exe" || leafLow == "_inst32i.ex_" || leafLow == "_inst16.ex_" || leafLow == "setup.ins" ||
+                (leafLow.rfind("_ins", 0) == 0 && leafLow.size() > 6 && leafLow.substr(leafLow.size() - 4) == "._mp")) {
+                nm.waitForProcess   = "_ISDEL.EXE; _INS*._MP; ~INS*._MP";
+                nm.waitSpawnGraceMs = std::max(nm.waitSpawnGraceMs, 2500);
+                break;
+            }
+        }
+    }
+
     if (!isSfx) {
         for (const auto& flId : doc.GetNamedSectionIds("Folder")) {
             nm.folders.push_back({

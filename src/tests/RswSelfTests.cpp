@@ -1306,13 +1306,15 @@ int wmain() {
                     {"launcher-stub.cmd", std::vector<std::uint8_t>(batchStr.begin(), batchStr.end())}
                 }, isdelZipPath, izErr);
 
+                // Intentionally omit `WaitForProcess` here so `PackageNativeOrSfxExecutable` also proves
+                // automatic zero-config `_ISDEL.EXE` archive detection (just like classic Software Installation SFX)!
                 std::ostringstream tempSfxMan;
                 tempSfxMan << "[Package]\nName = TempSetupWrapper\nVersion = 0.6.0\nManufacturer = RaggieSoft\n"
                            << "PackageKind = sfx\nRequestedExecutionLevel = asInvoker\n"
                            << "OutputName = temp-setup-wrapper\nOutputDir = " << rsw::WideToUtf8((testWorkDir / L"sfx-out").wstring()) << "\n"
                            << "[SFX]\nExtractToTemp = true\nAllowChangeFolder = false\nCleanupTempAfterRun = true\n"
                            << "PostExtractRun = launcher-stub.cmd\n"
-                           << "WaitMode = process_name\nWaitForProcess = _ISDEL.EXE\nWaitSpawnGraceMs = 300\n"
+                           << "WaitSpawnGraceMs = 300\n"
                            << "[UI]\nWizardLayout = simple\n"
                            << "[Payload.Bundle]\nSource = " << rsw::WideToUtf8(isdelZipPath.wstring()) << "\n";
                 auto tempSfxDoc = rsw::ParseManifestText(tempSfxMan.str(), testWorkDir / L"temp-sfx.rsip");

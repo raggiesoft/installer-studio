@@ -2946,13 +2946,13 @@ public:
                 } else if (classicHdr) {
                     rsw::ui::DrawWizard97TopHeader(dlgDc, dW, pvDpi, pvTheme, false, kicker, prodName + L" Setup", hPreviewIcon);
                 } else if (aeroMode) {
-                    rsw::ui::DrawAeroWizardTopHeader(dlgDc, dlgG, dW, pvDpi, pvTheme, prodName + L" Setup", kicker, hPreviewIcon, stepGlyph, stepCol, pubName);
+                    rsw::ui::DrawAeroWizardTopHeader(dlgDc, dlgG, dW, pvDpi, pvTheme, prodName + L" Setup", kicker, hPreviewIcon, stepGlyph, stepCol, pubName, true /* paintPreviewBackCircle */, stepIdx != 0);
                 } else {
                     rsw::ui::DrawGlassTopHeader(dlgDc, dlgG, dW, pvDpi, pvTheme, pubName, rsw::ui::UpperWide(kicker), prodName, hPreviewIcon, stepGlyph, stepCol);
                 }
 
-                const int bTop = micaMode ? PS(28) : (win95Rail ? PS(42) : (classicHdr ? PS(74) : PS(96)));
-                const int cx   = micaMode ? PS(148) : (win95Rail ? PS(154) : PS(14));
+                const int bTop = micaMode ? PS(28) : (win95Rail ? PS(42) : (classicHdr ? PS(74) : (aeroMode ? PS(84) : PS(96))));
+                const int cx   = micaMode ? PS(148) : (win95Rail ? PS(154) : (aeroMode ? PS(46) : PS(14)));
                 const int cw   = dW - cx - PS(14);
 
                 if (wk == rsw::WizardStyleKind::PassiveToast) {
@@ -3043,15 +3043,16 @@ public:
                 }
             }
 
-            // Footer navigation buttons inside `dlgZeroRc`
+            // Footer navigation buttons inside `dlgZeroRc` (AeroWizard keeps Back at top-left, never in footer!)
             RECT backRc{dW - PS(258), relFootY + PS(7), dW - PS(182), relFootY + footH - PS(7)};
             RECT ctaRc {dW - PS(176), relFootY + PS(7), dW - PS(86),  relFootY + footH - PS(7)};
             RECT canRc {dW - PS(80),  relFootY + PS(7), dW - PS(12),  relFootY + footH - PS(7)};
-            if (wk != rsw::WizardStyleKind::PassiveToast && stepIdx != 0) {
+            if (wk != rsw::WizardStyleKind::PassiveToast && stepIdx != 0 && !aeroMode) {
                 rsw::ui::DrawAccessiblePushButton(dlgDc, dlgG, backRc, pvDpi, pvTheme, L"< &Back", false, true, true, false, false, false, false, nullptr);
             }
             if (wk != rsw::WizardStyleKind::PassiveToast) {
-                rsw::ui::DrawAccessiblePushButton(dlgDc, dlgG, ctaRc, pvDpi, pvTheme, ctaLbl, true, true, true, false, false, false, false, nullptr);
+                const std::wstring effCta = (aeroMode && ctaLbl == L"&Next >") ? L"&Next" : ctaLbl;
+                rsw::ui::DrawAccessiblePushButton(dlgDc, dlgG, ctaRc, pvDpi, pvTheme, effCta.c_str(), true, true, true, false, false, false, false, nullptr);
             }
             rsw::ui::DrawAccessiblePushButton(dlgDc, dlgG, canRc, pvDpi, pvTheme, L"Cancel", false, true, true, false, false, false, false, nullptr);
             if (retroFull || wk == rsw::WizardStyleKind::Wizard95) {

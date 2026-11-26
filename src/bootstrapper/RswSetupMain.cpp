@@ -2025,10 +2025,15 @@ public:
         const int footerY = H - footerH;
         const int btnY    = footerY + (footerH - S(32)) / 2;
 
-        // Universal Footer Buttons (`[< &Back]  [&Next >]  [Cancel]` + optional `[C&ustomize...]` on One-Click Splash!)
-        ::SetWindowTextW(hBtnBack, L"< &Back");
-        ::MoveWindow(hBtnOneClickCust, S(18),      btnY, S(118), S(32), TRUE);
-        ::MoveWindow(hBtnBack,         W - S(320), btnY, S(94),  S(32), TRUE);
+        // Universal Footer Buttons (`[< &Back]  [&Next >]  [Cancel]` — or top-left circular `<-` Back in `AeroWizard`!)
+        rsw::ui::SetPushButtonAeroCircleBackMode(hBtnBack, cfg.isAeroWizard);
+        ::SetWindowTextW(hBtnBack, cfg.isAeroWizard ? L"&Back" : L"< &Back");
+        ::MoveWindow(hBtnOneClickCust, S(18), btnY, S(118), S(32), TRUE);
+        if (cfg.isAeroWizard) {
+            ::MoveWindow(hBtnBack, S(10), S(5), S(28), S(28), TRUE);
+        } else {
+            ::MoveWindow(hBtnBack, W - S(320), btnY, S(94), S(32), TRUE);
+        }
         ::MoveWindow(hBtnPrimary,      W - S(218), btnY, S(112), S(32), TRUE);
         ::MoveWindow(hBtnCancel,       W - S(98),  btnY, S(80),  S(32), TRUE);
 
@@ -2093,8 +2098,8 @@ public:
             const bool isMica       = (cfg.wizardStyle == rsw::WizardStyleKind::FluentMica);
             const bool isWin95Sheet = rsw::UsesClassic3dDialogSheet(cfg.wizardStyle);
             const bool isWiz97Hdr   = (cfg.wizardStyle == rsw::WizardStyleKind::Wizard97);
-            const int bodyTop = isMica ? S(42) : (isWin95Sheet ? S(50) : (isWiz97Hdr ? S(80) : S(104)));
-            const int cardX   = isMica ? S(180) : (isWin95Sheet ? S(192) : S(18));
+            const int bodyTop = isMica ? S(42) : (isWin95Sheet ? S(50) : (isWiz97Hdr ? S(80) : (cfg.isAeroWizard ? S(88) : S(104))));
+            const int cardX   = isMica ? S(180) : (isWin95Sheet ? S(192) : (cfg.isAeroWizard ? S(46) : S(18)));
             const int cardW   = W - cardX - S(18);
 
             // `SetupType`: 1..4 Full-Row Vector Option Cards (`Express/Compact/Custom` or `Typical/Compact/Complete/Custom`!)
@@ -2245,9 +2250,17 @@ public:
         const bool canGoBack = !passiveMode && !oneClickSplash &&
                                (pLic || pReadMe || pSetupType || pFeatures || pDir || pShort || pReady || pRepair || pSafeUn);
         show(hBtnOneClickCust, oneClickSplash && pWelcome);
-        show(hBtnBack,         canGoBack);
+        if (cfg.isAeroWizard && !passiveMode && !oneClickSplash) {
+            show(hBtnBack, true);
+            ::EnableWindow(hBtnBack, canGoBack ? TRUE : FALSE);
+        } else {
+            show(hBtnBack, canGoBack);
+            ::EnableWindow(hBtnBack, TRUE);
+        }
         show(hBtnPrimary,      !pProg && !passiveMode);
         show(hBtnCancel,       !pFin);
+
+        const wchar_t* nextBtnTxt = cfg.isAeroWizard ? L"&Next" : L"&Next >";
 
         // Configure Primary Action Button text, enabled gate, & Windows UAC Shield icon!
         bool showShield = false;
@@ -2255,7 +2268,7 @@ public:
             if (cfg.isAutorun16x9) {
                 if (autorunChoiceIdx == 0) {
                     const bool direct = !cfg.hasLicenseRtf || alreadyInstalled;
-                    ::SetWindowTextW(hBtnPrimary, alreadyInstalled ? L"&Repair" : (direct ? cfg.installBtnText.c_str() : L"&Next >"));
+                    ::SetWindowTextW(hBtnPrimary, alreadyInstalled ? L"&Repair" : (direct ? cfg.installBtnText.c_str() : nextBtnTxt));
                     showShield = direct && cfg.perMachine;
                     ::EnableWindow(hBtnPrimary, TRUE);
                 } else if (autorunChoiceIdx == 1) {
@@ -2274,7 +2287,7 @@ public:
                 ::EnableWindow(hBtnPrimary, okGate ? TRUE : FALSE);
                 showShield = cfg.perMachine;
             } else {
-                ::SetWindowTextW(hBtnPrimary, L"&Next >");
+                ::SetWindowTextW(hBtnPrimary, nextBtnTxt);
                 ::EnableWindow(hBtnPrimary, TRUE);
             }
         } else if (pReadMe) {
@@ -2283,14 +2296,14 @@ public:
             showShield = !alreadyInstalled && cfg.perMachine && !cfg.hasLicenseRtf;
         } else if (pLic) {
             const bool accepted = (::SendMessageW(hLicAccept, BM_GETCHECK, 0, 0) == BST_CHECKED);
-            ::SetWindowTextW(hBtnPrimary, cfg.isAutorun16x9 ? cfg.installBtnText.c_str() : L"&Next >");
+            ::SetWindowTextW(hBtnPrimary, cfg.isAutorun16x9 ? cfg.installBtnText.c_str() : nextBtnTxt);
             ::EnableWindow(hBtnPrimary, accepted ? TRUE : FALSE);
             showShield = cfg.isAutorun16x9 && cfg.perMachine;
         } else if (pSetupType || pFeatures || pShort || pMaint) {
-            ::SetWindowTextW(hBtnPrimary, L"&Next >");
+            ::SetWindowTextW(hBtnPrimary, nextBtnTxt);
             ::EnableWindow(hBtnPrimary, TRUE);
         } else if (pDir) {
-            ::SetWindowTextW(hBtnPrimary, cfg.isAutorun16x9 ? cfg.installBtnText.c_str() : L"&Next >");
+            ::SetWindowTextW(hBtnPrimary, cfg.isAutorun16x9 ? cfg.installBtnText.c_str() : nextBtnTxt);
             ::EnableWindow(hBtnPrimary, TRUE);
             showShield = cfg.isAutorun16x9 && cfg.perMachine;
         } else if (pReady) {
@@ -3267,6 +3280,8 @@ public:
                     ::DrawTextW(memDc, pubFoot.c_str(), -1, &pfRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
                     ::SelectObject(memDc, oFs);
                 }
+            } else if (cfg.isAeroWizard) {
+                rsw::ui::DrawAeroWizardCommandFooter(memDc, W, H, footerH, theme);
             } else {
                 const int leftFloor = ::IsWindowVisible(hBtnOneClickCust) ? S(146) : 0;
                 if (leftFloor == 0) {
@@ -3488,7 +3503,8 @@ public:
             const std::wstring winCap = cfg.productName + L" Setup";
             rsw::ui::DrawAeroWizardTopHeader(
                 memDc, g, W, dpi, theme, winCap, hdrInfo.aeroInstruction,
-                hAppIconBig, hdrInfo.glyph, hdrInfo.badgeColor, cfg.manufacturer);
+                hAppIconSmall ? hAppIconSmall : hAppIconBig,
+                hdrInfo.glyph, hdrInfo.badgeColor, cfg.manufacturer, false, false);
         } else {
             rsw::ui::DrawGlassTopHeader(
                 memDc, g, W, dpi, theme,
@@ -3497,8 +3513,8 @@ public:
         }
 
         // 3. Page-Specific Content Canvas
-        const int bodyTop = isMica ? S(42) : (isWin95Sheet ? S(50) : (isWiz97Hdr ? S(80) : S(104)));
-        const int cardX   = isMica ? S(180) : (isWin95Sheet ? S(192) : S(18));
+        const int bodyTop = isMica ? S(42) : (isWin95Sheet ? S(50) : (isWiz97Hdr ? S(80) : (cfg.isAeroWizard ? S(88) : S(104))));
+        const int cardX   = isMica ? S(180) : (isWin95Sheet ? S(192) : (cfg.isAeroWizard ? S(46) : S(18)));
         const int cardW   = W - cardX - S(18);
         HGDIOBJ oldF      = ::SelectObject(memDc, hFontBody);
 
