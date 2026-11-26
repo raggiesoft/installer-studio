@@ -1,93 +1,173 @@
 ; ==============================================================================
 ; FILE: projects/apps/accessibility-studio/accessibility-studio.rsip
 ; APPLICATION: RaggieSoft Accessibility Studio (v1.0.0)
-; COMPILER: RaggieSoft Installer Studio (instbuild.exe -> .msi + Setup.exe)
+; COMPILER: RaggieSoft Installer Studio v0.5.0 (AeroWizard + 4 Setup Types!)
+; ==============================================================================
+; PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+;   Packages RaggieSoft Accessibility Studio for engineering, higher-education,
+;   and public-sector web teams using our `aerowizard` command-bar UI and four
+;   tailored Setup Types:
+;     1. Workstation IDE + CLI (Recommended — `typical`)
+;     2. Headless CI/CD Scanner Only (Compact — `minimal`)
+;     3. Complete Suite + Sample Workspaces (`complete`)
+;     4. Custom Component Selection (`custom`)
 ; ==============================================================================
 
 @include "..\..\shared\raggiesoft-defaults.rsii"
 
 [Package]
-Name                  = RaggieSoft Accessibility Studio
-Tagline               = Accessibility IDE & Offline Rule Reference
-WebsiteLabel          = a11y.raggiesoft.com
-Version               = 1.0.0
-Manufacturer          = RaggieSoft
-UpgradeCode           = {56DD624B-D43B-4B29-80A8-E06BE8EA7BFB}
-Architecture          = $(ARCH)
-Scope                 = machine
-OutputName            = raggiesoft-accessibility-studio-$(ARCH)
-OutputDir             = out
-BuildBootstrapper     = true
-AboutUrl              = https://a11y.raggiesoft.com
+Name                     = RaggieSoft Accessibility Studio
+Tagline                  = Enterprise WCAG 2.2 & Section 508 Source-Code Web IDE & CLI
+WebsiteLabel             = a11y.raggiesoft.com
+Version                  = 1.0.0
+Manufacturer             = RaggieSoft
+UpgradeCode              = {56DD624B-D43B-4B29-80A8-E06BE8EA7BFB}
+Architecture             = $(ARCH)
+Scope                    = machine
+OutputName               = raggiesoft-accessibility-studio-$(ARCH)
+UniversalOutputName      = raggiesoft-accessibility-studio
+BuildUniversal           = true
+UniversalDownloadBaseUrl = https://assets.raggiesoft.com/desktop-apps/windows/apps/accessibility-studio
+OutputDir                = out
+BuildBootstrapper        = true
+AboutUrl                 = https://a11y.raggiesoft.com
 
 [Install]
-DefaultSubdir         = RaggieSoft\Accessibility Studio
-StartMenuFolder       = RaggieSoft Accessibility Studio
-MainExecutable        = StudioIDE\AccessibilityStudio.exe
+DefaultSubdir            = RaggieSoft\Accessibility Studio
+StartMenuFolder          = RaggieSoft Accessibility Studio
+MainExecutable           = StudioIDE\AccessibilityStudio.exe
 
 [UI]
-WizardLayout          = standard
-AccentPrimaryHex      = #2563EB
-AccentSecondaryHex    = #10B981
-LicenseRtf            = License.rtf
-IconFile              = ..\..\..\..\accessibility-studio\src\AccessibilityStudio.WinForms\Assets\AccessibilityStudio.ico
-InstallButtonText     = &Install
-FinishLaunchCheckbox  = &Open RaggieSoft Accessibility Studio when setup finishes
+WizardLayout             = aerowizard
+MsiDialogPreset          = express_custom
+AccentPrimaryHex         = #2563EB
+AccentSecondaryHex       = #10B981
+LicenseRtf               = License.rtf
+IconFile                 = ..\..\..\..\accessibility-studio\src\AccessibilityStudio.WinForms\Assets\AccessibilityStudio.ico
+InstallButtonText        = &Install
+FinishLaunchCheckbox     = &Open RaggieSoft Accessibility Studio when setup finishes
 
-[Payload.StudioIde]
-Source                = ..\..\..\..\accessibility-studio\build\INSTALLDIR\Release\$(ARCH)\StudioIDE
-TargetSubdir          = StudioIDE
-Feature               = Main
+[Prerequisite.DotNet10]
+Preset                   = DotNet10Desktop
+Distribution             = download
+
+[Prerequisite.WebView2]
+Preset                   = EdgeWebView2
+Distribution             = download
+
+[SetupType.Workstation]
+Title                    = &Workstation IDE + CLI (Recommended)
+Description              = Installs the visual Monaco refactoring IDE, headless CI/CD CLI scanner, and offline F1 rule reference.
+Tier                     = typical
+Glyph                    = Bolt
+Recommended              = true
+
+[SetupType.HeadlessCli]
+Title                    = &Headless CI/CD Scanner Only (Compact)
+Description              = Installs only the command-line SARIF 2.1.0 & HTML5 compliance scanner for build servers and minimal hosts.
+Tier                     = minimal
+Glyph                    = Cube
+Recommended              = false
+
+[SetupType.CompleteSuite]
+Title                    = Com&plete Suite + Sample Workspaces
+Description              = Installs the full Workstation IDE, CLI scanner, offline F1 manual, and sample WCAG 2.2 remediation projects.
+Tier                     = complete
+Glyph                    = Blocks
+Recommended              = false
+
+[SetupType.Custom]
+Title                    = C&ustom Component Selection
+Description              = Choose individual IDE, CLI, offline documentation, and sample workspace features plus destination folder.
+Tier                     = custom
+Glyph                    = Sliders
+Recommended              = false
+
+[Feature.Main]
+Title                    = Headless CI/CD Compliance CLI (a11y-studio-cli)
+Description              = Deterministic HTML5, WAI-ARIA, CSS contrast, and WebVTT command-line scanner with SARIF 2.1.0 output.
+Inclusion                = minimal
+DisallowAbsent           = true
+
+[Feature.StudioIde]
+Title                    = Workstation Monaco Refactoring IDE
+Description              = Multi-pane Windows IDE with syntax highlighting, side-by-side guided-fix diffs, and live DOM emulation.
+Inclusion                = typical
+
+[Feature.HelpDocs]
+Parent                   = StudioIde
+Title                    = Offline F1 Rule Catalog & Help Viewer
+Description              = Zero-dependency native C++20 offline HTML5 rule reference (RaggieSoftHelp.exe).
+Inclusion                = typical
+
+[Feature.Samples]
+Title                    = Sample WCAG 2.2 & Section 508 Audit Workspaces
+Description              = Ready-to-run sample HTML5, CSS, and WebVTT course modules demonstrating guided source remediation.
+Inclusion                = complete
 
 [Payload.CliScanner]
-Source                = ..\..\..\..\accessibility-studio\build\INSTALLDIR\Release\$(ARCH)\CLI
-TargetSubdir          = CLI
-Feature               = Main
-
-[Payload.HelpViewer]
-Source                = ..\..\..\..\accessibility-studio\build\INSTALLDIR\Release\$(ARCH)\HelpViewer
-TargetSubdir          = HelpViewer
-Feature               = Main
-
-[Payload.HelpManual]
-Source                = ..\..\..\..\accessibility-studio\build\INSTALLDIR\Release\x64\HelpModules\raggiesoft.accessibility-studio
-TargetSubdir          = HelpModules\raggiesoft.accessibility-studio
-Feature               = Main
-
-[Payload.Samples]
-Source                = ..\..\..\..\accessibility-studio\build\INSTALLDIR\Release\x64\Samples
-TargetSubdir          = Samples
-Feature               = Main
+Source                   = ..\..\..\..\accessibility-studio\build\INSTALLDIR\Release\$(ARCH)\CLI
+TargetSubdir             = CLI
+Feature                  = Main
 
 [Payload.Legal]
-Source                = ..\..\..\..\accessibility-studio\build\INSTALLDIR\Release\x64\Legal
-TargetSubdir          = Legal
-Feature               = Main
+Source                   = ..\..\..\..\accessibility-studio\build\INSTALLDIR\Release\x64\Legal
+TargetSubdir             = Legal
+Feature                  = Main
+
+[Payload.StudioIde]
+Source                   = ..\..\..\..\accessibility-studio\build\INSTALLDIR\Release\$(ARCH)\StudioIDE
+TargetSubdir             = StudioIDE
+Feature                  = StudioIde
+
+[Payload.HelpViewer]
+Source                   = ..\..\..\..\accessibility-studio\build\INSTALLDIR\Release\$(ARCH)\HelpViewer
+TargetSubdir             = HelpViewer
+Feature                  = HelpDocs
+
+[Payload.HelpManual]
+Source                   = ..\..\..\..\accessibility-studio\build\INSTALLDIR\Release\x64\HelpModules\raggiesoft.accessibility-studio
+TargetSubdir             = HelpModules\raggiesoft.accessibility-studio
+Feature                  = HelpDocs
+
+[Payload.Samples]
+Source                   = ..\..\..\..\accessibility-studio\build\INSTALLDIR\Release\x64\Samples
+TargetSubdir             = Samples
+Feature                  = Samples
+
+[FileAssociation.A11yWorkspace]
+Extension                = .a11yproj
+ProgId                   = RaggieSoft.AccessibilityStudio.Workspace
+Description              = RaggieSoft Accessibility Studio Workspace
+TargetFile               = StudioIDE\AccessibilityStudio.exe
+ContentType              = application/x-raggiesoft-a11yproj
+PerceivedType            = document
+Verbs                    = open:&Open in Accessibility Studio:"%1"
+Advertise                = false
+Feature                  = StudioIde
 
 [Shortcut.StudioStart]
-Name                  = RaggieSoft Accessibility Studio
-TargetFile            = StudioIDE\AccessibilityStudio.exe
-Location              = StartMenu
+Name                     = RaggieSoft Accessibility Studio
+TargetFile               = StudioIDE\AccessibilityStudio.exe
+Location                 = StartMenu
+Feature                  = StudioIde
 
 [Shortcut.HelpStart]
-Name                  = RaggieSoft Help Viewer
-TargetFile            = HelpViewer\RaggieSoftHelp.exe
-Location              = StartMenu
+Name                     = RaggieSoft Help Viewer
+TargetFile               = HelpViewer\RaggieSoftHelp.exe
+Location                 = StartMenu
+Feature                  = HelpDocs
 
 [Registry.InstallPath]
-Root                  = HKLM
-Key                   = Software\RaggieSoft\Accessibility Studio
-Name                  = Install Path
-Value                 = [INSTALLDIR]
+Root                     = HKLM
+Key                      = Software\RaggieSoft\Accessibility Studio
+Name                     = Install Path
+Value                    = [INSTALLDIR]
+Feature                  = Main
 
-[Registry.A11yExt]
-Root                  = HKCR
-Key                   = .a11yproj
-Name                  = @
-Value                 = RaggieSoft.AccessibilityStudio.Workspace
-
-[Registry.A11yProgId]
-Root                  = HKCR
-Key                   = RaggieSoft.AccessibilityStudio.Workspace
-Name                  = @
-Value                 = RaggieSoft Accessibility Studio Workspace
+[Registry.HelpModulePath]
+Root                     = HKLM
+Key                      = Software\RaggieSoft\HelpModules
+Name                     = raggiesoft.accessibility-studio
+Value                    = [INSTALLDIR]HelpModules\raggiesoft.accessibility-studio
+Feature                  = HelpDocs

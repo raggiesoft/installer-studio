@@ -1,60 +1,96 @@
 ; ==============================================================================
 ; FILE: projects/apps/backstage/backstage.rsip
 ; APPLICATION: RaggieSoft Backstage (v1.0.0)
-; COMPILER: RaggieSoft Installer Studio (instbuild.exe -> .msi + Setup.exe)
+; COMPILER: RaggieSoft Installer Studio v0.5.0 (RaggieSoft Glass + Universal EXE)
+; ==============================================================================
+; PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+;   Packages RaggieSoft Backstage with our signature `standard` (RaggieSoft Glass)
+;   wizard, stage-velvet crimson-and-gold accents, automatic runtime checks, and
+;   Dual-Layer Authenticode signing.
 ; ==============================================================================
 
 @include "..\..\shared\raggiesoft-defaults.rsii"
 
 [Package]
-Name                  = RaggieSoft Backstage
-Tagline               = Behind-the-Scenes Stories & Creative Companion
-WebsiteLabel          = backstage.raggiesoft.com
-Version               = 1.0.0
-Manufacturer          = RaggieSoft
-UpgradeCode           = {B6A77C49-DDFA-5E12-99A8-D2CC267C124F}
-Architecture          = $(ARCH)
-Scope                 = machine
-OutputName            = raggiesoft-backstage-$(ARCH)
-OutputDir             = out
-BuildBootstrapper     = true
-AboutUrl              = https://backstage.raggiesoft.com
+Name                     = RaggieSoft Backstage
+Tagline                  = Behind-the-Scenes Stories & Creative Companion
+WebsiteLabel             = backstage.raggiesoft.com
+Version                  = 1.0.0
+Manufacturer             = RaggieSoft
+UpgradeCode              = {B6A77C49-DDFA-5E12-99A8-D2CC267C124F}
+Architecture             = $(ARCH)
+Scope                    = machine
+OutputName               = raggiesoft-backstage-$(ARCH)
+UniversalOutputName      = raggiesoft-backstage
+BuildUniversal           = true
+UniversalDownloadBaseUrl = https://assets.raggiesoft.com/desktop-apps/windows/apps/backstage
+OutputDir                = out
+BuildBootstrapper        = true
+AboutUrl                 = https://backstage.raggiesoft.com
 
 [Install]
-DefaultSubdir         = RaggieSoft\Backstage
-StartMenuFolder       = RaggieSoft Backstage
-MainExecutable        = Backstage.exe
+DefaultSubdir            = RaggieSoft\Backstage
+StartMenuFolder          = RaggieSoft Backstage
+MainExecutable           = Backstage.exe
 
 [UI]
-WizardLayout          = standard
-AccentPrimaryHex      = #E11D48
-AccentSecondaryHex    = #F59E0B
-LicenseRtf            = License.rtf
-IconFile              = ..\..\..\..\windows\RaggieSoftApps\Backstage\Assets\Backstage.ico
-InstallButtonText     = &Install
-FinishLaunchCheckbox  = &Open RaggieSoft Backstage when setup finishes
+WizardLayout             = standard
+SetupTypePreset          = express_custom
+MsiDialogPreset          = express_custom
+AccentPrimaryHex         = #E11D48
+AccentSecondaryHex       = #F59E0B
+LicenseRtf               = License.rtf
+IconFile                 = ..\..\..\..\windows\RaggieSoftApps\Backstage\Assets\Backstage.ico
+InstallButtonText        = &Install
+FinishLaunchCheckbox     = &Open RaggieSoft Backstage when setup finishes
+ExpressDescription       = Recommended one-click setup into the standard folder with Start Menu and Desktop shortcuts.
+CompactDescription       = Installs only the core RaggieSoft Backstage companion app for minimal disk space.
+CustomDescription        = Choose starter Story Arc guides, installation folder, and shortcuts step by step.
+
+[Prerequisite.DotNet10]
+Preset                   = DotNet10Desktop
+Distribution             = download
+
+[Prerequisite.WebView2]
+Preset                   = EdgeWebView2
+Distribution             = download
+
+[Feature.Main]
+Title                    = RaggieSoft Backstage Companion
+Description              = Explore behind-the-scenes essays, character correspondence, and guided multi-book Story Arcs.
+Inclusion                = minimal
+DisallowAbsent           = true
+
+[Feature.OfflineSeed]
+Parent                   = Main
+Title                    = Starter Story Arc & Commentary Index
+Description              = Built-in behind-the-scenes guide for companion reading alongside RaggieSoft Book Reader.
+Inclusion                = typical
 
 [Payload.App]
-Source                = ..\..\..\..\windows\RaggieSoftApps\Backstage\bin\Release\net10.0-windows\win-$(ARCH)\publish
-Feature               = Main
+Source                   = ..\..\..\..\windows\RaggieSoftApps\Backstage\bin\Release\net10.0-windows\win-$(ARCH)\publish
+Feature                  = Main
 
 [Payload.OfflineSeed]
-Source                = ..\..\..\offline-seeds\backstage
-TargetSubdir          = OfflineSeed
-Feature               = Main
+Source                   = ..\..\..\offline-seeds\backstage
+TargetSubdir             = OfflineSeed
+Feature                  = OfflineSeed
 
 [Shortcut.StartLink]
-Name                  = RaggieSoft Backstage
-TargetFile            = Backstage.exe
-Location              = StartMenu
+Name                     = RaggieSoft Backstage
+TargetFile               = Backstage.exe
+Location                 = StartMenu
+Feature                  = Main
 
 [Shortcut.DesktopLink]
-Name                  = RaggieSoft Backstage
-TargetFile            = Backstage.exe
-Location              = Desktop
+Name                     = RaggieSoft Backstage
+TargetFile               = Backstage.exe
+Location                 = Desktop
+Feature                  = Main
 
 [Registry.InstallPath]
-Root                  = HKLM
-Key                   = Software\RaggieSoft\Backstage
-Name                  = Install Path
-Value                 = [INSTALLDIR]
+Root                     = HKLM
+Key                      = Software\RaggieSoft\Backstage
+Name                     = Install Path
+Value                    = [INSTALLDIR]
+Feature                  = Main

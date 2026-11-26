@@ -1,65 +1,98 @@
 ; ==============================================================================
 ; FILE: projects/apps/launcher/launcher.rsip
 ; APPLICATION: RaggieSoft Launcher (v1.0.0)
-; COMPILER: RaggieSoft Installer Studio (instbuild.exe -> .msi + Setup.exe)
+; COMPILER: RaggieSoft Installer Studio v0.5.0 (FluentMica + Universal Setup.exe)
+; ==============================================================================
+; PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+;   Packages RaggieSoft Launcher as Dual-Layer Authenticode-signed native 64-bit
+;   installers (`x64` & `ARM64` `.msi` + Universal Offline & Smart Web `Setup.exe`)
+;   using the Windows 11 `fluentmica` left step-rail wizard style and zero
+;   technical jargon for everyday readers, listeners, and gamers.
 ; ==============================================================================
 
 @include "..\..\shared\raggiesoft-defaults.rsii"
 
 [Package]
-Name                  = RaggieSoft Launcher
-Tagline               = Books, Music & Creative Applications Hub
-WebsiteLabel          = launcher.raggiesoft.com
-Version               = 1.0.0
-Manufacturer          = RaggieSoft
-UpgradeCode           = {5B586A40-119C-5E42-9F93-80138D4B2C39}
-Architecture          = $(ARCH)
-Scope                 = machine
-OutputName            = raggiesoft-launcher-$(ARCH)
-OutputDir             = out
-BuildBootstrapper     = true
-AboutUrl              = https://launcher.raggiesoft.com
+Name                     = RaggieSoft Launcher
+Tagline                  = Books, Music & Creative Applications Hub
+WebsiteLabel             = launcher.raggiesoft.com
+Version                  = 1.0.0
+Manufacturer             = RaggieSoft
+UpgradeCode              = {5B586A40-119C-5E42-9F93-80138D4B2C39}
+Architecture             = $(ARCH)
+Scope                    = machine
+OutputName               = raggiesoft-launcher-$(ARCH)
+UniversalOutputName      = raggiesoft-launcher
+BuildUniversal           = true
+UniversalDownloadBaseUrl = https://assets.raggiesoft.com/desktop-apps/windows/apps/launcher
+OutputDir                = out
+BuildBootstrapper        = true
+AboutUrl                 = https://launcher.raggiesoft.com
 
 [Install]
-DefaultSubdir         = RaggieSoft\Launcher
-StartMenuFolder       = RaggieSoft Launcher
-MainExecutable        = RaggieSoftLauncher.exe
+DefaultSubdir            = RaggieSoft\Launcher
+StartMenuFolder          = RaggieSoft Launcher
+MainExecutable           = RaggieSoftLauncher.exe
 
 [UI]
-WizardLayout          = standard
-AccentPrimaryHex      = #38BDF8
-AccentSecondaryHex    = #FBBF24
-LicenseRtf            = License.rtf
-IconFile              = ..\..\..\..\windows\RaggieSoftApps\RaggieSoftLauncher\Assets\RaggieSoftLauncher.ico
-InstallButtonText     = &Install
-FinishLaunchCheckbox  = &Open RaggieSoft Launcher when setup finishes
+WizardLayout             = fluentmica
+SetupTypePreset          = express_custom
+MsiDialogPreset          = express_custom
+AccentPrimaryHex         = #0377B6
+AccentSecondaryHex       = #FBBF24
+LicenseRtf               = License.rtf
+IconFile                 = ..\..\..\..\windows\RaggieSoftApps\RaggieSoftLauncher\Assets\RaggieSoftLauncher.ico
+InstallButtonText        = &Install
+FinishLaunchCheckbox     = &Open RaggieSoft Launcher when setup finishes
+ExpressDescription       = Recommended one-click setup into the standard folder with Start Menu and Desktop shortcuts.
+CompactDescription       = Installs only the core RaggieSoft Launcher application with a minimal footprint.
+CustomDescription        = Choose optional starter catalog files, installation folder, and shortcuts step by step.
+
+[Prerequisite.DotNet10]
+Preset                   = DotNet10Desktop
+Distribution             = download
+
+[Feature.Main]
+Title                    = RaggieSoft Launcher Desktop Hub
+Description              = Discover, install, open, and update RaggieSoft books, music, bonus features, and games in one calm window.
+Inclusion                = minimal
+DisallowAbsent           = true
+
+[Feature.OfflineSeed]
+Parent                   = Main
+Title                    = Instant Offline Catalog Guide
+Description              = Starter library metadata so RaggieSoft Launcher opens gracefully even without an internet connection.
+Inclusion                = typical
 
 [Payload.App]
-Source                = ..\..\..\..\windows\RaggieSoftApps\RaggieSoftLauncher\bin\Release\net10.0-windows\win-$(ARCH)\publish
-Feature               = Main
+Source                   = ..\..\..\..\windows\RaggieSoftApps\RaggieSoftLauncher\bin\Release\net10.0-windows\win-$(ARCH)\publish
+Feature                  = Main
 
 [Payload.PkgCli]
-Source                = ..\..\..\..\windows\RaggieSoftApps\RaggieSoftPkgCli\bin\Release\net10.0\win-$(ARCH)\publish
-TargetSubdir          = CLI
-Feature               = Main
+Source                   = ..\..\..\..\windows\RaggieSoftApps\RaggieSoftPkgCli\bin\Release\net10.0\win-$(ARCH)\publish
+TargetSubdir             = CLI
+Feature                  = Main
 
 [Payload.OfflineSeed]
-Source                = ..\..\..\offline-seeds\launcher
-TargetSubdir          = OfflineSeed
-Feature               = Main
+Source                   = ..\..\..\offline-seeds\launcher
+TargetSubdir             = OfflineSeed
+Feature                  = OfflineSeed
 
 [Shortcut.StartLink]
-Name                  = RaggieSoft Launcher
-TargetFile            = RaggieSoftLauncher.exe
-Location              = StartMenu
+Name                     = RaggieSoft Launcher
+TargetFile               = RaggieSoftLauncher.exe
+Location                 = StartMenu
+Feature                  = Main
 
 [Shortcut.DesktopLink]
-Name                  = RaggieSoft Launcher
-TargetFile            = RaggieSoftLauncher.exe
-Location              = Desktop
+Name                     = RaggieSoft Launcher
+TargetFile               = RaggieSoftLauncher.exe
+Location                 = Desktop
+Feature                  = Main
 
 [Registry.InstallPath]
-Root                  = HKLM
-Key                   = Software\RaggieSoft\Launcher
-Name                  = Install Path
-Value                 = [INSTALLDIR]
+Root                     = HKLM
+Key                      = Software\RaggieSoft\Launcher
+Name                     = Install Path
+Value                    = [INSTALLDIR]
+Feature                  = Main

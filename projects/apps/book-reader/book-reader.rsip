@@ -1,60 +1,96 @@
 ; ==============================================================================
 ; FILE: projects/apps/book-reader/book-reader.rsip
 ; APPLICATION: RaggieSoft Book Reader (v1.0.0)
-; COMPILER: RaggieSoft Installer Studio (instbuild.exe -> .msi + Setup.exe)
+; COMPILER: RaggieSoft Installer Studio v0.5.0 (RaggieSoft Glass + Universal EXE)
+; ==============================================================================
+; PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+;   Packages RaggieSoft Book Reader with our signature Dark/Light adaptive
+;   `standard` (RaggieSoft Glass) wizard, warm teal-and-amber reading accents,
+;   automatic runtime checks, and Dual-Layer Authenticode signing.
 ; ==============================================================================
 
 @include "..\..\shared\raggiesoft-defaults.rsii"
 
 [Package]
-Name                  = RaggieSoft Book Reader
-Tagline               = Ocean View Archives & Story Crossroads Library
-WebsiteLabel          = books.raggiesoft.com
-Version               = 1.0.0
-Manufacturer          = RaggieSoft
-UpgradeCode           = {71EC9272-2D8E-5089-82E3-4D296C1D7CAC}
-Architecture          = $(ARCH)
-Scope                 = machine
-OutputName            = raggiesoft-book-reader-$(ARCH)
-OutputDir             = out
-BuildBootstrapper     = true
-AboutUrl              = https://books.raggiesoft.com
+Name                     = RaggieSoft Book Reader
+Tagline                  = Ocean View Archives & Story Crossroads Library
+WebsiteLabel             = books.raggiesoft.com
+Version                  = 1.0.0
+Manufacturer             = RaggieSoft
+UpgradeCode              = {71EC9272-2D8E-5089-82E3-4D296C1D7CAC}
+Architecture             = $(ARCH)
+Scope                    = machine
+OutputName               = raggiesoft-book-reader-$(ARCH)
+UniversalOutputName      = raggiesoft-book-reader
+BuildUniversal           = true
+UniversalDownloadBaseUrl = https://assets.raggiesoft.com/desktop-apps/windows/apps/book-reader
+OutputDir                = out
+BuildBootstrapper        = true
+AboutUrl                 = https://books.raggiesoft.com
 
 [Install]
-DefaultSubdir         = RaggieSoft\Book Reader
-StartMenuFolder       = RaggieSoft Book Reader
-MainExecutable        = BookReader.exe
+DefaultSubdir            = RaggieSoft\Book Reader
+StartMenuFolder          = RaggieSoft Book Reader
+MainExecutable           = BookReader.exe
 
 [UI]
-WizardLayout          = standard
-AccentPrimaryHex      = #14B8A6
-AccentSecondaryHex    = #F59E0B
-LicenseRtf            = License.rtf
-IconFile              = ..\..\..\..\windows\RaggieSoftApps\BookReader\Assets\BookReader.ico
-InstallButtonText     = &Install
-FinishLaunchCheckbox  = &Open RaggieSoft Book Reader when setup finishes
+WizardLayout             = standard
+SetupTypePreset          = express_custom
+MsiDialogPreset          = express_custom
+AccentPrimaryHex         = #117A72
+AccentSecondaryHex       = #F59E0B
+LicenseRtf               = License.rtf
+IconFile                 = ..\..\..\..\windows\RaggieSoftApps\BookReader\Assets\BookReader.ico
+InstallButtonText        = &Install
+FinishLaunchCheckbox     = &Open RaggieSoft Book Reader when setup finishes
+ExpressDescription       = Recommended one-click setup into the standard folder with Start Menu and Desktop shortcuts.
+CompactDescription       = Installs only the core RaggieSoft Book Reader application for minimal disk space.
+CustomDescription        = Choose starter bookshelf presets, installation folder, and shortcuts step by step.
+
+[Prerequisite.DotNet10]
+Preset                   = DotNet10Desktop
+Distribution             = download
+
+[Prerequisite.WebView2]
+Preset                   = EdgeWebView2
+Distribution             = download
+
+[Feature.Main]
+Title                    = RaggieSoft Book Reader
+Description              = Read Ocean View Archives novels and interactive Story Crossroads books offline with adjustable fonts and themes.
+Inclusion                = minimal
+DisallowAbsent           = true
+
+[Feature.OfflineSeed]
+Parent                   = Main
+Title                    = Starter Bookshelf & Reading Themes
+Description              = Built-in library index and Daylight, Sepia, and Night reading presets for instant offline use.
+Inclusion                = typical
 
 [Payload.App]
-Source                = ..\..\..\..\windows\RaggieSoftApps\BookReader\bin\Release\net10.0-windows\win-$(ARCH)\publish
-Feature               = Main
+Source                   = ..\..\..\..\windows\RaggieSoftApps\BookReader\bin\Release\net10.0-windows\win-$(ARCH)\publish
+Feature                  = Main
 
 [Payload.OfflineSeed]
-Source                = ..\..\..\offline-seeds\book-reader
-TargetSubdir          = OfflineSeed
-Feature               = Main
+Source                   = ..\..\..\offline-seeds\book-reader
+TargetSubdir             = OfflineSeed
+Feature                  = OfflineSeed
 
 [Shortcut.StartLink]
-Name                  = RaggieSoft Book Reader
-TargetFile            = BookReader.exe
-Location              = StartMenu
+Name                     = RaggieSoft Book Reader
+TargetFile               = BookReader.exe
+Location                 = StartMenu
+Feature                  = Main
 
 [Shortcut.DesktopLink]
-Name                  = RaggieSoft Book Reader
-TargetFile            = BookReader.exe
-Location              = Desktop
+Name                     = RaggieSoft Book Reader
+TargetFile               = BookReader.exe
+Location                 = Desktop
+Feature                  = Main
 
 [Registry.InstallPath]
-Root                  = HKLM
-Key                   = Software\RaggieSoft\Book Reader
-Name                  = Install Path
-Value                 = [INSTALLDIR]
+Root                     = HKLM
+Key                      = Software\RaggieSoft\Book Reader
+Name                     = Install Path
+Value                    = [INSTALLDIR]
+Feature                  = Main

@@ -1,60 +1,96 @@
 ; ==============================================================================
 ; FILE: projects/apps/listening-room/listening-room.rsip
 ; APPLICATION: RaggieSoft The Listening Room (v1.0.0)
-; COMPILER: RaggieSoft Installer Studio (instbuild.exe -> .msi + Setup.exe)
+; COMPILER: RaggieSoft Installer Studio v0.5.0 (RaggieSoft Glass + Universal EXE)
+; ==============================================================================
+; PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+;   Packages The Listening Room desktop music player with our signature
+;   `standard` (RaggieSoft Glass) wizard, Engine Room Records cyan-and-rose
+;   accents, automatic runtime checks, and Dual-Layer Authenticode signing.
 ; ==============================================================================
 
 @include "..\..\shared\raggiesoft-defaults.rsii"
 
 [Package]
-Name                  = RaggieSoft The Listening Room
-Tagline               = Engine Room Records Music & Synchronized Lyrics
-WebsiteLabel          = music.raggiesoft.com
-Version               = 1.0.0
-Manufacturer          = RaggieSoft
-UpgradeCode           = {E347B8ED-1588-5A46-A23E-441676EB4EC5}
-Architecture          = $(ARCH)
-Scope                 = machine
-OutputName            = raggiesoft-listening-room-$(ARCH)
-OutputDir             = out
-BuildBootstrapper     = true
-AboutUrl              = https://music.raggiesoft.com
+Name                     = RaggieSoft The Listening Room
+Tagline                  = Engine Room Records Music & Synchronized Lyrics
+WebsiteLabel             = music.raggiesoft.com
+Version                  = 1.0.0
+Manufacturer             = RaggieSoft
+UpgradeCode              = {E347B8ED-1588-5A46-A23E-441676EB4EC5}
+Architecture             = $(ARCH)
+Scope                    = machine
+OutputName               = raggiesoft-listening-room-$(ARCH)
+UniversalOutputName      = raggiesoft-listening-room
+BuildUniversal           = true
+UniversalDownloadBaseUrl = https://assets.raggiesoft.com/desktop-apps/windows/apps/listening-room
+OutputDir                = out
+BuildBootstrapper        = true
+AboutUrl                 = https://music.raggiesoft.com
 
 [Install]
-DefaultSubdir         = RaggieSoft\The Listening Room
-StartMenuFolder       = RaggieSoft The Listening Room
-MainExecutable        = ListeningRoom.exe
+DefaultSubdir            = RaggieSoft\The Listening Room
+StartMenuFolder          = RaggieSoft The Listening Room
+MainExecutable           = ListeningRoom.exe
 
 [UI]
-WizardLayout          = standard
-AccentPrimaryHex      = #06B6D4
-AccentSecondaryHex    = #EC4899
-LicenseRtf            = License.rtf
-IconFile              = ..\..\..\..\windows\RaggieSoftApps\ListeningRoom\Assets\ListeningRoom.ico
-InstallButtonText     = &Install
-FinishLaunchCheckbox  = &Open RaggieSoft The Listening Room when setup finishes
+WizardLayout             = standard
+SetupTypePreset          = express_custom
+MsiDialogPreset          = express_custom
+AccentPrimaryHex         = #0E7490
+AccentSecondaryHex       = #EC4899
+LicenseRtf               = License.rtf
+IconFile                 = ..\..\..\..\windows\RaggieSoftApps\ListeningRoom\Assets\ListeningRoom.ico
+InstallButtonText        = &Install
+FinishLaunchCheckbox     = &Open The Listening Room when setup finishes
+ExpressDescription       = Recommended one-click setup into the standard folder with Start Menu and Desktop shortcuts.
+CompactDescription       = Installs only the core Listening Room music player for minimal disk space.
+CustomDescription        = Choose starter discography liner notes, installation folder, and shortcuts step by step.
+
+[Prerequisite.DotNet10]
+Preset                   = DotNet10Desktop
+Distribution             = download
+
+[Prerequisite.WebView2]
+Preset                   = EdgeWebView2
+Distribution             = download
+
+[Feature.Main]
+Title                    = The Listening Room Music Player
+Description              = Stream or play saved Engine Room Records albums with gapless playback and synchronized sing-along lyrics.
+Inclusion                = minimal
+DisallowAbsent           = true
+
+[Feature.OfflineSeed]
+Parent                   = Main
+Title                    = Starter Discography & Band Profiles
+Description              = Built-in album catalog and artist liner notes for immediate offline browsing.
+Inclusion                = typical
 
 [Payload.App]
-Source                = ..\..\..\..\windows\RaggieSoftApps\ListeningRoom\bin\Release\net10.0-windows\win-$(ARCH)\publish
-Feature               = Main
+Source                   = ..\..\..\..\windows\RaggieSoftApps\ListeningRoom\bin\Release\net10.0-windows\win-$(ARCH)\publish
+Feature                  = Main
 
 [Payload.OfflineSeed]
-Source                = ..\..\..\offline-seeds\listening-room
-TargetSubdir          = OfflineSeed
-Feature               = Main
+Source                   = ..\..\..\offline-seeds\listening-room
+TargetSubdir             = OfflineSeed
+Feature                  = OfflineSeed
 
 [Shortcut.StartLink]
-Name                  = The Listening Room
-TargetFile            = ListeningRoom.exe
-Location              = StartMenu
+Name                     = The Listening Room
+TargetFile               = ListeningRoom.exe
+Location                 = StartMenu
+Feature                  = Main
 
 [Shortcut.DesktopLink]
-Name                  = The Listening Room
-TargetFile            = ListeningRoom.exe
-Location              = Desktop
+Name                     = The Listening Room
+TargetFile               = ListeningRoom.exe
+Location                 = Desktop
+Feature                  = Main
 
 [Registry.InstallPath]
-Root                  = HKLM
-Key                   = Software\RaggieSoft\The Listening Room
-Name                  = Install Path
-Value                 = [INSTALLDIR]
+Root                     = HKLM
+Key                      = Software\RaggieSoft\The Listening Room
+Name                     = Install Path
+Value                    = [INSTALLDIR]
+Feature                  = Main
