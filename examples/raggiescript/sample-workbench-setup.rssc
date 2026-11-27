@@ -50,7 +50,7 @@ param launchWhenFinished: bool  = false;
 
 // Embedded LZMS payload harvested at build time by `instbuild.exe` (`#220` `RSWPAK1`)
 payload CoreApp {
-    from "../hello-raggiesoft/ReadMe.txt";
+    from "../hello-raggiesoft/License.rtf";
     feature: "Main";
 }
 

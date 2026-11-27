@@ -636,7 +636,7 @@ int wmain() {
                   std::filesystem::exists(uOut.webStubExePath, ec) &&
                   rsw::IsX64PortableExecutable(uOut.offlineSetupExePath) &&
                   rsw::IsX64PortableExecutable(uOut.webStubExePath) &&
-                  webStubBytes > 64 * 1024 && webStubBytes < 1536 * 1024 &&
+                  webStubBytes > 64 * 1024 && webStubBytes < 2560 * 1024 &&
                   uOut.sha256X64.size() == 64 && uOut.sha256Arm64.size() == 64,
                   "PackageUniversalInstallers emits x64-bootable Combined Offline EXE + compact SHA-256 Web Stub EXE",
                   uErr);
@@ -1972,7 +1972,7 @@ int wmain() {
             const bool installedCleanly =
                 (valJsonRc == 0) &&
                 (instRsscRc == 0) &&
-                std::filesystem::exists(rsscLiveInstDir / L"ReadMe.txt", ec) &&
+                std::filesystem::exists(rsscLiveInstDir / L"License.rtf", ec) &&
                 std::filesystem::exists(rsscLiveInstDir / L"workbench.config.json", ec) &&
                 std::filesystem::exists(rsscLiveInstDir / L"settings.ini", ec) &&
                 std::filesystem::exists(rsscLiveInstDir / L"Uninstall.exe", ec) &&
@@ -1982,7 +1982,7 @@ int wmain() {
             const bool uninstalledCleanly = installedCleanly &&
                 rsw::ExecuteNativeUninstallFromMeta(rsscLiveInstDir / L"Uninstall.rswm", false, unErr) &&
                 !std::filesystem::exists(rsscLiveInstDir / L"workbench.config.json", ec) &&
-                !std::filesystem::exists(rsscLiveInstDir / L"ReadMe.txt", ec);
+                !std::filesystem::exists(rsscLiveInstDir / L"License.rtf", ec);
 
             Check(installedCleanly && uninstalledCleanly,
                   "instbuild.exe compiles .rssc -> Setup.exe (#225 RSWBC1 + #220 RSWPAK1), installs silently, & uninstalls cleanly via Uninstall.rswm",

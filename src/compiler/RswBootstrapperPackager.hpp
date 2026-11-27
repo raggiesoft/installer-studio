@@ -1918,6 +1918,9 @@ inline bool PackageRaggieScriptExecutable(
                     pakItems.push_back({de.path(), WideToUtf8(de.path().filename().wstring()), pl.id});
                 }
             }
+        } else {
+            outError = "Payload '" + pl.id + "' source path does not exist: " + WideToUtf8(absSrc.wstring());
+            return false;
         }
     }
 
