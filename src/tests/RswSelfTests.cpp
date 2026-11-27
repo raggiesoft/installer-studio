@@ -37,6 +37,7 @@
 #include "../compiler/RswMsiCompiler.hpp"
 #include "../compiler/RswValidator.hpp"
 #include "../compiler/RswVpatEmitter.hpp"
+#include <RaggieSoftVisualCanvas.hpp>
 
 #include <filesystem>
 #include <fstream>
@@ -2182,6 +2183,317 @@ int wmain() {
             Check(sfxPackRc == 0 && sfxRunRc == 0 && sfxOutStr == "RSWSFX_STANDALONE_OK",
                   "Standalone rswsfx.exe --pack builds LZMS self-extracting .exe and extracts byte-for-byte in /s mode",
                   "pack=" + std::to_string(sfxPackRc) + " run=" + std::to_string(sfxRunRc) + " txt=" + sfxOutStr);
+
+            // 8. v0.7.0 Test A — Shared `RaggieSoftVisualCanvas.hpp` (`raggiesoft::studio::canvas`) SDK!
+            {
+                using namespace raggiesoft::studio::canvas;
+                const auto vp = LogicalViewport::FitAspectLocked(RECT{100, 50, 840, 590}, 370, 270, false);
+                const RECT sr = vp.LogicalToScreenRect({20, 74, 330, 18});
+                const POINT backPt = vp.ScreenToLogicalPoint({sr.left, sr.top});
+                std::vector<CanvasItem> items{
+                    {"Lbl1", "Text",     {20, 52, 330, 14}, "", "Endpoint:", 0, false},
+                    {"Edt1", "Edit",     {20, 74, 330, 18}, "ENDPOINT_URL", "https://raggiesoftstudio.com", 1, false},
+                    {"Chk1", "CheckBox", {20, 104, 330, 18}, "ADD_TO_PATH", "Add to &PATH", 2, false}
+                };
+                const auto hitBody = HitTestCanvasItems(items, vp, {sr.left + 20, sr.top + 8}, "Edt1");
+                const auto hitGrip = HitTestCanvasItems(items, vp, {sr.right, sr.bottom}, "Edt1");
+                DragSession ds{};
+                ds.Begin("Edt1", ResizeHandle::BodyMove, {sr.left + 10, sr.top + 8}, items[1].bounds);
+                std::vector<SmartGuideLine> guides;
+                const auto moved = ds.Update(vp, {sr.left + 10, sr.top + 48}, 2, 12, 10, items, guides);
+                LogicalRect nudged = items[1].bounds;
+                NudgeRectByKey(nudged, VK_RIGHT, 4, false, vp);
+                NudgeRectByKey(nudged, VK_DOWN,  6, true,  vp);
+                const std::string emittedRssc = EmitRaggieScriptWizardStep("ServerConfigDlg", "Connection Settings", "Configure server.", items);
+                Check(backPt.x == 20 && backPt.y == 74 &&
+                      hitBody.itemId == "Edt1" && hitBody.handle == ResizeHandle::BodyMove &&
+                      hitGrip.itemId == "Edt1" && hitGrip.handle == ResizeHandle::BottomRight &&
+                      moved.y > 74 && nudged.x == 24 && nudged.h == 24 &&
+                      ExtractMnemonicChar("Add to &PATH") == 'P' &&
+                      emittedRssc.find("RsAskOptions") != std::string::npos &&
+                      emittedRssc.find("RsAskText") != std::string::npos,
+                      "v0.7.0 Shared RaggieSoftVisualCanvas.hpp viewport, 8-grip hit-test, drag, keyboard nudge, & .rssc codegen verified");
+            }
+
+            // 9. v0.7.0 Test B — `RSWBC2` Bytecode Container & `raggiescript.exe fmt [--check]`!
+            {
+                const auto unformattedRssc = rsscWorkDir / L"messy-format.rssc";
+                const std::string messySrc =
+                    "// Preserve top comment\n"
+                    "use installer;\n"
+                    "fn helper(x: int) -> int {\n"
+                    "if (x > 0) {\n"
+                    "return x + 1; /* inline block comment */\n"
+                    "}\n"
+                    "return 0;\n"
+                    "}\n";
+                {
+                    std::ofstream f(unformattedRssc, std::ios::binary | std::ios::trunc);
+                    f.write(messySrc.data(), static_cast<std::streamsize>(messySrc.size()));
+                }
+                const DWORD fmtCheckDirty = runCli(raggiescriptExe, L"fmt --check \"" + unformattedRssc.wstring() + L"\"");
+                const DWORD fmtApplyRc    = runCli(raggiescriptExe, L"fmt \"" + unformattedRssc.wstring() + L"\"");
+                const DWORD fmtCheckClean = runCli(raggiescriptExe, L"fmt --check \"" + unformattedRssc.wstring() + L"\"");
+                std::vector<std::uint8_t> fmtBytes;
+                rsw::ReadBinaryFileBytes(unformattedRssc, fmtBytes, surgErr);
+                const std::string fmtStr(fmtBytes.begin(), fmtBytes.end());
+
+                std::vector<std::uint8_t> bc2Bytes;
+                rsw::ReadBinaryFileBytes(advBcFile, bc2Bytes, surgErr);
+                const bool isRswbc2 = (bc2Bytes.size() >= 8 && std::memcmp(bc2Bytes.data(), "RSWBC2\0\0", 8) == 0);
+                Check(isRswbc2 && fmtCheckDirty != 0 && fmtApplyRc == 0 && fmtCheckClean == 0 &&
+                      fmtStr.find("    if (x > 0) {") != std::string::npos &&
+                      fmtStr.find("// Preserve top comment") != std::string::npos &&
+                      fmtStr.find("/* inline block comment */") != std::string::npos,
+                      "v0.7.0 RSWBC2 SHA-256 bytecode container and raggiescript.exe fmt [--check] 4-space comment-preserving formatter verified",
+                      "bc2=" + std::to_string(isRswbc2) + " dirty=" + std::to_string(fmtCheckDirty) + " clean=" + std::to_string(fmtCheckClean));
+            }
+
+            // 10. v0.7.0 Test C — Turnkey `RsDialog` Wizard Suite (`RsWelcome`..`RsFinish` + `< Back` Step Rewind)!
+            {
+                const auto turnkeyScript = binDir / L".." / L".." / L"examples" / L"raggiescript" / L"rsdialog-turnkey-setup.rssc";
+                const auto turnkeyDest   = rsscWorkDir / L"turnkey-rsdialog-installed";
+                rsw::rssc::ScriptProgram tkProg;
+                std::vector<rsw::rssc::ScriptDiagnostic> tkDiags;
+                const bool tkCompOk = rsw::rssc::CompileRaggieScriptFile(turnkeyScript, tkProg, tkDiags);
+
+                rsw::rssc::VmExecutionOptions tkOpts{};
+                tkOpts.forceInteractiveRsDialogs = true;
+                auto mkStep = [](int res, std::string t1 = "", std::string t2 = "", std::string choice = "") {
+                    rsw::rsdialogs::RsDialogMockStep s{};
+                    s.result     = res;
+                    s.acceptLic  = true;
+                    s.text1      = std::move(t1);
+                    s.text2      = std::move(t2);
+                    s.choiceId   = std::move(choice);
+                    return s;
+                };
+                tkOpts.mockDialogSteps = {
+                    mkStep(rsw::rsdialogs::kResultNext),                                               // 1. RsWelcome
+                    mkStep(rsw::rsdialogs::kResultNext),                                               // 2. RsLicense
+                    mkStep(rsw::rsdialogs::kResultNext, "Ada Lovelace", "RaggieSoft Engineering Lab"), // 3. RsUserInfo
+                    mkStep(rsw::rsdialogs::kResultNext, "", "", "custom"),                             // 4. RsSetupType -> custom!
+                    mkStep(rsw::rsdialogs::kResultNext, rsw::WideToUtf8(turnkeyDest.wstring())),       // 5. RsSelectDestDir
+                    mkStep(rsw::rsdialogs::kResultBack),                                               // 6. RsAskOptions -> `< Back` rewinds to StepDestination!
+                    mkStep(rsw::rsdialogs::kResultNext, rsw::WideToUtf8(turnkeyDest.wstring())),       // 7. RsSelectDestDir (re-visited!)
+                    mkStep(rsw::rsdialogs::kResultNext),                                               // 8. RsAskOptions -> Next
+                    mkStep(rsw::rsdialogs::kResultNext),                                               // 9. RsReadyToInstall -> Install!
+                    mkStep(rsw::rsdialogs::kResultNext)                                                // 10. RsFinish
+                };
+
+                bool tkRunOk = false;
+                std::string tkJson;
+                std::size_t visitedCount = 0;
+                if (tkCompOk) {
+                    rsw::rssc::RaggieScriptVm tkVm(tkProg, tkOpts);
+                    tkVm.GlobalScope().Declare("installDir", rsw::rssc::Value::FromPath(turnkeyDest), false);
+                    const auto tkRes = tkVm.ExecuteFullInstaller();
+                    visitedCount = tkVm.VisitedRsDialogs().size();
+                    std::vector<std::uint8_t> profBytes;
+                    rsw::ReadBinaryFileBytes(turnkeyDest / L"install-profile.json", profBytes, surgErr);
+                    tkJson  = std::string(profBytes.begin(), profBytes.end());
+                    tkRunOk = tkRes.ok &&
+                              visitedCount == 10 &&
+                              (tkJson.find("Ada Lovelace") != std::string::npos) &&
+                              (tkJson.find("RaggieSoft Engineering Lab") != std::string::npos) &&
+                              (tkJson.find("\"setupType\": \"custom\"") != std::string::npos);
+                }
+                Check(tkCompOk && tkRunOk,
+                      "v0.7.0 Turnkey RsDialog suite (RsWelcome..RsFinish) executes multi-step wizard, < Back rewind, & ref bindings",
+                      "comp=" + std::to_string(tkCompOk) + " visited=" + std::to_string(visitedCount) + " json=" + tkJson);
+            }
+
+            // 11. v0.7.0 Test D — Declarative `[Environment.*]` Non-Clobbering `PATH` & `[IniFile.*]` (MSI + Native)!
+            {
+                const auto envTestDir  = rsscWorkDir / L"env-ini-test";
+                const auto envSrcExe   = binDir / L"HelloRaggieSoft.exe";
+                const auto envMsiRsip  = envTestDir / L"env-msi.rsip";
+                const auto envNatRsip  = envTestDir / L"env-native.rsip";
+                const auto envOutDir   = envTestDir / L"out";
+                const auto envNatInst  = envTestDir / L"native-installed";
+                std::filesystem::create_directories(envTestDir, ec);
+
+                auto writeEnvManifest = [&](const std::filesystem::path& p, const char* engine) {
+                    std::ostringstream s;
+                    s << "[Package]\r\n"
+                      << "Name = Env And Ini Test\r\n"
+                      << "Version = 0.7.0\r\n"
+                      << "Manufacturer = RaggieSoft\r\n"
+                      << "UpgradeCode = {81A24F10-4E33-4B89-9D21-60708090A0B1}\r\n"
+                      << "Architecture = " << hostArch << "\r\n"
+                      << "Scope = user\r\n"
+                      << "Engine = " << engine << "\r\n"
+                      << "HideFromInstalledApps = true\r\n\r\n"
+                      << "[Install]\r\n"
+                      << "DefaultSubdir = RaggieSoft\\EnvIniTest\r\n"
+                      << "MainExecutable = HelloRaggieSoft.exe\r\n\r\n"
+                      << "[Feature.Main]\r\n"
+                      << "Title = Core\r\n"
+                      << "Inclusion = minimal\r\n\r\n"
+                      << "[Payload.Bin]\r\n"
+                      << "Source = " << rsw::WideToUtf8(envSrcExe.wstring()) << "\r\n"
+                      << "TargetRoot = INSTALLDIR\r\n"
+                      << "Feature = Main\r\n\r\n"
+                      << "[Environment.CliPath]\r\n"
+                      << "Name = Path\r\n"
+                      << "Value = [INSTALLDIR]bin\r\n"
+                      << "Action = append_path\r\n"
+                      << "Scope = user\r\n"
+                      << "OnUninstall = remove\r\n"
+                      << "Feature = Main\r\n\r\n"
+                      << "[IniFile.DefaultEndpoint]\r\n"
+                      << "FileName = workbench.ini\r\n"
+                      << "TargetRoot = INSTALLDIR\r\n"
+                      << "Section = Connection\r\n"
+                      << "Key = Endpoint\r\n"
+                      << "Value = https://raggiesoftstudio.com\r\n"
+                      << "Action = set\r\n"
+                      << "Feature = Main\r\n";
+                    std::ofstream out(p, std::ios::binary | std::ios::trunc);
+                    const std::string str = s.str();
+                    out.write(str.data(), static_cast<std::streamsize>(str.size()));
+                };
+                writeEnvManifest(envMsiRsip, "msi");
+                writeEnvManifest(envNatRsip, "native");
+
+                const DWORD msiEnvRc = runCli(instbuildExe, L"\"" + envMsiRsip.wstring() + L"\" --out-dir=\"" + envOutDir.wstring() + L"\" --output-name=env-msi-pkg");
+                bool msiTablesOk = false;
+                if (msiEnvRc == 0) {
+                    MSIHANDLE hDb = 0;
+                    const auto msiP = envOutDir / L"env-msi-pkg.msi";
+                    if (::MsiOpenDatabaseW(msiP.wstring().c_str(), MSIDBOPEN_READONLY, &hDb) == ERROR_SUCCESS) {
+                        MSIHANDLE hView = 0, hRec = 0;
+                        if (::MsiDatabaseOpenViewW(hDb, L"SELECT `Name`, `Value` FROM `Environment`", &hView) == ERROR_SUCCESS &&
+                            ::MsiViewExecute(hView, 0) == ERROR_SUCCESS &&
+                            ::MsiViewFetch(hView, &hRec) == ERROR_SUCCESS) {
+                            wchar_t nBuf[128]{}, vBuf[256]{};
+                            DWORD cn = 128, cv = 256;
+                            ::MsiRecordGetStringW(hRec, 1, nBuf, &cn);
+                            ::MsiRecordGetStringW(hRec, 2, vBuf, &cv);
+                            msiTablesOk = (std::wstring(nBuf) == L"=*Path") && (std::wstring(vBuf) == L"[~];[INSTALLDIR]bin");
+                            ::MsiCloseHandle(hRec);
+                        }
+                        if (hView) ::MsiCloseHandle(hView);
+
+                        MSIHANDLE hIniV = 0, hIniR = 0;
+                        if (msiTablesOk &&
+                            ::MsiDatabaseOpenViewW(hDb, L"SELECT `FileName`, `Section`, `Key`, `Value` FROM `IniFile`", &hIniV) == ERROR_SUCCESS &&
+                            ::MsiViewExecute(hIniV, 0) == ERROR_SUCCESS &&
+                            ::MsiViewFetch(hIniV, &hIniR) == ERROR_SUCCESS) {
+                            wchar_t kvBuf[256]{};
+                            DWORD ck = 256;
+                            ::MsiRecordGetStringW(hIniR, 4, kvBuf, &ck);
+                            msiTablesOk = (std::wstring(kvBuf) == L"https://raggiesoftstudio.com");
+                            ::MsiCloseHandle(hIniR);
+                        }
+                        if (hIniV) ::MsiCloseHandle(hIniV);
+                        ::MsiCloseHandle(hDb);
+                    }
+                }
+
+                // Seed pre-existing user `Path` inside isolated virtual registry store so live host `PATH` is never touched!
+                const auto envVirtStore = envTestDir / L"virt-reg";
+                std::filesystem::create_directories(envVirtStore, ec);
+                ::SetEnvironmentVariableW(L"RSW_TEST_REG_STORE_DIR", envVirtStore.wstring().c_str());
+                bool dummyCreated = false;
+                rsw::native_detail::VirtualRegWriteValue(
+                    envVirtStore, "HKCU", L"Environment", L"Path",
+                    "C:\\Windows\\System32;D:\\ExistingUserTools", dummyCreated);
+
+                const DWORD natBldRc = runCli(instbuildExe, L"\"" + envNatRsip.wstring() + L"\" --out-dir=\"" + envOutDir.wstring() + L"\" --output-name=env-nat-pkg");
+                const auto natSetup  = envOutDir / L"env-nat-pkg-setup.exe";
+                const DWORD natRunRc = (natBldRc == 0)
+                    ? runCli(natSetup, L"/s INSTALLDIR=\"" + envNatInst.wstring() + L"\"")
+                    : 1u;
+
+                std::string pathAfterInstall;
+                rsw::native_detail::VirtualRegReadValue(envVirtStore, "HKCU", L"Environment", L"Path", pathAfterInstall);
+                wchar_t iniReadBuf[256]{};
+                ::GetPrivateProfileStringW(L"Connection", L"Endpoint", L"", iniReadBuf, 256, (envNatInst / L"workbench.ini").wstring().c_str());
+
+                std::string natUnErr;
+                const bool natUnOk = (natRunRc == 0) &&
+                    rsw::ExecuteNativeUninstallFromMeta(envNatInst / L"Uninstall.rswm", false, natUnErr);
+                std::string pathAfterUninstall;
+                rsw::native_detail::VirtualRegReadValue(envVirtStore, "HKCU", L"Environment", L"Path", pathAfterUninstall);
+
+                if (rsscVirtReg) {
+                    ::SetEnvironmentVariableW(L"RSW_TEST_REG_STORE_DIR", rsscVirtRegDir.wstring().c_str());
+                } else {
+                    ::SetEnvironmentVariableW(L"RSW_TEST_REG_STORE_DIR", nullptr);
+                }
+
+                const std::string expectedAppended = "C:\\Windows\\System32;D:\\ExistingUserTools;" + rsw::WideToUtf8((envNatInst / L"bin").wstring());
+                Check(msiTablesOk && natRunRc == 0 &&
+                      std::wstring(iniReadBuf) == L"https://raggiesoftstudio.com" &&
+                      rsw::EqualsIgnoreCase(pathAfterInstall, expectedAppended) &&
+                      natUnOk && pathAfterUninstall == "C:\\Windows\\System32;D:\\ExistingUserTools",
+                      "v0.7.0 Declarative [Environment.*] non-clobbering PATH append/uninstall & [IniFile.*] verified across Engine=msi and Engine=native",
+                      "msi=" + std::to_string(msiTablesOk) + " afterInst=" + pathAfterInstall + " afterUn=" + pathAfterUninstall);
+            }
+
+            // 12. v0.7.0 Test E — Custom `[Dialog.*]` & `[Control.*]` Validation (`RSW066` / `RSW093`) & Bootstrapper `#202` Stamping!
+            {
+                const auto dlgTestDir = rsscWorkDir / L"custom-dlg-test";
+                std::filesystem::create_directories(dlgTestDir, ec);
+                const auto badCtrlRsip = dlgTestDir / L"dangling-ctrl.rsip";
+                const auto goodDlgRsip = dlgTestDir / L"good-custom-dlg.rsip";
+                const auto dlgOutDir   = dlgTestDir / L"out";
+
+                auto makeDlgRsip = [&](const std::filesystem::path& p, bool includeDialogSection) {
+                    std::ostringstream s;
+                    s << "[Package]\r\n"
+                      << "Name = Custom Dialog App\r\n"
+                      << "Version = 0.7.0\r\n"
+                      << "Manufacturer = RaggieSoft\r\n"
+                      << "UpgradeCode = {92B35F21-5F44-4C9A-8E32-718191A1B1C2}\r\n"
+                      << "Architecture = " << hostArch << "\r\n"
+                      << "Scope = user\r\n"
+                      << "BuildBootstrapper = true\r\n\r\n"
+                      << "[Install]\r\n"
+                      << "DefaultSubdir = RaggieSoft\\CustomDlgApp\r\n"
+                      << "MainExecutable = HelloRaggieSoft.exe\r\n\r\n"
+                      << "[Feature.Main]\r\n"
+                      << "Title = Core\r\n\r\n"
+                      << "[Payload.Bin]\r\n"
+                      << "Source = " << rsw::WideToUtf8((binDir / L"HelloRaggieSoft.exe").wstring()) << "\r\n\r\n";
+                    if (includeDialogSection) {
+                        s << "[Dialog.ApiPage]\r\n"
+                          << "Title = API Endpoint Settings\r\n"
+                          << "Subtitle = Enter your server endpoint.\r\n"
+                          << "AfterPage = SetupType\r\n\r\n";
+                    }
+                    s << "[Control.ApiUrlEdit]\r\n"
+                      << "Dialog = ApiPage\r\n"
+                      << "Type = Edit\r\n"
+                      << "X = 20\r\n"
+                      << "Y = 42\r\n"
+                      << "Width = 340\r\n"
+                      << "Height = 26\r\n"
+                      << "Property = API_ENDPOINT\r\n"
+                      << "DefaultValue = https://raggiesoftstudio.com\r\n";
+                    std::ofstream out(p, std::ios::binary | std::ios::trunc);
+                    const std::string str = s.str();
+                    out.write(str.data(), static_cast<std::streamsize>(str.size()));
+                };
+                makeDlgRsip(badCtrlRsip, false);
+                makeDlgRsip(goodDlgRsip, true);
+
+                const DWORD badDlgRc  = runCli(instbuildExe, L"--validate \"" + badCtrlRsip.wstring() + L"\"");
+                const DWORD essGateRc = runCli(instbuildExe, L"--validate --edition=essentials \"" + goodDlgRsip.wstring() + L"\"");
+                const DWORD devPassRc = runCli(instbuildExe, L"--validate --edition=developer \"" + goodDlgRsip.wstring() + L"\"");
+                const DWORD bldDlgRc  = runCli(instbuildExe, L"\"" + goodDlgRsip.wstring() + L"\" --out-dir=\"" + dlgOutDir.wstring() + L"\" --output-name=custom-dlg-pkg");
+                std::vector<std::uint8_t> setupBytes;
+                rsw::ReadBinaryFileBytes(dlgOutDir / L"custom-dlg-pkg-setup.exe", setupBytes, surgErr);
+                const std::string setupRaw(reinterpret_cast<const char*>(setupBytes.data()), setupBytes.size());
+                const bool stampedCustomDlg =
+                    (setupRaw.find("CustomDialogCount=1") != std::string::npos) &&
+                    (setupRaw.find("CustomControl_0_Property=API_ENDPOINT") != std::string::npos);
+
+                Check(badDlgRc != 0 && essGateRc != 0 && devPassRc == 0 && bldDlgRc == 0 && stampedCustomDlg,
+                      "v0.7.0 Custom [Dialog.*] & [Control.*] enforce RSW066/RSW093 and stamp #202 bootstrapper controls & SecureCustomProperties",
+                      "bad=" + std::to_string(badDlgRc) + " ess=" + std::to_string(essGateRc) + " dev=" + std::to_string(devPassRc) + " stamped=" + std::to_string(stampedCustomDlg));
+            }
         }
 
         if (rsscVirtReg) {

@@ -60,6 +60,7 @@
 #include "../common/RswRaggieScript.hpp"
 #include "RswIdeAeroWizards.hpp"
 #include "RswSyntaxHighlighter.hpp"
+#include <RaggieSoftVisualCanvas.hpp>
 
 #include <commdlg.h>
 #include <shellapi.h>
@@ -130,6 +131,8 @@ enum IdeId : int {
     IDM_FILE_NEW_RSSC        = 2026,
     IDM_EDITION_MATRIX       = 2027,
     IDM_LAUNCH_RSWSFX        = 2028,
+    IDM_SOURCE_FORMAT        = 2029,
+    IDM_WIZ_ADD_PATH_ENV     = 2030,
 
     // Persistent Toolbar & Category Navigation Tree
     IDC_TB_WIZARD            = 2100,
@@ -252,7 +255,7 @@ enum IdeId : int {
     IDC_SC_SAVE_BTN          = 2247,
     IDC_SC_DEL_BTN           = 2248,
 
-    // View 8: C++ Wizard Designer (`SetupWizard.exe`)
+    // View 8: C++ Wizard Designer (`SetupWizard.exe` + Custom `[Dialog.*]` WYSIWYG Canvas!)
     IDC_UI_LAYOUT            = 2250,
     IDC_UI_PRIMARY_HEX       = 2251,
     IDC_UI_SECONDARY_HEX     = 2252,
@@ -265,6 +268,18 @@ enum IdeId : int {
     IDC_UI_PREVIEW_STEP      = 2259,
     IDC_UI_SETUP_TYPES       = 2280,
     IDC_UI_AUTO_WCAG         = 2281,
+    IDC_UI_CUST_DLG_ID       = 2282,
+    IDC_UI_CUST_DLG_TITLE    = 2283,
+    IDC_UI_CUST_AFTER        = 2284,
+    IDC_UI_ADD_DLG_BTN       = 2285,
+    IDC_UI_CTRL_ID           = 2286,
+    IDC_UI_CTRL_TYPE         = 2287,
+    IDC_UI_CTRL_XYWH         = 2288,
+    IDC_UI_CTRL_PROP         = 2289,
+    IDC_UI_CTRL_TEXT         = 2290,
+    IDC_UI_PLACE_CTRL_BTN    = 2291,
+    IDC_UI_DEL_CTRL_BTN      = 2292,
+    IDC_UI_EXPORT_RSSC_BTN   = 2293,
 
     // View 9: Traditional `MSI.DLL` `Dialog` Table Designer (`370 x 270` DLU)
     IDC_MSI_PRESET_COMBO     = 2350,
@@ -280,6 +295,8 @@ enum IdeId : int {
     IDC_MSI_CTRL_TEXT        = 2360,
     IDC_MSI_ADD_CTRL_BTN     = 2361,
     IDC_MSI_INCLUDE_BTN      = 2362,
+    IDC_MSI_DEL_CTRL_BTN     = 2363,
+    IDC_MSI_EXPORT_RSSC_BTN  = 2364,
 
     // View 10: Authenticode Signing, .MST & .MSP
     IDC_SIG_ENABLED          = 2260,
@@ -633,6 +650,19 @@ public:
     RECT                       previewCanvasRc{};
     RECT                       msiCanvasRc{};
 
+    // Shared `RaggieSoftVisualCanvas` authoring state across BOTH `VIEW_CPP_WIZARD` & `VIEW_MSI_DIALOGS`!
+    raggiesoft::studio::canvas::LogicalViewport           cppAuthoringViewport{};
+    raggiesoft::studio::canvas::LogicalViewport           msiAuthoringViewport{};
+    std::vector<raggiesoft::studio::canvas::CanvasItem>   cppCanvasItems;
+    std::vector<raggiesoft::studio::canvas::CanvasItem>   msiCanvasItems;
+    raggiesoft::studio::canvas::DragSession               canvasDrag{};
+    std::vector<raggiesoft::studio::canvas::SmartGuideLine> activeSmartGuides;
+    std::string                                           selectedCppCtrlId;
+    std::string                                           hoveredCppCtrlId;
+    std::string                                           selectedMsiCtrlId;
+    std::string                                           hoveredMsiCtrlId;
+    std::vector<std::string>                              cppPreviewCustomDlgIds;
+
     // Tree selection metadata tables across all 9 `SysTreeView32` controls
     std::vector<int>                           navNodeViews;
     std::array<HTREEITEM, VIEW_COUNT>          viewNavItems{};
@@ -717,10 +747,13 @@ public:
     HWND hScTree = nullptr, hScIdEdit = nullptr, hScName = nullptr, hScTarget = nullptr;
     HWND hScLocCombo = nullptr, hScArgs = nullptr, hScFeat = nullptr, hScSaveBtn = nullptr, hScDelBtn = nullptr;
 
-    // View 8: C++ Wizard Designer (`SetupWizard.exe`)
+    // View 8: C++ Wizard Designer (`SetupWizard.exe` + Custom `[Dialog.*]` WYSIWYG Stage)
     HWND hUiLayout = nullptr, hUiSetupTypes = nullptr, hUiPreviewStep = nullptr;
     HWND hUiPrim = nullptr, hUiAutoWcagBtn = nullptr, hUiSec = nullptr, hUiInstBtn = nullptr;
     HWND hUiIcon = nullptr, hUiIconBtn = nullptr, hUiArt = nullptr, hUiArtBtn = nullptr, hUiApply = nullptr;
+    HWND hUiCustDlgId = nullptr, hUiCustDlgTitle = nullptr, hUiCustAfter = nullptr, hUiAddDlgBtn = nullptr;
+    HWND hUiCtrlId = nullptr, hUiCtrlType = nullptr, hUiCtrlXywh = nullptr, hUiCtrlProp = nullptr, hUiCtrlText = nullptr;
+    HWND hUiPlaceCtrlBtn = nullptr, hUiDelCtrlBtn = nullptr, hUiExportRsscBtn = nullptr;
     HICON   hPreviewIcon = nullptr;
     HBITMAP hPreviewArt  = nullptr;
     int     previewArtW  = 0;
@@ -731,6 +764,7 @@ public:
     HWND hMsiNewId = nullptr, hMsiNewTitle = nullptr, hMsiNewAfter = nullptr, hMsiAddDlgBtn = nullptr;
     HWND hMsiCtrlId = nullptr, hMsiCtrlType = nullptr, hMsiCtrlXywh = nullptr;
     HWND hMsiCtrlProp = nullptr, hMsiCtrlText = nullptr, hMsiAddCtrlBtn = nullptr, hMsiIncludeBtn = nullptr;
+    HWND hMsiDelCtrlBtn = nullptr, hMsiExportRsscBtn = nullptr;
 
     // View 10: Signing, .MST & .MSP
     HWND hSigEnable = nullptr, hSigThumb = nullptr, hSigTs = nullptr, hSigDlib = nullptr, hSigMeta = nullptr, hSigApply = nullptr;
@@ -808,11 +842,13 @@ public:
         ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_RELEASE,       L"&Release, Transform (.MST) & Patch (.MSP) AeroWizard...");
         ::AppendMenuW(hWiz, MF_SEPARATOR, 0, nullptr);
         ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_INSERT_PRESET, L"&Insert @include Sample Dialog Preset (.rsii)...");
+        ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_ADD_PATH_ENV,  L"+ Add Non-Clobbering &PATH / [Environment] Rule...");
 
         HMENU hBuild = ::CreatePopupMenu();
         ::AppendMenuW(hBuild, MF_STRING, IDM_BUILD_VALIDATE,  L"&Validate Manifest + Component Rules\tF7");
         ::AppendMenuW(hBuild, MF_STRING, IDM_BUILD_MSI,       L"&Build Enterprise MSI + Setup.exe\tF5");
         ::AppendMenuW(hBuild, MF_STRING, IDM_BUILD_MSM,       L"Build &Merge Module (.msm)\tF6");
+        ::AppendMenuW(hBuild, MF_STRING, IDM_SOURCE_FORMAT,   L"&Format RaggieScript / Source (4-Space)\tCtrl+Shift+F");
         ::AppendMenuW(hBuild, MF_SEPARATOR, 0, nullptr);
         ::AppendMenuW(hBuild, MF_STRING, IDM_BUILD_VPAT,      L"Export Installer &VPAT 2.5 HTML5 Report");
         ::AppendMenuW(hBuild, MF_STRING, IDM_BUILD_EMIT_AI,   L"Emit &llms.txt + SKILL.md");
@@ -1172,6 +1208,28 @@ public:
         hUiArtBtn  = mkBtn(VIEW_CPP_WIZARD, L"Pick &Art...", IDC_UI_ART_BROWSE);
         hUiApply   = mkBtn(VIEW_CPP_WIZARD, L"&Apply C++ Wizard Branding && Refresh Canvas", IDC_UI_APPLY);
 
+        // Custom `[Dialog.<id>]` & `[Control.<id>]` WYSIWYG Stage Controls (Shared `RaggieSoftVisualCanvas`!)
+        mkLbl(VIEW_CPP_WIZARD, L"Custom [Dialog]:");  hUiCustDlgId    = mkEd(VIEW_CPP_WIZARD, IDC_UI_CUST_DLG_ID,    L"ServerConfigPage");
+        mkLbl(VIEW_CPP_WIZARD, L"Page Title:");       hUiCustDlgTitle = mkEd(VIEW_CPP_WIZARD, IDC_UI_CUST_DLG_TITLE, L"Connection Settings");
+        mkLbl(VIEW_CPP_WIZARD, L"After Step:");
+        hUiCustAfter = mkCombo(VIEW_CPP_WIZARD, IDC_UI_CUST_AFTER, {
+            L"SetupType", L"Welcome", L"License", L"CustomFeatures", L"CustomFolder", L"CustomShortcuts"
+        }, 0);
+        hUiAddDlgBtn = mkBtn(VIEW_CPP_WIZARD, L"+ [&Dialog]", IDC_UI_ADD_DLG_BTN);
+
+        mkLbl(VIEW_CPP_WIZARD, L"Control ID:");       hUiCtrlId   = mkEd(VIEW_CPP_WIZARD, IDC_UI_CTRL_ID,   L"EndpointEdit");
+        mkLbl(VIEW_CPP_WIZARD, L"Widget Type:");
+        hUiCtrlType = mkCombo(VIEW_CPP_WIZARD, IDC_UI_CTRL_TYPE, {
+            L"Text", L"Edit", L"PasswordEdit", L"PathEdit", L"CheckBox",
+            L"RadioButtonGroup", L"ComboBox", L"ListBox", L"GroupBox", L"Line"
+        }, 1);
+        mkLbl(VIEW_CPP_WIZARD, L"X, Y, W, H (px):");  hUiCtrlXywh = mkEd(VIEW_CPP_WIZARD, IDC_UI_CTRL_XYWH, L"16, 40, 340, 26");
+        mkLbl(VIEW_CPP_WIZARD, L"MSI Property:");     hUiCtrlProp = mkEd(VIEW_CPP_WIZARD, IDC_UI_CTRL_PROP, L"ENDPOINT_URL");
+        mkLbl(VIEW_CPP_WIZARD, L"Label / Items:");    hUiCtrlText = mkEd(VIEW_CPP_WIZARD, IDC_UI_CTRL_TEXT, L"https://raggiesoftstudio.com");
+        hUiPlaceCtrlBtn  = mkBtn(VIEW_CPP_WIZARD, L"+ &Place [Control]", IDC_UI_PLACE_CTRL_BTN);
+        hUiDelCtrlBtn    = mkBtn(VIEW_CPP_WIZARD, L"De&lete",            IDC_UI_DEL_CTRL_BTN);
+        hUiExportRsscBtn = mkBtn(VIEW_CPP_WIZARD, L"-> .&rssc",          IDC_UI_EXPORT_RSSC_BTN);
+
         // --- VIEW 9: Traditional `MSI.DLL` `Dialog` Table Designer (`370 x 270` DLU) ---
         mkLbl(VIEW_MSI_DIALOGS, L"MSI Workflow:");
         hMsiPreset = mkCombo(VIEW_MSI_DIALOGS, IDC_MSI_PRESET_COMBO, {
@@ -1192,13 +1250,16 @@ public:
         mkLbl(VIEW_MSI_DIALOGS, L"Control ID:");       hMsiCtrlId   = mkEd(VIEW_MSI_DIALOGS, IDC_MSI_CTRL_ID,   L"EndpointEdit");
         mkLbl(VIEW_MSI_DIALOGS, L"Control Type:");
         hMsiCtrlType = mkCombo(VIEW_MSI_DIALOGS, IDC_MSI_CTRL_TYPE, {
-            L"Text", L"Edit", L"PathEdit", L"CheckBox", L"RadioButtonGroup", L"ComboBox", L"GroupBox"
+            L"Text", L"Edit", L"PasswordEdit", L"PathEdit", L"CheckBox",
+            L"RadioButtonGroup", L"ComboBox", L"ListBox", L"GroupBox", L"Line"
         }, 1);
         mkLbl(VIEW_MSI_DIALOGS, L"X, Y, W, H (DLU):"); hMsiCtrlXywh = mkEd(VIEW_MSI_DIALOGS, IDC_MSI_CTRL_XYWH, L"20, 74, 330, 18");
         mkLbl(VIEW_MSI_DIALOGS, L"MSI Property:");     hMsiCtrlProp = mkEd(VIEW_MSI_DIALOGS, IDC_MSI_CTRL_PROP, L"ENDPOINT_URL");
         mkLbl(VIEW_MSI_DIALOGS, L"Text / Items:");     hMsiCtrlText = mkEd(VIEW_MSI_DIALOGS, IDC_MSI_CTRL_TEXT, L"https://raggiesoftstudio.com");
-        hMsiAddCtrlBtn = mkBtn(VIEW_MSI_DIALOGS, L"+ Place [Msi&Control]", IDC_MSI_ADD_CTRL_BTN);
-        hMsiIncludeBtn = mkBtn(VIEW_MSI_DIALOGS, L"@&include Sample Preset...", IDC_MSI_INCLUDE_BTN);
+        hMsiAddCtrlBtn    = mkBtn(VIEW_MSI_DIALOGS, L"+ Place [Msi&Control]", IDC_MSI_ADD_CTRL_BTN);
+        hMsiDelCtrlBtn    = mkBtn(VIEW_MSI_DIALOGS, L"&Delete Control",       IDC_MSI_DEL_CTRL_BTN);
+        hMsiIncludeBtn    = mkBtn(VIEW_MSI_DIALOGS, L"@&include Preset...",   IDC_MSI_INCLUDE_BTN);
+        hMsiExportRsscBtn = mkBtn(VIEW_MSI_DIALOGS, L"Export -> .&rssc",      IDC_MSI_EXPORT_RSSC_BTN);
 
         // --- VIEW 10: Authenticode Signing, .MST & .MSP ---
         hSigEnable = mkBtn(VIEW_SIGN_REL, L"&Enable Dual-Layer Authenticode Signing (Product.msi + Setup.exe)", IDC_SIG_ENABLED, BS_AUTOCHECKBOX);
@@ -1553,69 +1614,95 @@ public:
             }
         }
 
-        // View 8: C++ Wizard Designer (`SetupWizard.exe` — 10 Styles + Setup Types + WCAG Auto-Fix!)
+        // View 8: C++ Wizard Designer (`SetupWizard.exe` — 11 Styles + Custom `[Dialog.*]` WYSIWYG Stage!)
         {
             auto v = viewCtrls(VIEW_CPP_WIZARD);
-            const int formW = S(388);
-            int y = contentTop + S(2);
-            const int lw = S(136);
-            if (v.size() >= 20) {
-                ::MoveWindow(v[0],          paneX,      y + S(4), lw,          S(22),  TRUE);
-                ::MoveWindow(hUiLayout,     paneX + lw, y,        formW - lw,  S(260), TRUE);
-                y += S(30);
-                ::MoveWindow(v[2],          paneX,      y + S(4), lw,          S(22),  TRUE);
-                ::MoveWindow(hUiSetupTypes, paneX + lw, y,        formW - lw,  S(140), TRUE);
-                y += S(30);
-                ::MoveWindow(v[4],          paneX,      y + S(4), lw,          S(22),  TRUE);
-                ::MoveWindow(hUiPreviewStep,paneX + lw, y,        formW - lw,  S(180), TRUE);
-                y += S(30);
+            const int formW = S(396);
+            int y = contentTop;
+            const int lw = S(128);
+            const int rh = S(24);
+            const int stepY = S(25);
+            if (v.size() >= 39) {
+                ::MoveWindow(v[0],          paneX,      y + S(3), lw,         S(20),  TRUE);
+                ::MoveWindow(hUiLayout,     paneX + lw, y,        formW - lw, S(260), TRUE);
+                y += stepY;
+                ::MoveWindow(v[2],          paneX,      y + S(3), lw,         S(20),  TRUE);
+                ::MoveWindow(hUiSetupTypes, paneX + lw, y,        formW - lw, S(140), TRUE);
+                y += stepY;
+                ::MoveWindow(v[4],          paneX,      y + S(3), lw,         S(20),  TRUE);
+                ::MoveWindow(hUiPreviewStep,paneX + lw, y,        formW - lw, S(220), TRUE);
+                y += stepY;
                 auto row = [&](HWND lbl, HWND ed, int rsv = 0) {
-                    ::MoveWindow(lbl, paneX, y + S(4), lw, S(22), TRUE);
-                    ::MoveWindow(ed,  paneX + lw, y, formW - lw - rsv, S(26), TRUE);
-                    y += S(30);
+                    ::MoveWindow(lbl, paneX, y + S(3), lw, S(20), TRUE);
+                    ::MoveWindow(ed,  paneX + lw, y, formW - lw - rsv, rh, TRUE);
+                    y += stepY;
                 };
-                row(v[6],  hUiPrim, S(124));
-                ::MoveWindow(hUiAutoWcagBtn, paneX + formW - S(118), y - S(30), S(118), S(26), TRUE);
+                row(v[6],  hUiPrim, S(118));
+                ::MoveWindow(hUiAutoWcagBtn, paneX + formW - S(114), y - stepY, S(114), rh, TRUE);
                 row(v[9],  hUiSec);
                 row(v[11], hUiInstBtn);
-                row(v[13], hUiIcon, S(86));
-                ::MoveWindow(hUiIconBtn, paneX + formW - S(80), y - S(30), S(80), S(26), TRUE);
-                row(v[16], hUiArt, S(86));
-                ::MoveWindow(hUiArtBtn,  paneX + formW - S(80), y - S(30), S(80), S(26), TRUE);
-                ::MoveWindow(hUiApply,   paneX, y + S(4), formW, S(34), TRUE);
+                row(v[13], hUiIcon, S(84));
+                ::MoveWindow(hUiIconBtn, paneX + formW - S(80), y - stepY, S(80), rh, TRUE);
+                row(v[16], hUiArt, S(84));
+                ::MoveWindow(hUiArtBtn,  paneX + formW - S(80), y - stepY, S(80), rh, TRUE);
+                ::MoveWindow(hUiApply,   paneX, y, formW, S(27), TRUE);
+                y += S(32);
+
+                // Custom `[Dialog.*]` & `[Control.*]` Designer Section
+                row(v[20], hUiCustDlgId);
+                row(v[22], hUiCustDlgTitle);
+                ::MoveWindow(v[24],        paneX,      y + S(3), lw,                S(20),  TRUE);
+                ::MoveWindow(hUiCustAfter, paneX + lw, y,        formW - lw - S(94), S(160), TRUE);
+                ::MoveWindow(hUiAddDlgBtn, paneX + formW - S(90), y, S(90), rh, TRUE);
+                y += stepY + S(3);
+
+                row(v[27], hUiCtrlId);
+                ::MoveWindow(v[29],       paneX,      y + S(3), lw,         S(20),  TRUE);
+                ::MoveWindow(hUiCtrlType, paneX + lw, y,        formW - lw, S(200), TRUE);
+                y += stepY;
+                row(v[31], hUiCtrlXywh);
+                row(v[33], hUiCtrlProp);
+                row(v[35], hUiCtrlText);
+                ::MoveWindow(hUiPlaceCtrlBtn,  paneX,          y + S(1), S(166), S(27), TRUE);
+                ::MoveWindow(hUiDelCtrlBtn,    paneX + S(172), y + S(1), S(104), S(27), TRUE);
+                ::MoveWindow(hUiExportRsscBtn, paneX + S(282), y + S(1), formW - S(282), S(27), TRUE);
             }
-            previewCanvasRc = RECT{paneX + formW + S(18), contentTop, paneX + paneW, contentTop + std::min(mainH, S(440))};
+            previewCanvasRc = RECT{paneX + formW + S(16), contentTop, paneX + paneW, contentTop + std::min(mainH, S(476))};
         }
 
         // View 9: Traditional `MSI.DLL` `Dialog` Table Designer (`370 x 270` DLU!)
         {
             auto v = viewCtrls(VIEW_MSI_DIALOGS);
-            const int formW = S(386);
+            const int formW = S(390);
             int y = contentTop + S(2);
             const int lw = S(126);
-            if (v.size() >= 22) {
+            if (v.size() >= 24) {
                 auto row = [&](HWND lbl, HWND ctl, int h = 25) {
                     ::MoveWindow(lbl, paneX, y + S(3), lw, S(20), TRUE);
                     ::MoveWindow(ctl, paneX + lw, y, formW - lw, S(h), TRUE);
-                    y += S(28);
+                    y += S(27);
                 };
                 row(v[0], hMsiPreset, 120);
-                row(v[2], hMsiDlgSelect, 180);
+                row(v[2], hMsiDlgSelect, 200);
                 row(v[4], hMsiNewId);
                 row(v[6], hMsiNewTitle);
                 row(v[8], hMsiNewAfter);
-                ::MoveWindow(hMsiAddDlgBtn, paneX, y, formW, S(28), TRUE);
-                y += S(34);
+                ::MoveWindow(hMsiAddDlgBtn, paneX, y, formW, S(27), TRUE);
+                y += S(32);
 
                 row(v[11], hMsiCtrlId);
-                row(v[13], hMsiCtrlType, 160);
+                row(v[13], hMsiCtrlType, 200);
                 row(v[15], hMsiCtrlXywh);
                 row(v[17], hMsiCtrlProp);
                 row(v[19], hMsiCtrlText);
-                ::MoveWindow(hMsiAddCtrlBtn, paneX, y + S(2), (formW - S(8)) / 2, S(30), TRUE);
-                ::MoveWindow(hMsiIncludeBtn, paneX + (formW + S(8)) / 2, y + S(2), (formW - S(8)) / 2, S(30), TRUE);
+                const int halfW = (formW - S(8)) / 2;
+                ::MoveWindow(hMsiAddCtrlBtn,    paneX,             y + S(1), halfW, S(28), TRUE);
+                ::MoveWindow(hMsiDelCtrlBtn,    paneX + halfW + S(8), y + S(1), halfW, S(28), TRUE);
+                y += S(32);
+                ::MoveWindow(hMsiIncludeBtn,    paneX,             y, halfW, S(28), TRUE);
+                ::MoveWindow(hMsiExportRsscBtn, paneX + halfW + S(8), y, halfW, S(28), TRUE);
             }
-            msiCanvasRc = RECT{paneX + formW + S(18), contentTop, paneX + paneW, contentTop + std::min(mainH, S(430))};
+            msiCanvasRc = RECT{paneX + formW + S(16), contentTop, paneX + paneW, contentTop + std::min(mainH, S(460))};
         }
 
         // View 10: Signing, .MST & .MSP
@@ -2345,16 +2432,46 @@ public:
             ::SetWindowTextW(hFaTarget, rsw::Utf8ToWide(mainExe).c_str());
         }
 
-        // Populate View 8: C++ Wizard Designer (`v0.5.0` 10 Wizard Styles + Setup Types!)
+        // Populate View 8: C++ Wizard Designer (`11` Wizard Styles + Custom `[Dialog.*]` Steps!)
         const auto wk = rsw::ParseWizardStyleKind(effectiveDoc.GetString("UI", "", "WizardLayout", "standard"));
         ::SendMessageW(hUiLayout, CB_SETCURSEL, static_cast<WPARAM>(wk), 0);
         const bool win95Types = rsw::EqualsIgnoreCase(effectiveDoc.GetString("UI", "", "SetupTypePreset", "express_custom"), "win95_classic");
         ::SendMessageW(hUiSetupTypes, CB_SETCURSEL, win95Types ? 1 : 0, 0);
-        if (wk == rsw::WizardStyleKind::Autorun16x9) {
-            ::SendMessageW(hUiPreviewStep, CB_SETCURSEL, 4, 0);
-        } else if (::SendMessageW(hUiPreviewStep, CB_GETCURSEL, 0, 0) == 4) {
-            ::SendMessageW(hUiPreviewStep, CB_SETCURSEL, 1, 0);
+
+        const LRESULT prevStepSel = ::SendMessageW(hUiPreviewStep, CB_GETCURSEL, 0, 0);
+        std::string prevCustomDlg;
+        if (prevStepSel >= 6 && static_cast<std::size_t>(prevStepSel - 6) < cppPreviewCustomDlgIds.size()) {
+            prevCustomDlg = cppPreviewCustomDlgIds[static_cast<std::size_t>(prevStepSel - 6)];
         }
+        ::SendMessageW(hUiPreviewStep, CB_RESETCONTENT, 0, 0);
+        const wchar_t* builtInSteps[6] = {
+            L"Welcome & Hero Brand Card",
+            L"Setup Type (Option Cards)",
+            L"Office-Style Repair Mode",
+            L"Installing Live Progress & Billboard",
+            L"16:9 Autorun Cover & 2x2 Menu",
+            L"Select Features (MSI SelectionTree)"
+        };
+        for (const wchar_t* bs : builtInSteps) {
+            ::SendMessageW(hUiPreviewStep, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(bs));
+        }
+        cppPreviewCustomDlgIds = effectiveDoc.GetNamedSectionIds("Dialog");
+        int restoredStepSel = (prevStepSel >= 0 && prevStepSel < 6) ? static_cast<int>(prevStepSel) : 1;
+        for (std::size_t di = 0; di < cppPreviewCustomDlgIds.size(); ++di) {
+            const auto& did = cppPreviewCustomDlgIds[di];
+            const std::string dt = effectiveDoc.GetString("Dialog", did, "Title", did);
+            const std::wstring itemLbl = rsw::Utf8ToWide("[Dialog." + did + "] " + dt + " (WYSIWYG)");
+            ::SendMessageW(hUiPreviewStep, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(itemLbl.c_str()));
+            if (!prevCustomDlg.empty() && rsw::EqualsIgnoreCase(did, prevCustomDlg)) {
+                restoredStepSel = static_cast<int>(6 + di);
+            }
+        }
+        if (wk == rsw::WizardStyleKind::Autorun16x9 && restoredStepSel < 6) {
+            restoredStepSel = 4;
+        } else if (restoredStepSel == 4 && wk != rsw::WizardStyleKind::Autorun16x9) {
+            restoredStepSel = 1;
+        }
+        ::SendMessageW(hUiPreviewStep, CB_SETCURSEL, restoredStepSel, 0);
         ::SetWindowTextW(hUiPrim,    rsw::Utf8ToWide(effectiveDoc.GetString("UI", "", "AccentPrimaryHex", "#2563EB")).c_str());
         ::SetWindowTextW(hUiSec,     rsw::Utf8ToWide(effectiveDoc.GetString("UI", "", "AccentSecondaryHex", "#FBBF24")).c_str());
         ::SetWindowTextW(hUiInstBtn, rsw::Utf8ToWide(effectiveDoc.GetString("UI", "", "InstallButtonText", "&Install")).c_str());
@@ -2513,6 +2630,7 @@ public:
                 ::EnableMenuItem(hMenu, cmdId, MF_BYCOMMAND | (en ? MF_ENABLED : MF_GRAYED));
             };
             enMenu(IDM_FILE_NEW_RSSC,   canScript);
+            enMenu(IDM_SOURCE_FORMAT,   canScript);
             enMenu(IDM_WIZ_SUITE,       canSuite);
             enMenu(IDM_WIZ_RELEASE,     canMsp);
             enMenu(IDM_BUILD_MSM,       canMsm);
@@ -2527,13 +2645,19 @@ public:
                 ::InvalidateRect(h, nullptr, FALSE);
             }
         };
-        enWnd(hBtnBuildMsm,   canMsm);
-        enWnd(hBtnExportVpat, canVpat);
-        enWnd(hBtnMsiPrism,   canPrism);
-        enWnd(hSuiteCombo,    canSuite);
-        enWnd(hMsiAddDlgBtn,  canDlg);
-        enWnd(hMsiAddCtrlBtn, canDlg);
-        enWnd(hMsiIncludeBtn, canDlg);
+        enWnd(hBtnBuildMsm,      canMsm);
+        enWnd(hBtnExportVpat,    canVpat);
+        enWnd(hBtnMsiPrism,      canPrism);
+        enWnd(hSuiteCombo,       canSuite);
+        enWnd(hUiAddDlgBtn,      canDlg);
+        enWnd(hUiPlaceCtrlBtn,   canDlg);
+        enWnd(hUiDelCtrlBtn,     canDlg);
+        enWnd(hUiExportRsscBtn,  canDlg && canScript);
+        enWnd(hMsiAddDlgBtn,     canDlg);
+        enWnd(hMsiAddCtrlBtn,    canDlg);
+        enWnd(hMsiDelCtrlBtn,    canDlg);
+        enWnd(hMsiIncludeBtn,    canDlg);
+        enWnd(hMsiExportRsscBtn, canDlg && canScript);
         enWnd(hEntGenMst,     canMsp);
         enWnd(hEntGenMsp,     canMsp);
         enWnd(hEntRelWizBtn,  canMsp);
@@ -2931,6 +3055,140 @@ public:
         AppendConsole(L"[AST] Prepended @include \"" + std::wstring(buf) + L"\".\r\n");
     }
 
+    std::string ActiveCppCustomDialogId() const {
+        const LRESULT sel = ::SendMessageW(hUiPreviewStep, CB_GETCURSEL, 0, 0);
+        if (sel >= 6 && static_cast<std::size_t>(sel - 6) < cppPreviewCustomDlgIds.size()) {
+            return cppPreviewCustomDlgIds[static_cast<std::size_t>(sel - 6)];
+        }
+        return {};
+    }
+
+    static int ControlTypeIndexFromName(std::string_view tp) noexcept {
+        static constexpr const char* kNames[10] = {
+            "Text", "Edit", "PasswordEdit", "PathEdit", "CheckBox",
+            "RadioButtonGroup", "ComboBox", "ListBox", "GroupBox", "Line"
+        };
+        for (int i = 0; i < 10; ++i) {
+            if (rsw::EqualsIgnoreCase(tp, kNames[i])) return i;
+        }
+        return 0;
+    }
+
+    static const char* ControlTypeNameFromIndex(int idx) noexcept {
+        static constexpr const char* kNames[10] = {
+            "Text", "Edit", "PasswordEdit", "PathEdit", "CheckBox",
+            "RadioButtonGroup", "ComboBox", "ListBox", "GroupBox", "Line"
+        };
+        return kNames[std::clamp(idx, 0, 9)];
+    }
+
+    void PopulateCppCtrlInspectorFromAst(const rsw::RswManifestDocument& doc, const std::string& cid) {
+        if (cid.empty()) return;
+        selectedCppCtrlId = cid;
+        const std::string tp = doc.GetString("Control", cid, "Type", "Text");
+        ::SetWindowTextW(hUiCtrlId, rsw::Utf8ToWide(cid).c_str());
+        ::SendMessageW(hUiCtrlType, CB_SETCURSEL, ControlTypeIndexFromName(tp), 0);
+        const std::string xywh = std::to_string(doc.GetInt("Control", cid, "X", 16)) + ", " +
+                                 std::to_string(doc.GetInt("Control", cid, "Y", 40)) + ", " +
+                                 std::to_string(doc.GetInt("Control", cid, "Width", 340)) + ", " +
+                                 std::to_string(doc.GetInt("Control", cid, "Height", 26));
+        ::SetWindowTextW(hUiCtrlXywh, rsw::Utf8ToWide(xywh).c_str());
+        ::SetWindowTextW(hUiCtrlProp, rsw::Utf8ToWide(doc.GetString("Control", cid, "Property")).c_str());
+        std::string txt = doc.GetString("Control", cid, "Text");
+        if (txt.empty()) txt = doc.GetString("Control", cid, "Items");
+        if (txt.empty()) txt = doc.GetString("Control", cid, "DefaultValue");
+        ::SetWindowTextW(hUiCtrlText, rsw::Utf8ToWide(txt).c_str());
+    }
+
+    void PopulateMsiCtrlInspectorFromAst(const rsw::RswManifestDocument& doc, const std::string& cid) {
+        if (cid.empty()) return;
+        selectedMsiCtrlId = cid;
+        const std::string tp = doc.GetString("MsiControl", cid, "Type", "Text");
+        ::SetWindowTextW(hMsiCtrlId, rsw::Utf8ToWide(cid).c_str());
+        ::SendMessageW(hMsiCtrlType, CB_SETCURSEL, ControlTypeIndexFromName(tp), 0);
+        const std::string xywh = std::to_string(doc.GetInt("MsiControl", cid, "X", 20)) + ", " +
+                                 std::to_string(doc.GetInt("MsiControl", cid, "Y", 74)) + ", " +
+                                 std::to_string(doc.GetInt("MsiControl", cid, "Width", 330)) + ", " +
+                                 std::to_string(doc.GetInt("MsiControl", cid, "Height", 18));
+        ::SetWindowTextW(hMsiCtrlXywh, rsw::Utf8ToWide(xywh).c_str());
+        ::SetWindowTextW(hMsiCtrlProp, rsw::Utf8ToWide(doc.GetString("MsiControl", cid, "Property")).c_str());
+        std::string txt = doc.GetString("MsiControl", cid, "Text");
+        if (txt.empty()) txt = doc.GetString("MsiControl", cid, "Items");
+        if (txt.empty()) txt = doc.GetString("MsiControl", cid, "DefaultValue");
+        ::SetWindowTextW(hMsiCtrlText, rsw::Utf8ToWide(txt).c_str());
+    }
+
+    void ExportActiveDialogToRaggieScript(bool fromMsiDesigner) {
+        if (!rsw::EditionSupportsNativeEngineAndScripting(activeEdition)) {
+            AppendConsole(L"[RSW092] Exporting dialogs to RaggieScript (.rssc) requires Developer, Architect, or Community Edition.\r\n");
+            return;
+        }
+        const auto doc = ResolvedEffectiveDoc();
+        std::string dlgId, dlgTitle, dlgSub;
+        std::vector<raggiesoft::studio::canvas::CanvasItem> items;
+
+        if (fromMsiDesigner) {
+            wchar_t dbuf[128]{};
+            ::GetWindowTextW(hMsiDlgSelect, dbuf, 128);
+            dlgId    = rsw::WideToUtf8(dbuf);
+            dlgTitle = doc.GetString("MsiDialog", dlgId, "HeaderTitle", dlgId);
+            dlgSub   = doc.GetString("MsiDialog", dlgId, "HeaderSubtitle", "Configure installation settings below.");
+            items    = msiCanvasItems;
+        } else {
+            dlgId = ActiveCppCustomDialogId();
+            if (dlgId.empty()) {
+                dlgId    = ReadCtlUtf8(hUiCustDlgId).empty() ? "CustomConfigStep" : ReadCtlUtf8(hUiCustDlgId);
+                dlgTitle = ReadCtlUtf8(hUiCustDlgTitle).empty() ? "Configuration Options" : ReadCtlUtf8(hUiCustDlgTitle);
+                dlgSub   = "Choose your preferred configuration options before installing.";
+            } else {
+                dlgTitle = doc.GetString("Dialog", dlgId, "Title", dlgId);
+                dlgSub   = doc.GetString("Dialog", dlgId, "Subtitle", "Choose your preferred configuration options.");
+                items    = cppCanvasItems;
+            }
+        }
+
+        const std::string rssc = raggiesoft::studio::canvas::EmitRaggieScriptWizardStep(dlgId, dlgTitle, dlgSub, items);
+        if (::OpenClipboard(hWnd)) {
+            ::EmptyClipboard();
+            const std::wstring wr = rsw::Utf8ToWide(rssc);
+            const SIZE_T cb = (wr.size() + 1) * sizeof(wchar_t);
+            HGLOBAL hMem = ::GlobalAlloc(GMEM_MOVEABLE, cb);
+            if (hMem) {
+                void* dst = ::GlobalLock(hMem);
+                if (dst) {
+                    std::memcpy(dst, wr.c_str(), cb);
+                    ::GlobalUnlock(hMem);
+                    ::SetClipboardData(CF_UNICODETEXT, hMem);
+                } else {
+                    ::GlobalFree(hMem);
+                }
+            }
+            ::CloseClipboard();
+        }
+        AppendConsole(L"[RAGGIESCRIPT] Copied RsDialog (.rssc) wizard step for '" + rsw::Utf8ToWide(dlgId) +
+                      L"' to Clipboard:\r\n" + rsw::Utf8ToWide(rssc));
+    }
+
+    void FormatCurrentEditorSource() {
+        if (isRsscMode) {
+            if (!rsw::EditionSupportsNativeEngineAndScripting(activeEdition)) {
+                AppendConsole(L"[RSW092] RaggieScript formatting requires Developer, Architect, or Community Edition.\r\n");
+                return;
+            }
+            const std::string formatted = rsw::rssc::FormatRaggieScriptSource(ReadSourceEditorUtf8());
+            suppressSourceChange = true;
+            ::SetWindowTextW(hSourceEdit, rsw::Utf8ToWide(formatted).c_str());
+            suppressSourceChange = false;
+            RefreshSourceSyntaxHighlighting();
+            AppendConsole(L"[FMT] Formatted RaggieScript (.rssc) with canonical 4-space indentation (100% comments preserved).\r\n");
+            return;
+        }
+        astDoc = rsw::ParseManifestText(ReadSourceEditorUtf8(), currentFilePath);
+        SyncSourceEditorFromAst();
+        SyncAllViewsFromAst();
+        AppendConsole(L"[FMT] Normalized .rsip manifest sections while preserving 100% of comments & @includes.\r\n");
+    }
+
     // ----------------------------------------------------------------------------
     // LIVE CANVASES: VIEW 8 (`SetupWizard.exe` C++20) & VIEW 9 (`MSI.DLL` 370x270)
     // ----------------------------------------------------------------------------
@@ -3120,10 +3378,18 @@ public:
                 ::DeleteObject(fH);
                 ::DeleteObject(fB);
             } else {
+                const std::string customCppDlgId = (stepIdx >= 6 && static_cast<std::size_t>(stepIdx - 6) < cppPreviewCustomDlgIds.size())
+                    ? cppPreviewCustomDlgIds[static_cast<std::size_t>(stepIdx - 6)]
+                    : std::string{};
+                const auto effDocForPv = customCppDlgId.empty() ? rsw::RswManifestDocument{} : ResolvedEffectiveDoc();
+                const std::wstring custKickerW = customCppDlgId.empty()
+                    ? std::wstring{}
+                    : rsw::Utf8ToWide(effDocForPv.GetString("Dialog", customCppDlgId, "Title", customCppDlgId));
+
                 rsw::ui::GlassGlyph stepGlyph = rsw::ui::GlassGlyph::Sliders;
                 COLORREF stepCol              = rsw::ui::brand::kVioletTune;
-                const wchar_t* kicker         = L"Choose how you would like to install";
-                if (stepIdx == 0) { stepGlyph = rsw::ui::GlassGlyph::Sparkle;   stepCol = rsw::ui::brand::kRaggieBlue; kicker = L"Welcome to the Setup Wizard"; }
+                const wchar_t* kicker         = custKickerW.empty() ? L"Choose how you would like to install" : custKickerW.c_str();
+                if (stepIdx == 0) { stepGlyph = rsw::ui::GlassGlyph::ShieldCheck; stepCol = rsw::ui::brand::kRaggieBlue; kicker = L"Welcome to the Setup Wizard"; }
                 if (stepIdx == 2) { stepGlyph = rsw::ui::GlassGlyph::Reinstall; stepCol = rsw::ui::brand::kRaggieBlue; kicker = L"Repair & Verify Installation"; }
                 if (stepIdx == 3 || wk == rsw::WizardStyleKind::PassiveToast) {
                     stepGlyph = rsw::ui::GlassGlyph::Gear; stepCol = rsw::ui::brand::kRaggieBlue; kicker = L"Applying System Changes";
@@ -3233,6 +3499,90 @@ public:
                     ::SelectObject(dlgDc, oF);
                     ::DeleteObject(fRow);
                     ::DeleteObject(fHd);
+                } else if (!customCppDlgId.empty()) {
+                    // Interactive WYSIWYG Custom `[Dialog.<id>]` + `[Control.<id>]` Stage powered by `RaggieSoftVisualCanvas`!
+                    const int stageTop = bTop + PS(20);
+                    const int stageH   = std::max(PS(80), relFootY - stageTop - PS(6));
+                    RECT localStageRc{cx, stageTop, cx + cw, stageTop + stageH};
+                    cppAuthoringViewport = raggiesoft::studio::canvas::LogicalViewport::FromScreenRect(
+                        RECT{destRc.left + dL + localStageRc.left, destRc.top + dT + localStageRc.top,
+                             destRc.left + dL + localStageRc.right, destRc.top + dT + localStageRc.bottom},
+                        420, 230);
+                    auto localVp = raggiesoft::studio::canvas::LogicalViewport::FromScreenRect(localStageRc, 420, 230);
+
+                    const std::wstring subW = rsw::Utf8ToWide(effDocForPv.GetString("Dialog", customCppDlgId, "Subtitle", "Click any control to select, drag to move, or drag handles to resize."));
+                    HFONT fSub = rsw::ui::CreateScaledFont(L"Segoe UI", 8, FW_NORMAL, pvDpi, 100);
+                    HFONT fBadge = rsw::ui::CreateScaledFont(L"Segoe UI", 7, FW_BOLD, pvDpi, 100);
+                    HGDIOBJ oFs = ::SelectObject(dlgDc, fSub);
+                    ::SetTextColor(dlgDc, pvTheme.textSecondary);
+                    RECT subRc{cx, bTop, cx + cw, stageTop};
+                    ::DrawTextW(dlgDc, subW.c_str(), -1, &subRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+                    raggiesoft::studio::canvas::PaintGridDots(dlgDc, localVp, 12, 12, pvTheme.borderSubtle);
+
+                    cppCanvasItems.clear();
+                    int autoTab = 1;
+                    for (const auto& cid : effDocForPv.GetNamedSectionIds("Control")) {
+                        if (!rsw::EqualsIgnoreCase(effDocForPv.GetString("Control", cid, "Dialog"), customCppDlgId)) continue;
+                        const std::string tp = effDocForPv.GetString("Control", cid, "Type", "Text");
+                        const bool nonTab = rsw::EqualsIgnoreCase(tp, "Text") || rsw::EqualsIgnoreCase(tp, "GroupBox") || rsw::EqualsIgnoreCase(tp, "Line");
+                        raggiesoft::studio::canvas::LogicalRect b{
+                            effDocForPv.GetInt("Control", cid, "X", 16),
+                            effDocForPv.GetInt("Control", cid, "Y", 40),
+                            effDocForPv.GetInt("Control", cid, "Width", 340),
+                            effDocForPv.GetInt("Control", cid, "Height", 26)
+                        };
+                        if (canvasDrag.active && activeView == VIEW_CPP_WIZARD && canvasDrag.itemId == cid) {
+                            b = canvasDrag.liveBounds;
+                        }
+                        const int tOrd = nonTab ? 0 : effDocForPv.GetInt("Control", cid, "TabOrder", autoTab++);
+                        std::string dispTxt = effDocForPv.GetString("Control", cid, "Text");
+                        if (dispTxt.empty()) dispTxt = effDocForPv.GetString("Control", cid, "DefaultValue", cid);
+                        cppCanvasItems.push_back({cid, tp, b, effDocForPv.GetString("Control", cid, "Property"), dispTxt, tOrd, false});
+
+                        const RECT sr = localVp.LogicalToScreenRect(b);
+                        if (rsw::EqualsIgnoreCase(tp, "Line")) {
+                            HPEN lp = ::CreatePen(PS_SOLID, 1, pvTheme.borderSubtle);
+                            HGDIOBJ op = ::SelectObject(dlgDc, lp);
+                            ::MoveToEx(dlgDc, sr.left, (sr.top + sr.bottom) / 2, nullptr);
+                            ::LineTo(dlgDc, sr.right, (sr.top + sr.bottom) / 2);
+                            ::SelectObject(dlgDc, op);
+                            ::DeleteObject(lp);
+                        } else {
+                            const bool isField = rsw::EqualsIgnoreCase(tp, "Edit") || rsw::EqualsIgnoreCase(tp, "PasswordEdit") ||
+                                                 rsw::EqualsIgnoreCase(tp, "PathEdit") || rsw::EqualsIgnoreCase(tp, "ComboBox") ||
+                                                 rsw::EqualsIgnoreCase(tp, "ListBox");
+                            if (isField || rsw::EqualsIgnoreCase(tp, "GroupBox")) {
+                                Gdiplus::SolidBrush cBr(rsw::ui::ToGpColor(pvTheme.cardBg, rsw::EqualsIgnoreCase(tp, "GroupBox") ? 90 : 245));
+                                Gdiplus::Pen cPen(rsw::ui::ToGpColor(pvTheme.borderSubtle), 1.0f);
+                                rsw::ui::FillAndStrokeRoundRect(
+                                    dlgG, static_cast<float>(sr.left), static_cast<float>(sr.top),
+                                    static_cast<float>(std::max<LONG>(8, sr.right - sr.left)),
+                                    static_cast<float>(std::max<LONG>(8, sr.bottom - sr.top)),
+                                    static_cast<float>(PS(4)), &cBr, &cPen);
+                            }
+                            std::string labelStr = (rsw::EqualsIgnoreCase(tp, "CheckBox") ? "[x] " : "") + dispTxt;
+                            if (!cppCanvasItems.back().property.empty()) {
+                                labelStr += "  {" + cppCanvasItems.back().property + "}";
+                            }
+                            ::SelectObject(dlgDc, fSub);
+                            ::SetTextColor(dlgDc, pvTheme.textPrimary);
+                            RECT tr{sr.left + PS(5), sr.top + PS(2), sr.right - PS(4), sr.bottom - PS(2)};
+                            ::DrawTextW(dlgDc, rsw::Utf8ToWide(labelStr).c_str(), -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                        }
+
+                        const bool warnMnem = rsw::EqualsIgnoreCase(tp, "CheckBox") &&
+                                              raggiesoft::studio::canvas::ExtractMnemonicChar(dispTxt) == '\0';
+                        raggiesoft::studio::canvas::PaintControlAuthoringOverlay(
+                            dlgDc, sr, selectedCppCtrlId == cid, hoveredCppCtrlId == cid,
+                            tOrd, dispTxt, warnMnem, fBadge, pvTheme.isHighContrast);
+                    }
+                    if (canvasDrag.active && activeView == VIEW_CPP_WIZARD) {
+                        raggiesoft::studio::canvas::PaintSmartGuides(dlgDc, localVp, activeSmartGuides);
+                    }
+                    ::SelectObject(dlgDc, oFs);
+                    ::DeleteObject(fSub);
+                    ::DeleteObject(fBadge);
                 } else {
                     RECT heroRc{cx, bTop, cx + cw, bTop + PS(60)};
                     rsw::ui::DrawHeroBrandCard(dlgDc, dlgG, heroRc, pvDpi, pvTheme, pubName, tagline, webLbl, L"CONFIGURING SYSTEM", hPreviewIcon);
@@ -3298,18 +3648,17 @@ public:
         ::DeleteDC(pvDc);
     }
 
-    /// Renders a live `370 x 270` DLU Windows Installer (`MSI.DLL`) Wizard 97 Form Designer Canvas!
+    /// Renders a live `370 x 270` DLU Windows Installer (`MSI.DLL`) Wizard 97 Form Designer Canvas
+    /// powered by our shared `RaggieSoftVisualCanvas.hpp` (`raggiesoft::studio::canvas`) engine!
     void PaintMsiDialogDesignerCanvas(HDC hdcOut, const RECT& destRc, UINT dpi) {
         const int maxW = destRc.right - destRc.left;
         const int maxH = destRc.bottom - destRc.top;
         if (maxW < 200 || maxH < 160) return;
 
-        int cw = maxW;
-        int ch = cw * 270 / 370;
-        if (ch > maxH) {
-            ch = maxH;
-            cw = ch * 370 / 270;
-        }
+        msiAuthoringViewport = raggiesoft::studio::canvas::LogicalViewport::FitAspectLocked(destRc, 370, 270, false);
+        const int cw = msiAuthoringViewport.ScreenWidth();
+        const int ch = msiAuthoringViewport.ScreenHeight();
+        auto localVp = raggiesoft::studio::canvas::LogicalViewport::FromScreenRect(RECT{0, 0, cw, ch}, 370, 270);
         auto DX = [&](int dluX) { return dluX * cw / 370; };
         auto DY = [&](int dluY) { return dluY * ch / 270; };
 
@@ -3425,19 +3774,52 @@ public:
             }
         }
 
+        // Paint shared `10-DLU` alignment dot grid across the interactive body region
+        raggiesoft::studio::canvas::PaintGridDots(dc, localVp, 10, 10, RGB(203, 213, 225));
+
+        HFONT fBadge = rsw::ui::CreateScaledFont(L"Segoe UI", 7, FW_BOLD, dpi, 100);
+        msiCanvasItems.clear();
+        int autoTab = 1;
         for (const auto& cid : doc.GetNamedSectionIds("MsiControl")) {
             if (!rsw::EqualsIgnoreCase(doc.GetString("MsiControl", cid, "Dialog"), dlgId)) continue;
-            const int x  = doc.GetInt("MsiControl", cid, "X", 20);
-            const int y  = doc.GetInt("MsiControl", cid, "Y", 60);
-            const int w  = doc.GetInt("MsiControl", cid, "Width", 330);
-            const int h  = doc.GetInt("MsiControl", cid, "Height", 18);
+            raggiesoft::studio::canvas::LogicalRect b{
+                doc.GetInt("MsiControl", cid, "X", 20),
+                doc.GetInt("MsiControl", cid, "Y", 60),
+                doc.GetInt("MsiControl", cid, "Width", 330),
+                doc.GetInt("MsiControl", cid, "Height", 18)
+            };
+            if (canvasDrag.active && activeView == VIEW_MSI_DIALOGS && canvasDrag.itemId == cid) {
+                b = canvasDrag.liveBounds;
+            }
             const std::string tp = doc.GetString("MsiControl", cid, "Type", "Text");
             const std::string pr = doc.GetString("MsiControl", cid, "Property");
-            const std::string tx = doc.GetString("MsiControl", cid, "Text", cid);
+            std::string tx       = doc.GetString("MsiControl", cid, "Text");
+            if (tx.empty()) tx   = doc.GetString("MsiControl", cid, "Items");
+            if (tx.empty()) tx   = doc.GetString("MsiControl", cid, "DefaultValue", cid);
+            const bool nonTab    = rsw::EqualsIgnoreCase(tp, "Text") || rsw::EqualsIgnoreCase(tp, "Line") ||
+                                   rsw::EqualsIgnoreCase(tp, "GroupBox");
+            const int tOrd       = nonTab ? 0 : doc.GetInt("MsiControl", cid, "TabOrder", autoTab++);
+
+            msiCanvasItems.push_back({cid, tp, b, pr, tx, tOrd, false});
+
             std::string cap = "[" + tp + "] " + tx;
             if (!pr.empty()) cap += "  {" + pr + "}";
-            drawBoxCtrl(x, y, w, h, rsw::Utf8ToWide(cap), RGB(124, 58, 237), rsw::EqualsIgnoreCase(tp, "Edit") || rsw::EqualsIgnoreCase(tp, "PathEdit"));
+            const bool sunken = rsw::EqualsIgnoreCase(tp, "Edit") || rsw::EqualsIgnoreCase(tp, "PasswordEdit") ||
+                                rsw::EqualsIgnoreCase(tp, "PathEdit") || rsw::EqualsIgnoreCase(tp, "ComboBox") ||
+                                rsw::EqualsIgnoreCase(tp, "ListBox");
+            drawBoxCtrl(b.x, b.y, b.w, b.h, rsw::Utf8ToWide(cap), RGB(124, 58, 237), sunken);
+
+            const RECT sr = localVp.LogicalToScreenRect(b);
+            const bool warnMnem = rsw::EqualsIgnoreCase(tp, "CheckBox") &&
+                                  raggiesoft::studio::canvas::ExtractMnemonicChar(tx) == '\0';
+            raggiesoft::studio::canvas::PaintControlAuthoringOverlay(
+                dc, sr, selectedMsiCtrlId == cid, hoveredMsiCtrlId == cid,
+                tOrd, tx, warnMnem, fBadge, theme.isHighContrast);
         }
+        if (canvasDrag.active && activeView == VIEW_MSI_DIALOGS) {
+            raggiesoft::studio::canvas::PaintSmartGuides(dc, localVp, activeSmartGuides);
+        }
+        ::DeleteObject(fBadge);
 
         HPEN rim = ::CreatePen(PS_SOLID, 2, theme.accentPrimary);
         HGDIOBJ oRim = ::SelectObject(dc, rim);
@@ -3723,6 +4105,7 @@ public:
                                     self->hFtLevel, self->hFeatLevel, self->hCompRoot, self->hCompKpKind,
                                     self->hPrPreset, self->hPrDist, self->hRegFeatFilter, self->hRegRootCombo, self->hRegTypeCombo,
                                     self->hScLocCombo, self->hUiLayout, self->hUiSetupTypes, self->hUiPreviewStep,
+                                    self->hUiCustAfter, self->hUiCtrlType,
                                     self->hMsiPreset, self->hMsiDlgSelect, self->hMsiCtrlType}) {
                         rsw::ui::ApplyDarkComboBoxTheme(cb, self->theme);
                     }
@@ -3737,6 +4120,140 @@ public:
                     ::KillTimer(hWnd, kSyntaxHighlightTimerId);
                     self->RefreshSourceSyntaxHighlighting();
                     return 0;
+                }
+                break;
+            }
+            case WM_LBUTTONDOWN: {
+                if (!rsw::EditionSupportsCustomDialogAndSetupTypeDesign(self->activeEdition)) break;
+                const POINT pt{static_cast<short>(LOWORD(lParam)), static_cast<short>(HIWORD(lParam))};
+                if (self->activeView == VIEW_MSI_DIALOGS && self->msiAuthoringViewport.ContainsScreenPoint(pt)) {
+                    const auto hit = raggiesoft::studio::canvas::HitTestCanvasItems(
+                        self->msiCanvasItems, self->msiAuthoringViewport, pt, self->selectedMsiCtrlId);
+                    if (hit.itemIndex >= 0) {
+                        self->selectedMsiCtrlId = hit.itemId;
+                        self->PopulateMsiCtrlInspectorFromAst(self->ResolvedEffectiveDoc(), hit.itemId);
+                        self->canvasDrag.Begin(hit.itemId, hit.handle, pt,
+                                               self->msiCanvasItems[static_cast<std::size_t>(hit.itemIndex)].bounds);
+                        ::SetCapture(hWnd);
+                    } else {
+                        self->selectedMsiCtrlId.clear();
+                    }
+                    ::SetFocus(hWnd);
+                    ::InvalidateRect(hWnd, &self->msiCanvasRc, FALSE);
+                    return 0;
+                }
+                if (self->activeView == VIEW_CPP_WIZARD && !self->ActiveCppCustomDialogId().empty() &&
+                    self->cppAuthoringViewport.ContainsScreenPoint(pt)) {
+                    const auto hit = raggiesoft::studio::canvas::HitTestCanvasItems(
+                        self->cppCanvasItems, self->cppAuthoringViewport, pt, self->selectedCppCtrlId);
+                    if (hit.itemIndex >= 0) {
+                        self->selectedCppCtrlId = hit.itemId;
+                        self->PopulateCppCtrlInspectorFromAst(self->ResolvedEffectiveDoc(), hit.itemId);
+                        self->canvasDrag.Begin(hit.itemId, hit.handle, pt,
+                                               self->cppCanvasItems[static_cast<std::size_t>(hit.itemIndex)].bounds);
+                        ::SetCapture(hWnd);
+                    } else {
+                        self->selectedCppCtrlId.clear();
+                    }
+                    ::SetFocus(hWnd);
+                    ::InvalidateRect(hWnd, &self->previewCanvasRc, FALSE);
+                    return 0;
+                }
+                break;
+            }
+            case WM_MOUSEMOVE: {
+                const POINT pt{static_cast<short>(LOWORD(lParam)), static_cast<short>(HIWORD(lParam))};
+                if (self->canvasDrag.active) {
+                    const bool isMsi = (self->activeView == VIEW_MSI_DIALOGS);
+                    const auto& vp   = isMsi ? self->msiAuthoringViewport : self->cppAuthoringViewport;
+                    const auto& list = isMsi ? self->msiCanvasItems       : self->cppCanvasItems;
+                    const auto r     = self->canvasDrag.Update(vp, pt, isMsi ? 2 : 4, 12, isMsi ? 10 : 12, list, self->activeSmartGuides);
+                    const std::string xywh = std::to_string(r.x) + ", " + std::to_string(r.y) + ", " +
+                                             std::to_string(r.w) + ", " + std::to_string(r.h);
+                    ::SetWindowTextW(isMsi ? self->hMsiCtrlXywh : self->hUiCtrlXywh, rsw::Utf8ToWide(xywh).c_str());
+                    ::SetCursor(::LoadCursorW(nullptr, raggiesoft::studio::canvas::CursorResourceForHandle(self->canvasDrag.handle)));
+                    ::InvalidateRect(hWnd, isMsi ? &self->msiCanvasRc : &self->previewCanvasRc, FALSE);
+                    return 0;
+                }
+                if (self->activeView == VIEW_MSI_DIALOGS && self->msiAuthoringViewport.ContainsScreenPoint(pt)) {
+                    const auto hit = raggiesoft::studio::canvas::HitTestCanvasItems(
+                        self->msiCanvasItems, self->msiAuthoringViewport, pt, self->selectedMsiCtrlId);
+                    if (hit.itemId != self->hoveredMsiCtrlId) {
+                        self->hoveredMsiCtrlId = hit.itemId;
+                        ::InvalidateRect(hWnd, &self->msiCanvasRc, FALSE);
+                    }
+                    ::SetCursor(::LoadCursorW(nullptr, raggiesoft::studio::canvas::CursorResourceForHandle(hit.handle)));
+                } else if (self->activeView == VIEW_CPP_WIZARD && !self->ActiveCppCustomDialogId().empty() &&
+                           self->cppAuthoringViewport.ContainsScreenPoint(pt)) {
+                    const auto hit = raggiesoft::studio::canvas::HitTestCanvasItems(
+                        self->cppCanvasItems, self->cppAuthoringViewport, pt, self->selectedCppCtrlId);
+                    if (hit.itemId != self->hoveredCppCtrlId) {
+                        self->hoveredCppCtrlId = hit.itemId;
+                        ::InvalidateRect(hWnd, &self->previewCanvasRc, FALSE);
+                    }
+                    ::SetCursor(::LoadCursorW(nullptr, raggiesoft::studio::canvas::CursorResourceForHandle(hit.handle)));
+                }
+                break;
+            }
+            case WM_LBUTTONUP: {
+                if (self->canvasDrag.active) {
+                    const bool isMsi    = (self->activeView == VIEW_MSI_DIALOGS);
+                    const std::string cid = self->canvasDrag.itemId;
+                    const auto finalRc  = self->canvasDrag.liveBounds;
+                    const bool moved    = self->canvasDrag.hasMoved;
+                    self->canvasDrag.Cancel();
+                    self->activeSmartGuides.clear();
+                    ::ReleaseCapture();
+                    if (moved && !cid.empty()) {
+                        const char* sec = isMsi ? "MsiControl" : "Control";
+                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
+                        self->astDoc.SetString(sec, cid, "X",      std::to_string(finalRc.x));
+                        self->astDoc.SetString(sec, cid, "Y",      std::to_string(finalRc.y));
+                        self->astDoc.SetString(sec, cid, "Width",  std::to_string(finalRc.w));
+                        self->astDoc.SetString(sec, cid, "Height", std::to_string(finalRc.h));
+                        self->SyncSourceEditorFromAst();
+                        self->AppendConsole(L"[CANVAS] Updated [" + rsw::Utf8ToWide(sec) + L"." + rsw::Utf8ToWide(cid) +
+                                            L"] bounds -> (" + std::to_wstring(finalRc.x) + L", " + std::to_wstring(finalRc.y) +
+                                            L", " + std::to_wstring(finalRc.w) + L", " + std::to_wstring(finalRc.h) + L").\r\n");
+                    }
+                    ::InvalidateRect(hWnd, isMsi ? &self->msiCanvasRc : &self->previewCanvasRc, FALSE);
+                    return 0;
+                }
+                break;
+            }
+            case WM_KEYDOWN: {
+                if (rsw::EditionSupportsCustomDialogAndSetupTypeDesign(self->activeEdition) &&
+                    (self->activeView == VIEW_MSI_DIALOGS || self->activeView == VIEW_CPP_WIZARD)) {
+                    const bool isMsi = (self->activeView == VIEW_MSI_DIALOGS);
+                    const std::string selId = isMsi ? self->selectedMsiCtrlId : self->selectedCppCtrlId;
+                    if (!selId.empty()) {
+                        if (wParam == VK_DELETE) {
+                            ::SendMessageW(hWnd, WM_COMMAND, isMsi ? IDC_MSI_DEL_CTRL_BTN : IDC_UI_DEL_CTRL_BTN, 0);
+                            return 0;
+                        }
+                        const char* sec = isMsi ? "MsiControl" : "Control";
+                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
+                        raggiesoft::studio::canvas::LogicalRect cur{
+                            self->astDoc.GetInt(sec, selId, "X", 20),
+                            self->astDoc.GetInt(sec, selId, "Y", 60),
+                            self->astDoc.GetInt(sec, selId, "Width", 200),
+                            self->astDoc.GetInt(sec, selId, "Height", 20)
+                        };
+                        const bool shift = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                        const auto& vp   = isMsi ? self->msiAuthoringViewport : self->cppAuthoringViewport;
+                        if (raggiesoft::studio::canvas::NudgeRectByKey(cur, static_cast<UINT>(wParam), isMsi ? 2 : 4, shift, vp)) {
+                            self->astDoc.SetString(sec, selId, "X",      std::to_string(cur.x));
+                            self->astDoc.SetString(sec, selId, "Y",      std::to_string(cur.y));
+                            self->astDoc.SetString(sec, selId, "Width",  std::to_string(cur.w));
+                            self->astDoc.SetString(sec, selId, "Height", std::to_string(cur.h));
+                            const std::string xywh = std::to_string(cur.x) + ", " + std::to_string(cur.y) + ", " +
+                                                     std::to_string(cur.w) + ", " + std::to_string(cur.h);
+                            ::SetWindowTextW(isMsi ? self->hMsiCtrlXywh : self->hUiCtrlXywh, rsw::Utf8ToWide(xywh).c_str());
+                            self->SyncSourceEditorFromAst();
+                            ::InvalidateRect(hWnd, isMsi ? &self->msiCanvasRc : &self->previewCanvasRc, FALSE);
+                            return 0;
+                        }
+                    }
                 }
                 break;
             }
@@ -3972,6 +4489,26 @@ public:
                     case IDM_WIZ_INSERT_PRESET:
                     case IDC_MSI_INCLUDE_BTN:
                         self->InsertIncludePresetDialog();
+                        return 0;
+                    case IDM_WIZ_ADD_PATH_ENV: {
+                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
+                        const std::string eid = "AddAppToPath" + (self->astDoc.GetNamedSectionIds("Environment").empty()
+                            ? std::string{}
+                            : std::to_string(self->astDoc.GetNamedSectionIds("Environment").size() + 1));
+                        self->astDoc.SetString("Environment", eid, "Name",        "PATH");
+                        self->astDoc.SetString("Environment", eid, "Value",       "[INSTALLDIR]");
+                        self->astDoc.SetString("Environment", eid, "Action",      "append_path");
+                        self->astDoc.SetString("Environment", eid, "Scope",       "auto");
+                        self->astDoc.SetString("Environment", eid, "OnUninstall", "remove");
+                        self->astDoc.SetString("Environment", eid, "Feature",     "Main");
+                        self->SyncSourceEditorFromAst();
+                        self->SelectIdeView(VIEW_SOURCE);
+                        self->AppendConsole(L"[ENVIRONMENT] Added non-clobbering [Environment." + rsw::Utf8ToWide(eid) +
+                                            L"] (Action = append_path -> [~];[INSTALLDIR] with clean uninstall segment removal).\r\n");
+                        return 0;
+                    }
+                    case IDM_SOURCE_FORMAT:
+                        self->FormatCurrentEditorSource();
                         return 0;
 
                     // --- File & Standard Views ---
@@ -4420,6 +4957,94 @@ public:
                     case IDC_UI_APPLY:
                         self->ApplyUiViewToAst();
                         return 0;
+                    case IDC_UI_ADD_DLG_BTN: {
+                        const std::string did = ReadCtlUtf8(self->hUiCustDlgId);
+                        if (did.empty()) return 0;
+                        const char* slots[] = {"SetupType", "Welcome", "License", "CustomFeatures", "CustomFolder", "CustomShortcuts"};
+                        const int sIdx = std::clamp(static_cast<int>(::SendMessageW(self->hUiCustAfter, CB_GETCURSEL, 0, 0)), 0, 5);
+                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
+                        self->astDoc.SetString("Dialog", did, "Title",     ReadCtlUtf8(self->hUiCustDlgTitle));
+                        self->astDoc.SetString("Dialog", did, "Subtitle",  "Configure your application preferences below.");
+                        self->astDoc.SetString("Dialog", did, "AfterPage", slots[sIdx]);
+                        self->SyncSourceEditorFromAst();
+                        self->SyncAllViewsFromAst();
+                        for (std::size_t di = 0; di < self->cppPreviewCustomDlgIds.size(); ++di) {
+                            if (rsw::EqualsIgnoreCase(self->cppPreviewCustomDlgIds[di], did)) {
+                                ::SendMessageW(self->hUiPreviewStep, CB_SETCURSEL, static_cast<WPARAM>(6 + di), 0);
+                                break;
+                            }
+                        }
+                        ::InvalidateRect(hWnd, nullptr, FALSE);
+                        self->AppendConsole(L"[C++ DIALOG] Added [Dialog." + rsw::Utf8ToWide(did) + L"] after " +
+                                            rsw::Utf8ToWide(slots[sIdx]) + L" — click or drag controls on the right canvas!\r\n");
+                        return 0;
+                    }
+                    case IDC_UI_PLACE_CTRL_BTN: {
+                        std::string dlg = self->ActiveCppCustomDialogId();
+                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
+                        if (dlg.empty()) {
+                            dlg = ReadCtlUtf8(self->hUiCustDlgId);
+                            if (dlg.empty()) dlg = "ServerConfigPage";
+                            self->astDoc.SetString("Dialog", dlg, "Title",     ReadCtlUtf8(self->hUiCustDlgTitle));
+                            self->astDoc.SetString("Dialog", dlg, "Subtitle",  "Configure your application preferences below.");
+                            self->astDoc.SetString("Dialog", dlg, "AfterPage", "SetupType");
+                        }
+                        const std::string cid = ReadCtlUtf8(self->hUiCtrlId);
+                        if (cid.empty()) return 0;
+                        const int tpIdx   = std::clamp(static_cast<int>(::SendMessageW(self->hUiCtrlType, CB_GETCURSEL, 0, 0)), 0, 9);
+                        const char* tpStr = ControlTypeNameFromIndex(tpIdx);
+                        int vals[4] = {16, 40, 340, 26};
+                        std::string xywh = ReadCtlUtf8(self->hUiCtrlXywh);
+                        for (char& ch : xywh) if (ch == ',') ch = ' ';
+                        std::istringstream iss(xywh);
+                        iss >> vals[0] >> vals[1] >> vals[2] >> vals[3];
+
+                        self->astDoc.SetString("Control", cid, "Dialog", dlg);
+                        self->astDoc.SetString("Control", cid, "Type",   tpStr);
+                        self->astDoc.SetString("Control", cid, "X",      std::to_string(vals[0]));
+                        self->astDoc.SetString("Control", cid, "Y",      std::to_string(vals[1]));
+                        self->astDoc.SetString("Control", cid, "Width",  std::to_string(vals[2]));
+                        self->astDoc.SetString("Control", cid, "Height", std::to_string(vals[3]));
+                        const std::string prop = ReadCtlUtf8(self->hUiCtrlProp);
+                        if (!prop.empty()) self->astDoc.SetString("Control", cid, "Property", prop);
+                        const std::string txt = ReadCtlUtf8(self->hUiCtrlText);
+                        if (!txt.empty()) {
+                            if (tpIdx == 5 || tpIdx == 6 || tpIdx == 7) {
+                                self->astDoc.SetString("Control", cid, "Items", txt);
+                            } else if (tpIdx == 1 || tpIdx == 2 || tpIdx == 3) {
+                                self->astDoc.SetString("Control", cid, "DefaultValue", txt);
+                            } else {
+                                self->astDoc.SetString("Control", cid, "Text", txt);
+                            }
+                        }
+                        self->selectedCppCtrlId = cid;
+                        self->SyncSourceEditorFromAst();
+                        self->SyncAllViewsFromAst();
+                        for (std::size_t di = 0; di < self->cppPreviewCustomDlgIds.size(); ++di) {
+                            if (rsw::EqualsIgnoreCase(self->cppPreviewCustomDlgIds[di], dlg)) {
+                                ::SendMessageW(self->hUiPreviewStep, CB_SETCURSEL, static_cast<WPARAM>(6 + di), 0);
+                                break;
+                            }
+                        }
+                        ::InvalidateRect(hWnd, nullptr, FALSE);
+                        self->AppendConsole(L"[C++ CONTROL] Placed [Control." + rsw::Utf8ToWide(cid) + L"] onto [Dialog." +
+                                            rsw::Utf8ToWide(dlg) + L"].\r\n");
+                        return 0;
+                    }
+                    case IDC_UI_DEL_CTRL_BTN: {
+                        const std::string cid = self->selectedCppCtrlId.empty() ? ReadCtlUtf8(self->hUiCtrlId) : self->selectedCppCtrlId;
+                        if (cid.empty()) return 0;
+                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
+                        RemoveAstSection(self->astDoc, "Control", cid);
+                        self->selectedCppCtrlId.clear();
+                        self->SyncSourceEditorFromAst();
+                        ::InvalidateRect(hWnd, nullptr, FALSE);
+                        self->AppendConsole(L"[C++ CONTROL] Deleted [Control." + rsw::Utf8ToWide(cid) + L"].\r\n");
+                        return 0;
+                    }
+                    case IDC_UI_EXPORT_RSSC_BTN:
+                        self->ExportActiveDialogToRaggieScript(false);
+                        return 0;
 
                     // --- View 9: MSI.DLL Dialog Designer ---
                     case IDC_MSI_ADD_DLG_BTN: {
@@ -4448,8 +5073,8 @@ public:
                         const std::string dlg = rsw::WideToUtf8(dlgBuf);
                         if (cid.empty() || dlg.empty()) return 0;
 
-                        const char* tpNames[] = {"Text", "Edit", "PathEdit", "CheckBox", "RadioButtonGroup", "ComboBox", "GroupBox"};
-                        const int tpIdx = std::clamp(static_cast<int>(::SendMessageW(self->hMsiCtrlType, CB_GETCURSEL, 0, 0)), 0, 6);
+                        const int tpIdx   = std::clamp(static_cast<int>(::SendMessageW(self->hMsiCtrlType, CB_GETCURSEL, 0, 0)), 0, 9);
+                        const char* tpStr = ControlTypeNameFromIndex(tpIdx);
 
                         int vals[4] = {20, 74, 330, 18};
                         std::string xywh = ReadCtlUtf8(self->hMsiCtrlXywh);
@@ -4459,7 +5084,7 @@ public:
 
                         self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
                         self->astDoc.SetString("MsiControl", cid, "Dialog", dlg);
-                        self->astDoc.SetString("MsiControl", cid, "Type",   tpNames[tpIdx]);
+                        self->astDoc.SetString("MsiControl", cid, "Type",   tpStr);
                         self->astDoc.SetString("MsiControl", cid, "X",      std::to_string(vals[0]));
                         self->astDoc.SetString("MsiControl", cid, "Y",      std::to_string(vals[1]));
                         self->astDoc.SetString("MsiControl", cid, "Width",  std::to_string(vals[2]));
@@ -4468,15 +5093,30 @@ public:
                         if (!prop.empty()) self->astDoc.SetString("MsiControl", cid, "Property", prop);
                         const std::string txt = ReadCtlUtf8(self->hMsiCtrlText);
                         if (!txt.empty()) {
-                            if (tpIdx == 4 || tpIdx == 5) self->astDoc.SetString("MsiControl", cid, "Items", txt);
-                            else if (tpIdx == 1)          self->astDoc.SetString("MsiControl", cid, "DefaultValue", txt);
-                            else                          self->astDoc.SetString("MsiControl", cid, "Text", txt);
+                            if (tpIdx == 5 || tpIdx == 6 || tpIdx == 7) self->astDoc.SetString("MsiControl", cid, "Items", txt);
+                            else if (tpIdx == 1 || tpIdx == 2 || tpIdx == 3) self->astDoc.SetString("MsiControl", cid, "DefaultValue", txt);
+                            else                                              self->astDoc.SetString("MsiControl", cid, "Text", txt);
                         }
+                        self->selectedMsiCtrlId = cid;
                         self->SyncSourceEditorFromAst();
                         ::InvalidateRect(hWnd, nullptr, FALSE);
                         self->AppendConsole(L"[MSI CONTROL] Placed [MsiControl." + rsw::Utf8ToWide(cid) + L"] onto " + std::wstring(dlgBuf) + L".\r\n");
                         return 0;
                     }
+                    case IDC_MSI_DEL_CTRL_BTN: {
+                        const std::string cid = self->selectedMsiCtrlId.empty() ? ReadCtlUtf8(self->hMsiCtrlId) : self->selectedMsiCtrlId;
+                        if (cid.empty()) return 0;
+                        self->astDoc = rsw::ParseManifestText(self->ReadSourceEditorUtf8(), self->currentFilePath);
+                        RemoveAstSection(self->astDoc, "MsiControl", cid);
+                        self->selectedMsiCtrlId.clear();
+                        self->SyncSourceEditorFromAst();
+                        ::InvalidateRect(hWnd, nullptr, FALSE);
+                        self->AppendConsole(L"[MSI CONTROL] Deleted [MsiControl." + rsw::Utf8ToWide(cid) + L"].\r\n");
+                        return 0;
+                    }
+                    case IDC_MSI_EXPORT_RSSC_BTN:
+                        self->ExportActiveDialogToRaggieScript(true);
+                        return 0;
 
                     // --- View 10: Signing, .MST & .MSP ---
                     case IDC_SIG_APPLY:
@@ -4635,7 +5275,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
 
     InstallerStudioIde ide{};
     for (std::size_t i = 0; i < args.size(); ++i) {
-        if (args[i] == L"--export-screenshots") {
+        if (args[i] == L"--export-screenshots" || args[i] == L"--export-v070-previews") {
             rsw::ui::ForcedThemeOverride() = 1;
             break;
         }
@@ -4674,10 +5314,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     }
 
     std::filesystem::path exportShotDir;
+    std::filesystem::path exportV070PrevDir;
     std::filesystem::path initialProjectArg;
     for (std::size_t i = 0; i < args.size(); ++i) {
         if (args[i] == L"--export-screenshots" && i + 1 < args.size()) {
             exportShotDir = args[i + 1];
+            rsw::ui::ForcedThemeOverride() = 1;
+            ++i;
+        } else if (args[i] == L"--export-v070-previews" && i + 1 < args.size()) {
+            exportV070PrevDir = args[i + 1];
             rsw::ui::ForcedThemeOverride() = 1;
             ++i;
         } else if (std::filesystem::exists(args[i])) {
@@ -4685,7 +5330,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         }
     }
 
-    if (exportShotDir.empty()) {
+    if (exportShotDir.empty() && exportV070PrevDir.empty()) {
         ide.activeEdition = rsw::LoadPersistedEdition();
     }
     if (!initialProjectArg.empty()) {
@@ -4698,19 +5343,99 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
                       L" ready. Press F1 for the Offline C++ Help Viewer, Ctrl+W for the Aero Project Assistant, or F5 to build.\r\n");
 
     ACCEL accels[] = {
-        {FVIRTKEY,            VK_F1, IDM_HELP_TOPICS},
-        {FCONTROL | FVIRTKEY, 'W',   IDM_WIZ_PROJECT},
-        {FCONTROL | FVIRTKEY, 'N',   IDM_FILE_NEW},
-        {FCONTROL | FVIRTKEY, 'O',   IDM_FILE_OPEN},
-        {FCONTROL | FVIRTKEY, 'S',   IDM_FILE_SAVE},
-        {FVIRTKEY,            VK_F7, IDM_BUILD_VALIDATE},
-        {FVIRTKEY,            VK_F5, IDM_BUILD_MSI},
-        {FVIRTKEY,            VK_F6, IDM_BUILD_MSM}
+        {FVIRTKEY,                    VK_F1, IDM_HELP_TOPICS},
+        {FCONTROL | FVIRTKEY,         'W',   IDM_WIZ_PROJECT},
+        {FCONTROL | FVIRTKEY,         'N',   IDM_FILE_NEW},
+        {FCONTROL | FVIRTKEY,         'O',   IDM_FILE_OPEN},
+        {FCONTROL | FVIRTKEY,         'S',   IDM_FILE_SAVE},
+        {FCONTROL | FSHIFT | FVIRTKEY,'F',   IDM_SOURCE_FORMAT},
+        {FVIRTKEY,                    VK_F7, IDM_BUILD_VALIDATE},
+        {FVIRTKEY,                    VK_F5, IDM_BUILD_MSI},
+        {FVIRTKEY,                    VK_F6, IDM_BUILD_MSM}
     };
     HACCEL hAccel = ::CreateAcceleratorTableW(accels, static_cast<int>(std::size(accels)));
 
     ::ShowWindow(hWnd, nCmdShow);
     ::UpdateWindow(hWnd);
+
+    if (!exportV070PrevDir.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(exportV070PrevDir, ec);
+
+        // Seed a realistic custom C++ `[Dialog.*]` + `[Control.*]` AND `[MsiDialog.*]` + `[MsiControl.*]` showcase!
+        ide.astDoc.SetString("Dialog",  "EndpointSetup", "Title",     "Service Endpoint & CLI Options");
+        ide.astDoc.SetString("Dialog",  "EndpointSetup", "Subtitle",  "Configure workspace URL and command-line integration.");
+        ide.astDoc.SetString("Dialog",  "EndpointSetup", "AfterPage", "SetupType");
+        ide.astDoc.SetString("Control", "LblUrl",        "Dialog",    "EndpointSetup");
+        ide.astDoc.SetString("Control", "LblUrl",        "Type",      "Text");
+        ide.astDoc.SetString("Control", "LblUrl",        "X", "16"); ide.astDoc.SetString("Control", "LblUrl", "Y", "12");
+        ide.astDoc.SetString("Control", "LblUrl",        "Width", "360"); ide.astDoc.SetString("Control", "LblUrl", "Height", "20");
+        ide.astDoc.SetString("Control", "LblUrl",        "Text",      "&Workspace Server HTTPS Endpoint:");
+
+        ide.astDoc.SetString("Control", "EndpointEdit",  "Dialog",       "EndpointSetup");
+        ide.astDoc.SetString("Control", "EndpointEdit",  "Type",         "Edit");
+        ide.astDoc.SetString("Control", "EndpointEdit",  "X", "16"); ide.astDoc.SetString("Control", "EndpointEdit", "Y", "36");
+        ide.astDoc.SetString("Control", "EndpointEdit",  "Width", "372"); ide.astDoc.SetString("Control", "EndpointEdit", "Height", "28");
+        ide.astDoc.SetString("Control", "EndpointEdit",  "Property",     "ENDPOINT_URL");
+        ide.astDoc.SetString("Control", "EndpointEdit",  "DefaultValue", "https://raggiesoftstudio.com");
+
+        ide.astDoc.SetString("Control", "AddPathChk",    "Dialog",       "EndpointSetup");
+        ide.astDoc.SetString("Control", "AddPathChk",    "Type",         "CheckBox");
+        ide.astDoc.SetString("Control", "AddPathChk",    "X", "16"); ide.astDoc.SetString("Control", "AddPathChk", "Y", "80");
+        ide.astDoc.SetString("Control", "AddPathChk",    "Width", "372"); ide.astDoc.SetString("Control", "AddPathChk", "Height", "24");
+        ide.astDoc.SetString("Control", "AddPathChk",    "Property",     "ADD_TO_PATH");
+        ide.astDoc.SetString("Control", "AddPathChk",    "Text",         "Add CLI tools to system &PATH (Non-clobbering)");
+
+        ide.astDoc.SetString("Control", "CreateIniChk",  "Dialog",       "EndpointSetup");
+        ide.astDoc.SetString("Control", "CreateIniChk",  "Type",         "CheckBox");
+        ide.astDoc.SetString("Control", "CreateIniChk",  "X", "16"); ide.astDoc.SetString("Control", "CreateIniChk", "Y", "112");
+        ide.astDoc.SetString("Control", "CreateIniChk",  "Width", "372"); ide.astDoc.SetString("Control", "CreateIniChk", "Height", "24");
+        ide.astDoc.SetString("Control", "CreateIniChk",  "Property",     "WRITE_INI_CFG");
+        ide.astDoc.SetString("Control", "CreateIniChk",  "Text",         "Stamp default &settings.ini profile on install");
+
+        ide.astDoc.SetString("MsiDialog",  "ServerConfigDlg", "Title",          "[ProductName] Setup");
+        ide.astDoc.SetString("MsiDialog",  "ServerConfigDlg", "HeaderTitle",    "Server & PATH Integration");
+        ide.astDoc.SetString("MsiDialog",  "ServerConfigDlg", "HeaderSubtitle", "370x270 DLU Relational MSI.DLL SQL Form");
+        ide.astDoc.SetString("MsiDialog",  "ServerConfigDlg", "PrevDialog",     "SetupTypeDlg");
+        ide.astDoc.SetString("MsiDialog",  "ServerConfigDlg", "NextDialog",     "VerifyReadyDlg");
+        ide.astDoc.SetString("MsiControl", "MsiUrlLbl",       "Dialog", "ServerConfigDlg");
+        ide.astDoc.SetString("MsiControl", "MsiUrlLbl",       "Type",   "Text");
+        ide.astDoc.SetString("MsiControl", "MsiUrlLbl",       "X", "20"); ide.astDoc.SetString("MsiControl", "MsiUrlLbl", "Y", "56");
+        ide.astDoc.SetString("MsiControl", "MsiUrlLbl",       "Width", "330"); ide.astDoc.SetString("MsiControl", "MsiUrlLbl", "Height", "14");
+        ide.astDoc.SetString("MsiControl", "MsiUrlLbl",       "Text", "&Endpoint URL:");
+        ide.astDoc.SetString("MsiControl", "MsiUrlEdit",      "Dialog", "ServerConfigDlg");
+        ide.astDoc.SetString("MsiControl", "MsiUrlEdit",      "Type",   "Edit");
+        ide.astDoc.SetString("MsiControl", "MsiUrlEdit",      "X", "20"); ide.astDoc.SetString("MsiControl", "MsiUrlEdit", "Y", "74");
+        ide.astDoc.SetString("MsiControl", "MsiUrlEdit",      "Width", "330"); ide.astDoc.SetString("MsiControl", "MsiUrlEdit", "Height", "18");
+        ide.astDoc.SetString("MsiControl", "MsiUrlEdit",      "Property", "ENDPOINT_URL");
+        ide.astDoc.SetString("MsiControl", "MsiUrlEdit",      "DefaultValue", "https://raggiesoftstudio.com");
+        ide.astDoc.SetString("MsiControl", "MsiPathChk",      "Dialog", "ServerConfigDlg");
+        ide.astDoc.SetString("MsiControl", "MsiPathChk",      "Type",   "CheckBox");
+        ide.astDoc.SetString("MsiControl", "MsiPathChk",      "X", "20"); ide.astDoc.SetString("MsiControl", "MsiPathChk", "Y", "106");
+        ide.astDoc.SetString("MsiControl", "MsiPathChk",      "Width", "330"); ide.astDoc.SetString("MsiControl", "MsiPathChk", "Height", "18");
+        ide.astDoc.SetString("MsiControl", "MsiPathChk",      "Property", "ADD_TO_PATH");
+        ide.astDoc.SetString("MsiControl", "MsiPathChk",      "Text", "Append [INSTALLDIR] to &PATH safely");
+
+        ide.SyncSourceEditorFromAst();
+        ide.SyncAllViewsFromAst();
+
+        ::SendMessageW(ide.hUiLayout, CB_SETCURSEL, static_cast<WPARAM>(rsw::WizardStyleKind::FluentMica), 0);
+        ::SendMessageW(ide.hUiPreviewStep, CB_SETCURSEL, 6, 0);
+        ide.PopulateCppCtrlInspectorFromAst(ide.ResolvedEffectiveDoc(), "EndpointEdit");
+        ide.SelectIdeView(VIEW_CPP_WIZARD);
+        const bool okCpp = rsw::ui::CaptureWindowToPngFile(hWnd, exportV070PrevDir / L"preview-v070-cpp-dialog-designer.png");
+
+        const LRESULT mIdx = ::SendMessageW(ide.hMsiDlgSelect, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1), reinterpret_cast<LPARAM>(L"ServerConfigDlg"));
+        if (mIdx != CB_ERR) ::SendMessageW(ide.hMsiDlgSelect, CB_SETCURSEL, mIdx, 0);
+        ide.PopulateMsiCtrlInspectorFromAst(ide.ResolvedEffectiveDoc(), "MsiUrlEdit");
+        ide.SelectIdeView(VIEW_MSI_DIALOGS);
+        const bool okMsi = rsw::ui::CaptureWindowToPngFile(hWnd, exportV070PrevDir / L"preview-v070-msi-dialog-designer.png");
+
+        if (hAccel) ::DestroyAcceleratorTable(hAccel);
+        ::DestroyWindow(hWnd);
+        ::CoUninitialize();
+        return (okCpp && okMsi) ? 0 : 2;
+    }
 
     if (!exportShotDir.empty()) {
         auto snapView = [&](int viewIdx, const wchar_t* fileName) {
@@ -4735,7 +5460,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
 
     MSG msg{};
     while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        if (!::TranslateAcceleratorW(hWnd, hAccel, &msg) && !::IsDialogMessageW(hWnd, &msg)) {
+        const bool canvasFocused = (msg.hwnd == hWnd) &&
+                                   (msg.message == WM_KEYDOWN || msg.message == WM_KEYUP) &&
+                                   (ide.activeView == VIEW_CPP_WIZARD || ide.activeView == VIEW_MSI_DIALOGS);
+        if (!::TranslateAcceleratorW(hWnd, hAccel, &msg) && (canvasFocused || !::IsDialogMessageW(hWnd, &msg))) {
             ::TranslateMessage(&msg);
             ::DispatchMessageW(&msg);
         }

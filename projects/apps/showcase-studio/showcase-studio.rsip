@@ -1,0 +1,167 @@
+; ==============================================================================
+; FILE: projects/apps/showcase-studio/showcase-studio.rsip
+; APPLICATION: RaggieSoft Showcase Studio (v0.5.0)
+; COMPILER: RaggieSoft Installer Studio (Zero-Prerequisite Static /MT C++20!)
+; ==============================================================================
+; PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+;   Packages RaggieSoft Showcase Studio (`ShowcaseStudio.exe` Visual Canvas &
+;   Shared DRY Dialog Designer IDE, `rssbuild.exe` Headless CLI & WCAG 2.2 AA
+;   Validator, `ShowcaseStub.exe` Zero-Dependency `< 1 MB` Runtime, Dogfooded
+;   `raggiesoft.showcase-studio` `F1` Manual, `RaggieSoftHelp.exe` Viewer, and
+;   all 3 Canonical Sample `.rssp` Projects) as native Windows 11 `x64` & `ARM64`
+;   `.msi` and Universal `Setup.exe` installers—with ZERO `.NET` or `WebView2`
+;   runtime prerequisites!
+; ==============================================================================
+
+@include "..\..\shared\raggiesoft-defaults.rsii"
+
+[Package]
+Name                     = RaggieSoft Showcase Studio
+Tagline                  = Accessible 1990s .BMP CD-ROM Menus, FluentMica Hubs & Bespoke _support\ Installers
+WebsiteLabel             = raggiesoftstudio.com/showcase-studio
+Version                  = 0.5.0
+Manufacturer             = RaggieSoft
+UpgradeCode              = {7A94E2C1-5D83-4B61-9E42-524147474957}
+Architecture             = $(ARCH)
+Scope                    = machine
+RequestedExecutionLevel  = asInvoker
+OutputName               = raggiesoft-showcase-studio-v$(VERSION)-$(ARCH)
+UniversalOutputName      = raggiesoft-showcase-studio-v$(VERSION)
+BuildUniversal           = true
+UniversalDownloadBaseUrl = https://assets.raggiesoft.com/desktop-apps/windows/apps/showcase-studio/releases/v$(VERSION)
+OutputDir                = out
+BuildBootstrapper        = true
+AboutUrl                 = https://raggiesoftstudio.com/showcase-studio
+
+[Install]
+DefaultSubdir            = RaggieSoft\RaggieSoft Studio\Showcase Studio
+StartMenuFolder          = RaggieSoft Showcase Studio
+MainExecutable           = StudioIDE\ShowcaseStudio.exe
+
+[UI]
+WizardLayout             = aerowizard
+MsiDialogPreset          = express_custom
+AccentPrimaryHex         = #1D4ED8
+AccentSecondaryHex       = #D97706
+LicenseRtf               = License.rtf
+IconFile                 = ..\..\..\..\showcase-studio\assets\ShowcaseStudio.ico
+InstallButtonText        = &Install
+FinishLaunchCheckbox     = &Open RaggieSoft Showcase Studio when setup finishes
+
+[SetupType.Workstation]
+Title                    = &Workstation Canvas IDE + CLI + Runtime (Recommended)
+Description              = Installs the C++20 ShowcaseStudio.exe IDE, rssbuild.exe CLI, ShowcaseStub.exe runtime, and F1 manual.
+Tier                     = typical
+Glyph                    = Bolt
+Recommended              = true
+
+[SetupType.HeadlessCli]
+Title                    = &Headless CI/CD Compiler & Runtime Only (Compact)
+Description              = Installs only rssbuild.exe and ShowcaseStub.exe for automated build servers.
+Tier                     = minimal
+Glyph                    = Cube
+Recommended              = false
+
+[SetupType.CompleteSuite]
+Title                    = Com&plete Suite + 1998 Retro .BMP & Bespoke _support\ Samples
+Description              = Installs the full Workstation IDE, CLI, offline F1 manual, and all 3 ready-to-build .rssp sample projects.
+Tier                     = complete
+Glyph                    = Blocks
+Recommended              = false
+
+[SetupType.Custom]
+Title                    = C&ustom Component Selection
+Description              = Choose individual IDE, CLI, runtime, offline F1 documentation, and sample project features.
+Tier                     = custom
+Glyph                    = Sliders
+Recommended              = false
+
+[Feature.Main]
+Title                    = Headless Compiler & Zero-Dependency Runtime (rssbuild + ShowcaseStub)
+Description              = Static /MT C++20 .rssp compiler, WCAG 2.2 AA gate, VPAT 2.5 emitter, and ShowcaseStub.exe runtime.
+Inclusion                = minimal
+DisallowAbsent           = true
+
+[Feature.StudioIde]
+Title                    = ShowcaseStudio.exe Visual Canvas & Shared Dialog Designer IDE
+Description              = Native Win32 C++20 IDE with 1990s .BMP, FluentMica, 4-Way Focus Graph, and DRY Studio Dialog Designer.
+Inclusion                = typical
+
+[Feature.HelpDocs]
+Parent                   = StudioIde
+Title                    = Offline F1 Authoring Manual & Universal Help Viewer
+Description              = Dogfooded raggiesoft.showcase-studio offline manual and universal RaggieSoftHelp.exe viewer.
+Inclusion                = typical
+
+[Feature.Samples]
+Title                    = Canonical .RSSP & RaggieScript Sample Projects (3 Blueprints)
+Description              = 8-Tool Studio Suite Front-Door, 1998 Hard Reset .BMP Collector Disc, and Bespoke _support\ Installer.
+Inclusion                = complete
+
+[Payload.CliCompiler]
+Source                   = ..\..\..\..\showcase-studio\build\INSTALLDIR\Release\$(ARCH)\CLI
+TargetSubdir             = CLI
+Feature                  = Main
+
+[Payload.RuntimeStub]
+Source                   = ..\..\..\..\showcase-studio\build\INSTALLDIR\Release\$(ARCH)\Runtime
+TargetSubdir             = Runtime
+Feature                  = Main
+
+[Payload.StudioIde]
+Source                   = ..\..\..\..\showcase-studio\build\INSTALLDIR\Release\$(ARCH)\StudioIDE
+TargetSubdir             = StudioIDE
+Feature                  = StudioIde
+
+[Payload.HelpViewer]
+Source                   = ..\..\..\..\showcase-studio\build\INSTALLDIR\Release\$(ARCH)\HelpViewer
+TargetSubdir             = HelpViewer
+Feature                  = HelpDocs
+
+[Payload.HelpManual]
+Source                   = ..\..\..\..\showcase-studio\build\INSTALLDIR\Release\$(ARCH)\HelpModules\raggiesoft.showcase-studio
+TargetSubdir             = HelpModules\raggiesoft.showcase-studio
+Feature                  = HelpDocs
+
+[Payload.Samples]
+Source                   = ..\..\..\..\showcase-studio\build\INSTALLDIR\Release\$(ARCH)\Samples
+TargetSubdir             = Samples
+Feature                  = Samples
+
+[FileAssociation.RsspProject]
+Extension                = .rssp
+ProgId                   = RaggieSoft.ShowcaseStudio.Project
+Description              = RaggieSoft Showcase Studio Project
+TargetFile               = StudioIDE\ShowcaseStudio.exe
+ContentType              = application/x-raggiesoft-rssp
+PerceivedType            = text
+Verbs                    = open:&Open in Showcase Studio:"%1"
+Advertise                = false
+Feature                  = StudioIde
+
+[Shortcut.StudioStart]
+Name                     = RaggieSoft Showcase Studio
+TargetFile               = StudioIDE\ShowcaseStudio.exe
+Location                 = StartMenu
+Feature                  = StudioIde
+
+[Shortcut.HelpStart]
+Name                     = Showcase Studio Offline F1 Manual
+TargetFile               = HelpViewer\RaggieSoftHelp.exe
+Arguments                = "--module raggiesoft.showcase-studio"
+Location                 = StartMenu
+Feature                  = HelpDocs
+
+[Registry.InstallPath]
+Root                     = HKLM
+Key                      = Software\RaggieSoft\Showcase Studio
+Name                     = Install Path
+Value                    = [INSTALLDIR]
+Feature                  = Main
+
+[Registry.HelpModulePath]
+Root                     = HKLM
+Key                      = Software\RaggieSoft\HelpModules
+Name                     = raggiesoft.showcase-studio
+Value                    = [INSTALLDIR]HelpModules\raggiesoft.showcase-studio
+Feature                  = HelpDocs
