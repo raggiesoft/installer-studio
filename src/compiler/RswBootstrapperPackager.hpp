@@ -762,7 +762,39 @@ inline bool PackageSelfExtractingBootstrapper(
         const std::string pfx = "Billboard_" + std::to_string(i) + "_";
         brandIni << pfx << "Headline=" << sanitizeSingleLine(doc.GetString("Billboard", bid, "Headline", "")) << "\n"
                  << pfx << "Body="     << sanitizeSingleLine(doc.GetString("Billboard", bid, "Body", "")) << "\n"
-                 << pfx << "Glyph="    << sanitizeSingleLine(doc.GetString("Billboard", bid, "Glyph", "Sparkle")) << "\n";
+                 << pfx << "Glyph="    << sanitizeSingleLine(doc.GetString("Billboard", bid, "Glyph", "ShieldCheck")) << "\n";
+    }
+
+    // Serialize optional `[Dialog.<id>]` & `[Control.<id>]` custom C++ `SetupWizard.exe` pages (`v0.7.0`)!
+    const auto customDlgIds  = doc.GetNamedSectionIds("Dialog");
+    const auto customCtrlIds = doc.GetNamedSectionIds("Control");
+    brandIni << "CustomDialogCount=" << customDlgIds.size() << "\n";
+    for (std::size_t i = 0; i < customDlgIds.size(); ++i) {
+        const auto& did = customDlgIds[i];
+        const std::string pfx = "CustomDialog_" + std::to_string(i) + "_";
+        brandIni << pfx << "Id="          << sanitizeSingleLine(did) << "\n"
+                 << pfx << "Title="       << sanitizeSingleLine(doc.GetString("Dialog", did, "Title", did)) << "\n"
+                 << pfx << "Subtitle="    << sanitizeSingleLine(doc.GetString("Dialog", did, "Subtitle", "")) << "\n"
+                 << pfx << "AfterPage="   << sanitizeSingleLine(doc.GetString("Dialog", did, "AfterPage", "SetupType")) << "\n"
+                 << pfx << "BannerGlyph=" << sanitizeSingleLine(doc.GetString("Dialog", did, "BannerGlyph", "Sliders")) << "\n";
+    }
+    brandIni << "CustomControlCount=" << customCtrlIds.size() << "\n";
+    for (std::size_t i = 0; i < customCtrlIds.size(); ++i) {
+        const auto& cid = customCtrlIds[i];
+        const std::string pfx = "CustomControl_" + std::to_string(i) + "_";
+        brandIni << pfx << "Id="           << sanitizeSingleLine(cid) << "\n"
+                 << pfx << "Dialog="       << sanitizeSingleLine(doc.GetString("Control", cid, "Dialog")) << "\n"
+                 << pfx << "Type="         << sanitizeSingleLine(doc.GetString("Control", cid, "Type", "Text")) << "\n"
+                 << pfx << "X="            << doc.GetInt("Control", cid, "X", 20) << "\n"
+                 << pfx << "Y="            << doc.GetInt("Control", cid, "Y", 48) << "\n"
+                 << pfx << "Width="        << doc.GetInt("Control", cid, "Width", 360) << "\n"
+                 << pfx << "Height="       << doc.GetInt("Control", cid, "Height", 24) << "\n"
+                 << pfx << "Property="     << sanitizeSingleLine(doc.GetString("Control", cid, "Property")) << "\n"
+                 << pfx << "DefaultValue=" << sanitizeSingleLine(ExpandArchToken(doc.GetString("Control", cid, "DefaultValue"), arch)) << "\n"
+                 << pfx << "Text="         << sanitizeSingleLine(doc.GetString("Control", cid, "Text")) << "\n"
+                 << pfx << "Items="        << sanitizeSingleLine(doc.GetString("Control", cid, "Items")) << "\n"
+                 << pfx << "TabOrder="     << doc.GetInt("Control", cid, "TabOrder", static_cast<int>(i + 1)) << "\n"
+                 << pfx << "Required="     << (doc.GetBool("Control", cid, "Required", false) ? "true" : "false") << "\n";
     }
     const std::string brandStr = brandIni.str();
 
@@ -1570,11 +1602,33 @@ inline bool PackageNativeOrSfxExecutable(
                 ExpandArchToken(doc.GetString("FileAssociation", aid, "Verbs", "open:&Open:\"%1\""), arch),
                 doc.GetString("FileAssociation", aid, "ContentType"),
                 doc.GetString("FileAssociation", aid, "PerceivedType"),
-                doc.GetInt("FileAssociation", aid, "IconIndex", 0),
-                doc.GetString("FileAssociation", aid, "Feature", "Main")
-            });
-        }
-    }
+                 doc.GetInt("FileAssociation", aid, "IconIndex", 0),
+                 doc.GetString("FileAssociation", aid, "Feature", "Main")
+             });
+         }
+         for (const auto& eid : doc.GetNamedSectionIds("Environment")) {
+             nm.environments.push_back({
+                 ExpandArchToken(doc.GetString("Environment", eid, "Name"), arch),
+                 ExpandArchToken(doc.GetString("Environment", eid, "Value", "[INSTALLDIR]"), arch),
+                 doc.GetString("Environment", eid, "Action", "append_path"),
+                 doc.GetString("Environment", eid, "Scope", "auto"),
+                 doc.GetString("Environment", eid, "OnUninstall", "remove"),
+                 doc.GetString("Environment", eid, "Feature", "Main")
+             });
+         }
+         for (const auto& iid : doc.GetNamedSectionIds("IniFile")) {
+             nm.iniFiles.push_back({
+                 ExpandArchToken(doc.GetString("IniFile", iid, "FileName"), arch),
+                 doc.GetString("IniFile", iid, "TargetRoot", "INSTALLDIR"),
+                 ExpandArchToken(doc.GetString("IniFile", iid, "TargetSubdir"), arch),
+                 ExpandArchToken(doc.GetString("IniFile", iid, "Section"), arch),
+                 ExpandArchToken(doc.GetString("IniFile", iid, "Key"), arch),
+                 ExpandArchToken(doc.GetString("IniFile", iid, "Value"), arch),
+                 doc.GetString("IniFile", iid, "Action", "set"),
+                 doc.GetString("IniFile", iid, "Feature", "Main")
+             });
+         }
+     }
 
     const std::string nmText = SerializeNativeOrSfxManifestIni(nm);
     const std::filesystem::path stageExe = scratchDir / L"stage-out.exe";

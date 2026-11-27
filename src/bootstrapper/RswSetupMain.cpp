@@ -265,7 +265,10 @@ enum ControlId : int {
     // Universal Glass Footer navigation buttons
     IDC_NAV_BACK         = 1090,
     IDC_NAV_PRIMARY      = 1091,
-    IDC_NAV_CANCEL       = 1092
+    IDC_NAV_CANCEL       = 1092,
+
+    // Dynamic `[Dialog.<id>]` + `[Control.<id>]` author-defined controls (`v0.7.0`)
+    IDC_CUSTOM_CTRL_BASE = 1500
 };
 
 /// Every multi-step screen supported across Standard Glass, AeroWizard, & `16:9` CD-Autorun modes!
@@ -277,6 +280,7 @@ enum class WizardPage {
     CustomFeatures,   // Authentic Windows Installer `SelectionTree` + live Feature Details & Disk Cost!
     CustomFolder,     // Destination path + `IFileOpenDialog` + live `GetDiskFreeSpaceExW` card
     CustomShortcuts,  // Start Menu folder + Desktop shortcut + File Associations checkboxes
+    CustomUserDialog, // Author-defined `[Dialog.<id>]` + `[Control.<id>]` custom wizard page (`v0.7.0`)!
     ReadyToInstall,   // `Hero Brand Card` `"READY TO INSTALL"` + summary card + UAC `&Install`
     Maintenance,      // 3-card `48x48` Maintenance Hub: Modify / Repair / Uninstall
     RepairMode,       // 2-card `48x48` Office-style Repair Picker: Quick Repair vs Full Reinstall
@@ -338,6 +342,28 @@ struct BrandingConfig {
     bool         systemMenuAbout    = false;
     std::vector<rsw::SetupTypeOptionSpec> setupTypes;
     std::vector<rsw::BillboardSlideSpec>  billboards;
+
+    struct CustomControlSpec {
+        std::string  id;
+        std::string  dialogId;
+        std::string  type = "Text";
+        int          x = 20, y = 48, w = 360, h = 24;
+        std::string  property;
+        std::wstring defaultValue;
+        std::wstring text;
+        std::string  itemsRaw;
+        int          tabOrder = 0;
+        bool         required = false;
+    };
+    struct CustomDialogSpec {
+        std::string                      id;
+        std::wstring                     title;
+        std::wstring                     subtitle;
+        std::string                      afterPage = "SetupType";
+        rsw::ui::GlassGlyph              glyph     = rsw::ui::GlassGlyph::Sliders;
+        std::vector<CustomControlSpec>   controls;
+    };
+    std::vector<CustomDialogSpec>        customDialogs;
 };
 
 /// Unescapes `\n` sequences serialized into single-line `[Branding]` values back into `\r\n`.
@@ -482,10 +508,59 @@ BrandingConfig LoadBrandingConfigFromResource() {
         rsw::BillboardSlideSpec bb{};
         bb.headline = getW((pfx + "Headline").c_str(), L"");
         bb.body     = getW((pfx + "Body").c_str(), L"");
-        bb.glyph    = rsw::ParseSetupGlyphName(kv[pfx + "Glyph"], rsw::ui::GlassGlyph::Sparkle);
+        bb.glyph    = rsw::ParseSetupGlyphName(kv[pfx + "Glyph"], rsw::ui::GlassGlyph::ShieldCheck);
         if (!bb.headline.empty()) {
             cfg.billboards.push_back(std::move(bb));
         }
+    }
+
+    // Parse optional `[Dialog.<id>]` & `[Control.<id>]` custom C++ wizard pages (`v0.7.0`)!
+    const int cdCount = std::clamp(std::atoi(kv["CustomDialogCount"].c_str()), 0, 32);
+    for (int i = 0; i < cdCount; ++i) {
+        const std::string pfx = "CustomDialog_" + std::to_string(i) + "_";
+        BrandingConfig::CustomDialogSpec d{};
+        d.id        = rsw::TrimAscii(kv[pfx + "Id"]);
+        d.title     = getW((pfx + "Title").c_str(), rsw::Utf8ToWide(d.id));
+        d.subtitle  = getW((pfx + "Subtitle").c_str(), L"");
+        d.afterPage = rsw::TrimAscii(kv[pfx + "AfterPage"]);
+        if (d.afterPage.empty()) d.afterPage = "SetupType";
+        d.glyph     = rsw::ParseSetupGlyphName(kv[pfx + "BannerGlyph"], rsw::ui::GlassGlyph::Sliders);
+        if (!d.id.empty()) {
+            cfg.customDialogs.push_back(std::move(d));
+        }
+    }
+
+    const int ccCount = std::clamp(std::atoi(kv["CustomControlCount"].c_str()), 0, 256);
+    for (int i = 0; i < ccCount; ++i) {
+        const std::string pfx = "CustomControl_" + std::to_string(i) + "_";
+        BrandingConfig::CustomControlSpec c{};
+        c.id           = rsw::TrimAscii(kv[pfx + "Id"]);
+        c.dialogId     = rsw::TrimAscii(kv[pfx + "Dialog"]);
+        c.type         = rsw::TrimAscii(kv[pfx + "Type"]);
+        if (c.type.empty()) c.type = "Text";
+        c.x            = std::clamp(std::atoi(kv[pfx + "X"].c_str()),      0, 620);
+        c.y            = std::clamp(std::atoi(kv[pfx + "Y"].c_str()),      0, 420);
+        c.w            = std::clamp(std::atoi(kv[pfx + "Width"].c_str()),  8, 620);
+        c.h            = std::clamp(std::atoi(kv[pfx + "Height"].c_str()), 1, 360);
+        c.property     = rsw::TrimAscii(kv[pfx + "Property"]);
+        c.defaultValue = getW((pfx + "DefaultValue").c_str(), L"");
+        c.text         = getW((pfx + "Text").c_str(), L"");
+        c.itemsRaw     = kv[pfx + "Items"];
+        c.tabOrder     = std::atoi(kv[pfx + "TabOrder"].c_str());
+        c.required     = rsw::EqualsIgnoreCase(kv[pfx + "Required"], "true");
+        for (auto& dlg : cfg.customDialogs) {
+            if (rsw::EqualsIgnoreCase(dlg.id, c.dialogId)) {
+                dlg.controls.push_back(std::move(c));
+                break;
+            }
+        }
+    }
+    for (auto& dlg : cfg.customDialogs) {
+        std::stable_sort(dlg.controls.begin(), dlg.controls.end(), [](const auto& a, const auto& b) {
+            const int ea = (a.tabOrder > 0) ? a.tabOrder : 100000;
+            const int eb = (b.tabOrder > 0) ? b.tabOrder : 100000;
+            return ea < eb;
+        });
     }
     return cfg;
 }
@@ -994,6 +1069,20 @@ public:
     HWND hArCell[4]   = {nullptr, nullptr, nullptr, nullptr};
     HWND hBtnBack     = nullptr, hBtnPrimary  = nullptr, hBtnCancel  = nullptr;
 
+    // Runtime Win32 controls instantiated for author-defined `[Dialog.<id>]` pages (`v0.7.0`)
+    struct CustomControlRuntime {
+        std::size_t                       dialogIdx  = 0;
+        BrandingConfig::CustomControlSpec spec{};
+        HWND                              hMain      = nullptr;
+        HWND                              hBrowse    = nullptr;
+        int                               browseId   = 0;
+        std::vector<HWND>                 radioBtns;
+        std::vector<std::string>          itemValues;
+    };
+    std::vector<CustomControlRuntime>  customCtrlRuntimes;
+    std::size_t                        activeCustomDialogIdx = 0;
+    std::map<std::string, std::string> customDialogProps;
+
     // Thread-safe MSI external UI progress state
     std::thread             workerThread;
     std::atomic<bool>       cancelRequested{false};
@@ -1070,7 +1159,8 @@ public:
             case WizardPage::SetupType:       return 2;
             case WizardPage::CustomFeatures:
             case WizardPage::CustomFolder:
-            case WizardPage::CustomShortcuts: return 3;
+            case WizardPage::CustomShortcuts:
+            case WizardPage::CustomUserDialog: return 3;
             case WizardPage::ReadyToInstall:
             case WizardPage::Maintenance:
             case WizardPage::RepairMode:
@@ -1955,6 +2045,107 @@ public:
         rsw::ui::ApplyDarkScrollbarTheme(hLicRich,    theme);
         rsw::ui::ApplyDarkScrollbarTheme(hReadMeEdit, theme);
         rsw::ui::ApplyDarkScrollbarTheme(hFeatTree,   theme);
+
+        // 11. Author-Defined `[Dialog.<id>]` + `[Control.<id>]` Child Controls (`v0.7.0`)!
+        int nextDynId = IDC_CUSTOM_CTRL_BASE;
+        for (std::size_t di = 0; di < cfg.customDialogs.size(); ++di) {
+            for (const auto& cs : cfg.customDialogs[di].controls) {
+                CustomControlRuntime rt{};
+                rt.dialogIdx = di;
+                rt.spec      = cs;
+                const std::string tp = rsw::AsciiLower(cs.type);
+
+                auto parseItems = [&](std::vector<std::pair<std::string, std::wstring>>& outPairs) {
+                    std::size_t pos = 0;
+                    while (pos <= cs.itemsRaw.size()) {
+                        const auto bar = cs.itemsRaw.find('|', pos);
+                        std::string seg = rsw::TrimAscii(bar == std::string::npos ? cs.itemsRaw.substr(pos) : cs.itemsRaw.substr(pos, bar - pos));
+                        if (!seg.empty()) {
+                            const auto col = seg.find(':');
+                            std::string val = (col == std::string::npos) ? seg : rsw::TrimAscii(seg.substr(0, col));
+                            std::string cap = (col == std::string::npos) ? seg : rsw::TrimAscii(seg.substr(col + 1));
+                            outPairs.push_back({val, rsw::Utf8ToWide(cap)});
+                        }
+                        if (bar == std::string::npos) break;
+                        pos = bar + 1;
+                    }
+                };
+
+                if (tp == "line") {
+                    // Painted directly in `PaintWindow`
+                } else if (tp == "text") {
+                    rt.hMain = mkStatic(cs.text.c_str(), nextDynId++);
+                } else if (tp == "groupbox") {
+                    rt.hMain = ::CreateWindowExW(
+                        0, L"BUTTON", cs.text.c_str(), WS_CHILD | BS_GROUPBOX,
+                        0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(nextDynId++)), hInst, nullptr);
+                } else if (tp == "checkbox") {
+                    rt.hMain = CreateAccessibleCheckbox(cs.text.c_str(), nextDynId++, false);
+                    const bool defOn = !cs.defaultValue.empty() && cs.defaultValue != L"0" &&
+                                       !rsw::EqualsIgnoreCase(rsw::WideToUtf8(cs.defaultValue), "false");
+                    ::SendMessageW(rt.hMain, BM_SETCHECK, defOn ? BST_CHECKED : BST_UNCHECKED, 0);
+                } else if (tp == "edit" || tp == "passwordedit" || tp == "pathedit") {
+                    const DWORD edStyle = WS_CHILD | WS_TABSTOP | ES_AUTOHSCROLL | ((tp == "passwordedit") ? ES_PASSWORD : 0);
+                    const std::wstring initTxt = !cs.defaultValue.empty() ? cs.defaultValue : cs.text;
+                    rt.hMain = ::CreateWindowExW(
+                        WS_EX_CLIENTEDGE, L"EDIT", initTxt.c_str(), edStyle,
+                        0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(nextDynId++)), hInst, nullptr);
+                    if (tp == "pathedit") {
+                        rt.browseId = nextDynId++;
+                        rt.hBrowse  = mkBtn(L"B&rowse...", rt.browseId, BS_PUSHBUTTON);
+                        rsw::ui::AttachAccessiblePushButtonSubclass(rt.hBrowse, &theme, false, false);
+                    }
+                } else if (tp == "combobox" || tp == "listbox") {
+                    std::vector<std::pair<std::string, std::wstring>> pairs;
+                    parseItems(pairs);
+                    int selIdx = 0;
+                    if (tp == "combobox") {
+                        rt.hMain = ::CreateWindowExW(
+                            0, L"COMBOBOX", nullptr, WS_CHILD | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+                            0, 0, 100, 180, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(nextDynId++)), hInst, nullptr);
+                        rsw::ui::ApplyDarkComboBoxTheme(rt.hMain, theme);
+                        for (std::size_t pi = 0; pi < pairs.size(); ++pi) {
+                            ::SendMessageW(rt.hMain, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(pairs[pi].second.c_str()));
+                            rt.itemValues.push_back(pairs[pi].first);
+                            if (rsw::Utf8ToWide(pairs[pi].first) == cs.defaultValue) selIdx = static_cast<int>(pi);
+                        }
+                        if (!pairs.empty()) ::SendMessageW(rt.hMain, CB_SETCURSEL, selIdx, 0);
+                    } else {
+                        rt.hMain = ::CreateWindowExW(
+                            WS_EX_CLIENTEDGE, L"LISTBOX", nullptr, WS_CHILD | WS_TABSTOP | LBS_NOTIFY | WS_VSCROLL,
+                            0, 0, 100, 80, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(nextDynId++)), hInst, nullptr);
+                        rsw::ui::ApplyDarkScrollbarTheme(rt.hMain, theme);
+                        for (std::size_t pi = 0; pi < pairs.size(); ++pi) {
+                            ::SendMessageW(rt.hMain, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(pairs[pi].second.c_str()));
+                            rt.itemValues.push_back(pairs[pi].first);
+                            if (rsw::Utf8ToWide(pairs[pi].first) == cs.defaultValue) selIdx = static_cast<int>(pi);
+                        }
+                        if (!pairs.empty()) ::SendMessageW(rt.hMain, LB_SETCURSEL, selIdx, 0);
+                    }
+                } else if (tp == "radiobuttongroup") {
+                    std::vector<std::pair<std::string, std::wstring>> pairs;
+                    parseItems(pairs);
+                    int selIdx = 0;
+                    for (std::size_t pi = 0; pi < pairs.size(); ++pi) {
+                        const DWORD st = WS_CHILD | WS_TABSTOP | BS_AUTORADIOBUTTON | (pi == 0 ? WS_GROUP : 0);
+                        HWND hRb = ::CreateWindowExW(
+                            0, L"BUTTON", pairs[pi].second.c_str(), st,
+                            0, 0, 100, 22, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(nextDynId++)), hInst, nullptr);
+                        rt.radioBtns.push_back(hRb);
+                        rt.itemValues.push_back(pairs[pi].first);
+                        if (rsw::Utf8ToWide(pairs[pi].first) == cs.defaultValue) selIdx = static_cast<int>(pi);
+                    }
+                    if (!rt.radioBtns.empty()) {
+                        ::SendMessageW(rt.radioBtns[static_cast<std::size_t>(selIdx)], BM_SETCHECK, BST_CHECKED, 0);
+                    }
+                }
+
+                if (!cs.property.empty() && !cs.defaultValue.empty()) {
+                    customDialogProps[cs.property] = rsw::WideToUtf8(cs.defaultValue);
+                }
+                customCtrlRuntimes.push_back(std::move(rt));
+            }
+        }
     }
 
     void RefreshAutorunMenuLabels() {
@@ -2179,6 +2370,33 @@ public:
             const int finW    = W - finLeft - S(168);
             ::MoveWindow(hFinLaunch,  finLeft, footerY - S(42), finW, S(26), TRUE);
             ::MoveWindow(hFinViewLog, W - S(162), footerY - S(48), S(144), S(30), TRUE);
+
+            // `CustomUserDialog`: Position author-defined `[Control.<id>]` widgets inside `(cardX, bodyTop + S(28))`!
+            const int custOriginX = cardX;
+            const int custOriginY = bodyTop + S(28);
+            for (auto& rt : customCtrlRuntimes) {
+                if (rt.hMain) ::SendMessageW(rt.hMain, WM_SETFONT, reinterpret_cast<WPARAM>(hFontBody), TRUE);
+                if (rt.hBrowse) ::SendMessageW(rt.hBrowse, WM_SETFONT, reinterpret_cast<WPARAM>(hFontBody), TRUE);
+                for (HWND rb : rt.radioBtns) ::SendMessageW(rb, WM_SETFONT, reinterpret_cast<WPARAM>(hFontBody), TRUE);
+
+                const int cx = custOriginX + S(rt.spec.x);
+                const int cy = custOriginY + S(rt.spec.y);
+                const int cw = std::min(S(rt.spec.w), std::max(S(32), W - cx - S(18)));
+                const int ch = S(rt.spec.h);
+                if (rt.hBrowse && rt.hMain) {
+                    const int bw = S(84);
+                    ::MoveWindow(rt.hMain,   cx, cy, std::max(S(60), cw - bw - S(6)), ch, TRUE);
+                    ::MoveWindow(rt.hBrowse, cx + std::max(S(60), cw - bw - S(6)) + S(6), cy - S(1), bw, ch + S(2), TRUE);
+                } else if (rt.hMain) {
+                    const bool isCombo = rsw::EqualsIgnoreCase(rt.spec.type, "ComboBox");
+                    ::MoveWindow(rt.hMain, cx, cy, cw, isCombo ? S(180) : ch, TRUE);
+                } else if (!rt.radioBtns.empty()) {
+                    const int stepH = std::max(S(24), ch / std::max<int>(1, static_cast<int>(rt.radioBtns.size())));
+                    for (std::size_t ri = 0; ri < rt.radioBtns.size(); ++ri) {
+                        ::MoveWindow(rt.radioBtns[ri], cx, cy + static_cast<int>(ri) * stepH, cw, S(22), TRUE);
+                    }
+                }
+            }
         }
 
         UpdateControlVisibilityForPage();
@@ -2197,6 +2415,7 @@ public:
         const bool pFeatures  = (currentPage == WizardPage::CustomFeatures);
         const bool pDir       = (currentPage == WizardPage::CustomFolder);
         const bool pShort     = (currentPage == WizardPage::CustomShortcuts);
+        const bool pCustDlg   = (currentPage == WizardPage::CustomUserDialog);
         const bool pReady     = (currentPage == WizardPage::ReadyToInstall);
         const bool pMaint     = (currentPage == WizardPage::Maintenance);
         const bool pRepair    = (currentPage == WizardPage::RepairMode);
@@ -2239,6 +2458,13 @@ public:
         show(hDeskScChk,    pShort);
         show(hFileAssocChk, pShort);
 
+        for (const auto& rt : customCtrlRuntimes) {
+            const bool vis = pCustDlg && (rt.dialogIdx == activeCustomDialogIdx);
+            show(rt.hMain, vis);
+            show(rt.hBrowse, vis);
+            for (HWND rb : rt.radioBtns) show(rb, vis);
+        }
+
         show(hProgStatus, pProg || passiveMode);
         show(hProgBar,    pProg || passiveMode);
 
@@ -2250,7 +2476,7 @@ public:
         show(hFinViewLog, pFin && !passiveMode && (finalMsiResult != ERROR_SUCCESS && finalMsiResult != ERROR_INSTALL_USEREXIT));
 
         const bool canGoBack = !passiveMode && !oneClickSplash &&
-                               (pLic || pReadMe || pSetupType || pFeatures || pDir || pShort || pReady || pRepair || pSafeUn);
+                               (pLic || pReadMe || pSetupType || pFeatures || pDir || pShort || pCustDlg || pReady || pRepair || pSafeUn);
         show(hBtnOneClickCust, oneClickSplash && pWelcome);
         if (cfg.isAeroWizard && !passiveMode && !oneClickSplash) {
             show(hBtnBack, true);
@@ -2301,7 +2527,7 @@ public:
             ::SetWindowTextW(hBtnPrimary, cfg.isAutorun16x9 ? cfg.installBtnText.c_str() : nextBtnTxt);
             ::EnableWindow(hBtnPrimary, accepted ? TRUE : FALSE);
             showShield = cfg.isAutorun16x9 && cfg.perMachine;
-        } else if (pSetupType || pFeatures || pShort || pMaint) {
+        } else if (pSetupType || pFeatures || pShort || pCustDlg || pMaint) {
             ::SetWindowTextW(hBtnPrimary, nextBtnTxt);
             ::EnableWindow(hBtnPrimary, TRUE);
         } else if (pDir) {
@@ -2472,6 +2698,34 @@ public:
         if (::GetWindowTextW(hSmEdit, buf, static_cast<int>(std::size(buf))) > 0) {
             startMenuGroup = buf;
         }
+        for (const auto& rt : customCtrlRuntimes) {
+            if (rt.spec.property.empty()) continue;
+            const std::string tp = rsw::AsciiLower(rt.spec.type);
+            if (tp == "checkbox" && rt.hMain) {
+                customDialogProps[rt.spec.property] = (::SendMessageW(rt.hMain, BM_GETCHECK, 0, 0) == BST_CHECKED) ? "1" : "0";
+            } else if ((tp == "edit" || tp == "passwordedit" || tp == "pathedit") && rt.hMain) {
+                wchar_t eb[1024]{};
+                ::GetWindowTextW(rt.hMain, eb, static_cast<int>(std::size(eb)));
+                customDialogProps[rt.spec.property] = rsw::WideToUtf8(eb);
+            } else if (tp == "combobox" && rt.hMain) {
+                const LRESULT sel = ::SendMessageW(rt.hMain, CB_GETCURSEL, 0, 0);
+                if (sel != CB_ERR && static_cast<std::size_t>(sel) < rt.itemValues.size()) {
+                    customDialogProps[rt.spec.property] = rt.itemValues[static_cast<std::size_t>(sel)];
+                }
+            } else if (tp == "listbox" && rt.hMain) {
+                const LRESULT sel = ::SendMessageW(rt.hMain, LB_GETCURSEL, 0, 0);
+                if (sel != LB_ERR && static_cast<std::size_t>(sel) < rt.itemValues.size()) {
+                    customDialogProps[rt.spec.property] = rt.itemValues[static_cast<std::size_t>(sel)];
+                }
+            } else if (tp == "radiobuttongroup") {
+                for (std::size_t ri = 0; ri < rt.radioBtns.size() && ri < rt.itemValues.size(); ++ri) {
+                    if (::SendMessageW(rt.radioBtns[ri], BM_GETCHECK, 0, 0) == BST_CHECKED) {
+                        customDialogProps[rt.spec.property] = rt.itemValues[ri];
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     struct RetryDownloadPromptCtx {
@@ -2543,6 +2797,15 @@ public:
             selectedAction != SelectedAction::InstallCustom &&
             selectedAction != SelectedAction::MaintModify) {
             msiProps += L" ADDLOCAL=" + rsw::Utf8ToWide(selectedExplicitFeaturesCsv);
+        }
+        for (const auto& [propName, propVal] : customDialogProps) {
+            if (propName.empty()) continue;
+            std::wstring wEsc;
+            for (wchar_t ch : rsw::Utf8ToWide(propVal)) {
+                if (ch == L'"') wEsc += L"\"\"";
+                else wEsc.push_back(ch);
+            }
+            msiProps += L" " + rsw::Utf8ToWide(propName) + L"=\"" + wEsc + L"\"";
         }
 
         // Re-evaluate pending `[Prerequisite.*]` runtimes right before execution
@@ -3036,6 +3299,57 @@ public:
         if (hBackdropWnd) ::InvalidateRect(hBackdropWnd, nullptr, FALSE);
     }
 
+    int FindFirstCustomDialogAfter(std::string_view slotName) const noexcept {
+        for (std::size_t i = 0; i < cfg.customDialogs.size(); ++i) {
+            if (rsw::EqualsIgnoreCase(cfg.customDialogs[i].afterPage, slotName)) return static_cast<int>(i);
+        }
+        return -1;
+    }
+
+    int FindLastCustomDialogAfter(std::string_view slotName) const noexcept {
+        for (int i = static_cast<int>(cfg.customDialogs.size()) - 1; i >= 0; --i) {
+            if (rsw::EqualsIgnoreCase(cfg.customDialogs[static_cast<std::size_t>(i)].afterPage, slotName)) return i;
+        }
+        return -1;
+    }
+
+    void NavigateToCustomDialogIndex(int dlgIdx) {
+        if (dlgIdx < 0 || static_cast<std::size_t>(dlgIdx) >= cfg.customDialogs.size()) return;
+        activeCustomDialogIdx = static_cast<std::size_t>(dlgIdx);
+        HWND firstFocus = hBtnPrimary;
+        for (const auto& rt : customCtrlRuntimes) {
+            if (rt.dialogIdx == activeCustomDialogIdx) {
+                if (rt.hMain && !rsw::EqualsIgnoreCase(rt.spec.type, "Text") && !rsw::EqualsIgnoreCase(rt.spec.type, "GroupBox")) {
+                    firstFocus = rt.hMain;
+                    break;
+                }
+                if (!rt.radioBtns.empty()) {
+                    firstFocus = rt.radioBtns.front();
+                    break;
+                }
+            }
+        }
+        NavigateTo(WizardPage::CustomUserDialog, firstFocus);
+    }
+
+    void AdvanceAfterSlotOrNavigate(std::string_view slotName, WizardPage fallbackTarget, HWND fallbackFocus = nullptr) {
+        const int firstCd = FindFirstCustomDialogAfter(slotName);
+        if (firstCd >= 0) {
+            NavigateToCustomDialogIndex(firstCd);
+        } else {
+            NavigateTo(fallbackTarget, fallbackFocus);
+        }
+    }
+
+    void NavigateBackThroughSlot(std::string_view prevSlotName, WizardPage prevPage, HWND prevFocus = nullptr) {
+        const int lastCd = FindLastCustomDialogAfter(prevSlotName);
+        if (lastCd >= 0) {
+            NavigateToCustomDialogIndex(lastCd);
+        } else {
+            NavigateTo(prevPage, prevFocus);
+        }
+    }
+
     void OnPrimaryButtonClicked() {
         switch (currentPage) {
             case WizardPage::Welcome:
@@ -3069,9 +3383,9 @@ public:
                     StartMsiWorkerTransaction();
                 } else {
                     if (cfg.hasLicenseRtf) {
-                        NavigateTo(WizardPage::License, hLicAccept);
+                        AdvanceAfterSlotOrNavigate("Welcome", WizardPage::License, hLicAccept);
                     } else {
-                        NavigateTo(WizardPage::SetupType, hModeExpress);
+                        AdvanceAfterSlotOrNavigate("Welcome", WizardPage::SetupType, hModeExpress);
                     }
                 }
                 break;
@@ -3091,25 +3405,25 @@ public:
                 if (cfg.isAutorun16x9) {
                     StartMsiWorkerTransaction();
                 } else {
-                    NavigateTo(WizardPage::SetupType, hModeExpress);
+                    AdvanceAfterSlotOrNavigate("License", WizardPage::SetupType, hModeExpress);
                 }
                 break;
 
             case WizardPage::SetupType:
                 if (selectedAction == SelectedAction::InstallCustom) {
                     EnsureFeatureTreeLoaded();
-                    NavigateTo(WizardPage::CustomFeatures, hFeatTree);
+                    AdvanceAfterSlotOrNavigate("SetupType", WizardPage::CustomFeatures, hFeatTree);
                 } else {
                     RefreshPendingPrerequisites();
-                    NavigateTo(WizardPage::ReadyToInstall, hBtnPrimary);
+                    AdvanceAfterSlotOrNavigate("SetupType", WizardPage::ReadyToInstall, hBtnPrimary);
                 }
                 break;
 
             case WizardPage::CustomFeatures:
                 if (alreadyInstalled || selectedAction == SelectedAction::MaintModify) {
-                    NavigateTo(WizardPage::CustomShortcuts, hSmEdit);
+                    AdvanceAfterSlotOrNavigate("CustomFeatures", WizardPage::CustomShortcuts, hSmEdit);
                 } else {
-                    NavigateTo(WizardPage::CustomFolder, hDirEdit);
+                    AdvanceAfterSlotOrNavigate("CustomFeatures", WizardPage::CustomFolder, hDirEdit);
                 }
                 break;
 
@@ -3121,14 +3435,63 @@ public:
                         StartMsiWorkerTransaction();
                     }
                 } else {
-                    NavigateTo(WizardPage::CustomShortcuts, hSmEdit);
+                    AdvanceAfterSlotOrNavigate("CustomFolder", WizardPage::CustomShortcuts, hSmEdit);
                 }
                 break;
 
             case WizardPage::CustomShortcuts:
                 RefreshPendingPrerequisites();
-                NavigateTo(WizardPage::ReadyToInstall, hBtnPrimary);
+                AdvanceAfterSlotOrNavigate("CustomShortcuts", WizardPage::ReadyToInstall, hBtnPrimary);
                 break;
+
+            case WizardPage::CustomUserDialog: {
+                SyncEditableFieldsFromControls();
+                if (activeCustomDialogIdx < cfg.customDialogs.size()) {
+                    const auto& curDlg = cfg.customDialogs[activeCustomDialogIdx];
+                    for (const auto& cs : curDlg.controls) {
+                        if (cs.required && !cs.property.empty()) {
+                            const std::string v = rsw::TrimAscii(customDialogProps[cs.property]);
+                            if (v.empty()) {
+                                ::TaskDialog(hWnd, ::GetModuleHandleW(nullptr),
+                                             (cfg.productName + L" Setup").c_str(),
+                                             L"Required Setting Needed",
+                                             L"Please complete all required fields on this page before clicking Next.",
+                                             TDCBF_OK_BUTTON, TD_WARNING_ICON, nullptr);
+                                return;
+                            }
+                        }
+                    }
+                    for (std::size_t ni = activeCustomDialogIdx + 1; ni < cfg.customDialogs.size(); ++ni) {
+                        if (rsw::EqualsIgnoreCase(cfg.customDialogs[ni].afterPage, curDlg.afterPage)) {
+                            NavigateToCustomDialogIndex(static_cast<int>(ni));
+                            return;
+                        }
+                    }
+                    const std::string slot = rsw::AsciiLower(curDlg.afterPage);
+                    if (slot == "welcome") {
+                        NavigateTo(cfg.hasLicenseRtf ? WizardPage::License : WizardPage::SetupType, cfg.hasLicenseRtf ? hLicAccept : hModeExpress);
+                    } else if (slot == "license") {
+                        NavigateTo(WizardPage::SetupType, hModeExpress);
+                    } else if (slot == "setuptype") {
+                        if (selectedAction == SelectedAction::InstallCustom) {
+                            EnsureFeatureTreeLoaded();
+                            NavigateTo(WizardPage::CustomFeatures, hFeatTree);
+                        } else {
+                            RefreshPendingPrerequisites();
+                            NavigateTo(WizardPage::ReadyToInstall, hBtnPrimary);
+                        }
+                    } else if (slot == "customfeatures") {
+                        NavigateTo((alreadyInstalled || selectedAction == SelectedAction::MaintModify) ? WizardPage::CustomShortcuts : WizardPage::CustomFolder,
+                                   (alreadyInstalled || selectedAction == SelectedAction::MaintModify) ? hSmEdit : hDirEdit);
+                    } else if (slot == "customfolder") {
+                        NavigateTo(WizardPage::CustomShortcuts, hSmEdit);
+                    } else {
+                        RefreshPendingPrerequisites();
+                        NavigateTo(WizardPage::ReadyToInstall, hBtnPrimary);
+                    }
+                }
+                break;
+            }
 
             case WizardPage::ReadyToInstall:
             case WizardPage::RepairMode:
@@ -3174,24 +3537,50 @@ public:
                 NavigateTo(WizardPage::Welcome, hArCell[1]);
                 break;
             case WizardPage::License:
-                NavigateTo(WizardPage::Welcome, cfg.isAutorun16x9 ? hArCell[0] : hBtnPrimary);
+                if (cfg.isAutorun16x9) NavigateTo(WizardPage::Welcome, hArCell[0]);
+                else NavigateBackThroughSlot("Welcome", WizardPage::Welcome, hBtnPrimary);
                 break;
             case WizardPage::SetupType:
-                NavigateTo(cfg.hasLicenseRtf ? WizardPage::License : WizardPage::Welcome);
+                if (cfg.hasLicenseRtf) NavigateBackThroughSlot("License", WizardPage::License, hLicAccept);
+                else NavigateBackThroughSlot("Welcome", WizardPage::Welcome, hBtnPrimary);
                 break;
             case WizardPage::CustomFeatures:
-                NavigateTo(alreadyInstalled ? WizardPage::Maintenance : WizardPage::SetupType);
+                if (alreadyInstalled) NavigateTo(WizardPage::Maintenance);
+                else NavigateBackThroughSlot("SetupType", WizardPage::SetupType);
                 break;
             case WizardPage::CustomFolder:
-                NavigateTo(cfg.isAutorun16x9 ? WizardPage::Welcome : WizardPage::CustomFeatures);
+                if (cfg.isAutorun16x9) NavigateTo(WizardPage::Welcome);
+                else NavigateBackThroughSlot("CustomFeatures", WizardPage::CustomFeatures);
                 break;
             case WizardPage::CustomShortcuts:
-                NavigateTo(alreadyInstalled ? WizardPage::CustomFeatures : WizardPage::CustomFolder);
+                if (alreadyInstalled) NavigateBackThroughSlot("CustomFeatures", WizardPage::CustomFeatures);
+                else NavigateBackThroughSlot("CustomFolder", WizardPage::CustomFolder);
                 break;
+            case WizardPage::CustomUserDialog: {
+                if (activeCustomDialogIdx < cfg.customDialogs.size()) {
+                    const auto& curDlg = cfg.customDialogs[activeCustomDialogIdx];
+                    for (int pi = static_cast<int>(activeCustomDialogIdx) - 1; pi >= 0; --pi) {
+                        if (rsw::EqualsIgnoreCase(cfg.customDialogs[static_cast<std::size_t>(pi)].afterPage, curDlg.afterPage)) {
+                            NavigateToCustomDialogIndex(pi);
+                            return;
+                        }
+                    }
+                    const std::string slot = rsw::AsciiLower(curDlg.afterPage);
+                    if (slot == "welcome")             NavigateTo(WizardPage::Welcome, hBtnPrimary);
+                    else if (slot == "license")        NavigateTo(WizardPage::License, hLicAccept);
+                    else if (slot == "customfeatures") NavigateTo(WizardPage::CustomFeatures, hFeatTree);
+                    else if (slot == "customfolder")   NavigateTo(WizardPage::CustomFolder, hDirEdit);
+                    else if (slot == "customshortcuts")NavigateTo(WizardPage::CustomShortcuts, hSmEdit);
+                    else                               NavigateTo(WizardPage::SetupType, hModeExpress);
+                }
+                break;
+            }
             case WizardPage::ReadyToInstall:
-                NavigateTo((selectedAction == SelectedAction::InstallCustom || selectedAction == SelectedAction::MaintModify)
-                           ? WizardPage::CustomShortcuts
-                           : WizardPage::SetupType);
+                if (selectedAction == SelectedAction::InstallCustom || selectedAction == SelectedAction::MaintModify) {
+                    NavigateBackThroughSlot("CustomShortcuts", WizardPage::CustomShortcuts);
+                } else {
+                    NavigateBackThroughSlot("SetupType", WizardPage::SetupType);
+                }
                 break;
             case WizardPage::RepairMode:
             case WizardPage::SafeUninstall:
@@ -3221,6 +3610,13 @@ public:
             case WizardPage::CustomFeatures:  return {L"SELECT FEATURES",          L"Select Program Features",          rsw::ui::GlassGlyph::Blocks,      rsw::ui::brand::kVioletTune};
             case WizardPage::CustomFolder:    return {L"DESTINATION FOLDER",       L"Select Destination Folder",        rsw::ui::GlassGlyph::Folder,      rsw::ui::brand::kRaggieBlue};
             case WizardPage::CustomShortcuts: return {L"SHORTCUTS & INTEGRATION",  L"Shortcuts & Explorer Integration", rsw::ui::GlassGlyph::PinGrid,     rsw::ui::brand::kSkyCyan};
+            case WizardPage::CustomUserDialog: {
+                if (activeCustomDialogIdx < cfg.customDialogs.size()) {
+                    const auto& cd = cfg.customDialogs[activeCustomDialogIdx];
+                    return {L"CONFIGURATION OPTIONS", cd.title.c_str(), cd.glyph, rsw::ui::brand::kVioletTune};
+                }
+                return {L"CONFIGURATION OPTIONS", L"Configuration Options", rsw::ui::GlassGlyph::Sliders, rsw::ui::brand::kVioletTune};
+            }
             case WizardPage::ReadyToInstall:  return {L"READY TO APPLY CHANGES",   L"Ready to Install",                 rsw::ui::GlassGlyph::Play,        rsw::ui::brand::kEmeraldOk};
             case WizardPage::Maintenance:     return {L"MAINTENANCE WIZARD",       L"Modify, Repair, or Uninstall",     rsw::ui::GlassGlyph::Gear,        rsw::ui::brand::kVioletTune};
             case WizardPage::RepairMode:      return {L"REPAIR & VERIFY OPTIONS",  L"Repair & Verify Installation",     rsw::ui::GlassGlyph::Reinstall,   rsw::ui::brand::kRaggieBlue};
@@ -3739,6 +4135,32 @@ public:
                     ::SetTextColor(memDc, theme.textPrimary);
                     RECT hRc{cardX, bodyTop + S(2), cardX + cardW, bodyTop + S(32)};
                     ::DrawTextW(memDc, L"Configure Start Menu & Shortcuts", -1, &hRc, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+                }
+                break;
+            }
+
+            case WizardPage::CustomUserDialog: {
+                if (activeCustomDialogIdx < cfg.customDialogs.size()) {
+                    const auto& cd = cfg.customDialogs[activeCustomDialogIdx];
+                    if (!cd.subtitle.empty()) {
+                        ::SelectObject(memDc, hFontBody);
+                        ::SetTextColor(memDc, theme.textSecondary);
+                        RECT subRc{cardX, bodyTop, cardX + cardW, bodyTop + S(26)};
+                        ::DrawTextW(memDc, cd.subtitle.c_str(), -1, &subRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                    }
+                    HPEN linePen = ::CreatePen(PS_SOLID, 1, theme.borderSubtle);
+                    HGDIOBJ oldP = ::SelectObject(memDc, linePen);
+                    for (const auto& cs : cd.controls) {
+                        if (rsw::EqualsIgnoreCase(cs.type, "Line")) {
+                            const int lx = cardX + S(cs.x);
+                            const int ly = bodyTop + S(28) + S(cs.y);
+                            const int lw = std::min(S(cs.w), cardW);
+                            ::MoveToEx(memDc, lx, ly, nullptr);
+                            ::LineTo(memDc, lx + lw, ly);
+                        }
+                    }
+                    ::SelectObject(memDc, oldP);
+                    ::DeleteObject(linePen);
                 }
                 break;
             }
@@ -4369,6 +4791,31 @@ public:
                 if (id == IDC_DIR_EDIT && code == EN_CHANGE) {
                     ::InvalidateRect(hWnd, nullptr, FALSE);
                     return 0;
+                }
+                if (id >= IDC_CUSTOM_CTRL_BASE) {
+                    for (auto& rt : self->customCtrlRuntimes) {
+                        if (rt.browseId != 0 && id == rt.browseId && rt.hMain) {
+                            IFileOpenDialog* pDlg = nullptr;
+                            if (SUCCEEDED(::CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pDlg))) && pDlg) {
+                                DWORD opts = 0;
+                                pDlg->GetOptions(&opts);
+                                pDlg->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+                                if (SUCCEEDED(pDlg->Show(hWnd))) {
+                                    IShellItem* pItem = nullptr;
+                                    if (SUCCEEDED(pDlg->GetResult(&pItem)) && pItem) {
+                                        PWSTR psz = nullptr;
+                                        if (SUCCEEDED(pItem->GetDisplayName(SIGDN_FILESYSPATH, &psz)) && psz) {
+                                            ::SetWindowTextW(rt.hMain, psz);
+                                            ::CoTaskMemFree(psz);
+                                        }
+                                        pItem->Release();
+                                    }
+                                }
+                                pDlg->Release();
+                            }
+                            return 0;
+                        }
+                    }
                 }
                 switch (id) {
                     case IDC_MODE_EXPRESS:

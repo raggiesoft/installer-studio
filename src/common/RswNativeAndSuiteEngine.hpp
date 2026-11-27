@@ -113,6 +113,31 @@ struct NativeFileAssocRule {
     std::string featureId  = "Main";
 };
 
+/// Declarative `[Environment.<id>]` rule compiled into `Engine = native` installers (`v0.7.0`).
+/// Supports safe non-clobbering `PATH` append/prepend (`append_path` / `prepend_path`) and exact
+/// segment-only removal during `Uninstall.exe --native-uninstall` so existing user/system `PATH`
+/// entries are never truncated or overwritten!
+struct NativeEnvRule {
+    std::string name;
+    std::string value;
+    std::string action      = "append_path"; // `set` | `set_if_absent` | `append_path` | `prepend_path` | `remove`
+    std::string scope       = "auto";        // `auto` | `machine` | `user`
+    std::string onUninstall = "remove";      // `remove` | `keep`
+    std::string featureId   = "Main";
+};
+
+/// Declarative `[IniFile.<id>]` rule compiled into `Engine = native` installers (`v0.7.0`).
+struct NativeIniRule {
+    std::string fileName;
+    std::string targetRoot   = "INSTALLDIR";
+    std::string targetSubdir;
+    std::string section;
+    std::string key;
+    std::string value;
+    std::string action       = "set"; // `set` | `create_only` | `add_tag` | `remove_key`
+    std::string featureId    = "Main";
+};
+
 struct NativeOrSfxManifest {
     std::string   mode                  = "native"; // `"sfx"` or `"native"`
     std::string   productName           = "Application";
@@ -158,6 +183,8 @@ struct NativeOrSfxManifest {
     std::vector<NativeShortcutRule>  shortcuts;
     std::vector<NativeRegistryRule>  registries;
     std::vector<NativeFileAssocRule> fileAssocs;
+    std::vector<NativeEnvRule>       environments;
+    std::vector<NativeIniRule>       iniFiles;
 };
 
 namespace native_detail {
@@ -416,6 +443,198 @@ inline HKEY ResolveRegistryRootHandle(std::string_view rootStr, bool perMachine)
     return HKEY_LOCAL_MACHINE;
 }
 
+/// Normalizes a single `PATH` directory segment for case-insensitive duplicate comparison
+/// (trims whitespace/quotes and strips trailing slashes except on bare drive roots like `C:\`).
+inline std::string NormalizePathSegmentKey(std::string_view seg) {
+    std::string s = TrimAscii(seg);
+    if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
+        s = TrimAscii(s.substr(1, s.size() - 2));
+    }
+    for (char& ch : s) {
+        if (ch == '/') ch = '\\';
+    }
+    while (s.size() > 3 && s.back() == '\\') {
+        s.pop_back();
+    }
+    return AsciiLower(s);
+}
+
+/// Appends or prepends `segment` into `;`-delimited `existingPath` ONLY if not already present!
+inline std::string MergePathSegmentNonClobbering(
+    std::string_view existingPath,
+    std::string_view segment,
+    bool prepend,
+    bool& outModified)
+{
+    outModified = false;
+    std::string cleanSeg = TrimAscii(segment);
+    while (cleanSeg.size() > 3 && (cleanSeg.back() == '\\' || cleanSeg.back() == '/')) {
+        cleanSeg.pop_back();
+    }
+    const std::string wantKey = NormalizePathSegmentKey(cleanSeg);
+    if (wantKey.empty()) return std::string(existingPath);
+
+    std::vector<std::string> parts;
+    std::size_t pos = 0;
+    while (pos <= existingPath.size()) {
+        const auto semi = existingPath.find(';', pos);
+        std::string item = TrimAscii(semi == std::string::npos ? existingPath.substr(pos) : existingPath.substr(pos, semi - pos));
+        if (!item.empty()) {
+            if (NormalizePathSegmentKey(item) == wantKey) {
+                return std::string(existingPath); // Already in `PATH` — preserve untouched!
+            }
+            parts.push_back(std::move(item));
+        }
+        if (semi == std::string::npos) break;
+        pos = semi + 1;
+    }
+
+    outModified = true;
+    if (prepend) {
+        parts.insert(parts.begin(), cleanSeg);
+    } else {
+        parts.push_back(cleanSeg);
+    }
+    std::string joined;
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        if (i > 0) joined.push_back(';');
+        joined += parts[i];
+    }
+    return joined;
+}
+
+/// Removes `segment` cleanly from `;`-delimited `existingPath` while keeping every other entry intact!
+inline std::string RemovePathSegmentNonClobbering(
+    std::string_view existingPath,
+    std::string_view segment,
+    bool& outModified)
+{
+    outModified = false;
+    const std::string targetKey = NormalizePathSegmentKey(segment);
+    if (targetKey.empty()) return std::string(existingPath);
+
+    std::vector<std::string> kept;
+    std::size_t pos = 0;
+    while (pos <= existingPath.size()) {
+        const auto semi = existingPath.find(';', pos);
+        std::string item = TrimAscii(semi == std::string::npos ? existingPath.substr(pos) : existingPath.substr(pos, semi - pos));
+        if (!item.empty()) {
+            if (NormalizePathSegmentKey(item) == targetKey) {
+                outModified = true;
+            } else {
+                kept.push_back(std::move(item));
+            }
+        }
+        if (semi == std::string::npos) break;
+        pos = semi + 1;
+    }
+
+    std::string joined;
+    for (std::size_t i = 0; i < kept.size(); ++i) {
+        if (i > 0) joined.push_back(';');
+        joined += kept[i];
+    }
+    return joined;
+}
+
+inline const wchar_t* EnvironmentRegSubKey(bool machineScope) noexcept {
+    return machineScope
+        ? L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"
+        : L"Environment";
+}
+
+inline bool ReadPersistentEnvironmentVar(
+    const std::filesystem::path& virtRegRoot,
+    bool machineScope,
+    const std::string& varName,
+    std::string& outValue)
+{
+    outValue.clear();
+    const std::string rootCode = machineScope ? "HKLM" : "HKCU";
+    const wchar_t* subKey      = EnvironmentRegSubKey(machineScope);
+    const std::wstring wName   = Utf8ToWide(varName);
+    if (!virtRegRoot.empty()) {
+        return VirtualRegReadValue(virtRegRoot, rootCode, subKey, wName, outValue);
+    }
+    HKEY hk = nullptr;
+    if (::RegOpenKeyExW(machineScope ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER, subKey, 0,
+                        KEY_READ | KEY_WOW64_64KEY, &hk) != ERROR_SUCCESS) {
+        return false;
+    }
+    DWORD type = 0;
+    DWORD cb   = 0;
+    LSTATUS st = ::RegQueryValueExW(hk, wName.c_str(), nullptr, &type, nullptr, &cb);
+    if (st != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ) || cb < sizeof(wchar_t)) {
+        ::RegCloseKey(hk);
+        return false;
+    }
+    std::vector<wchar_t> wbuf((cb / sizeof(wchar_t)) + 2, L'\0');
+    st = ::RegQueryValueExW(hk, wName.c_str(), nullptr, &type, reinterpret_cast<LPBYTE>(wbuf.data()), &cb);
+    ::RegCloseKey(hk);
+    if (st != ERROR_SUCCESS) return false;
+    outValue = WideToUtf8(wbuf.data());
+    return true;
+}
+
+inline bool WritePersistentEnvironmentVar(
+    const std::filesystem::path& virtRegRoot,
+    bool machineScope,
+    const std::string& varName,
+    const std::string& utf8Val)
+{
+    const std::string rootCode = machineScope ? "HKLM" : "HKCU";
+    const wchar_t* subKey      = EnvironmentRegSubKey(machineScope);
+    const std::wstring wName   = Utf8ToWide(varName);
+    if (!virtRegRoot.empty()) {
+        bool dummyNew = false;
+        return VirtualRegWriteValue(virtRegRoot, rootCode, subKey, wName, utf8Val, dummyNew);
+    }
+    HKEY hk = nullptr;
+    if (::RegCreateKeyExW(machineScope ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER, subKey, 0, nullptr, 0,
+                          KEY_WRITE | KEY_WOW64_64KEY, nullptr, &hk, nullptr) != ERROR_SUCCESS) {
+        return false;
+    }
+    const std::wstring wVal = Utf8ToWide(utf8Val);
+    const DWORD regType     = (utf8Val.find('%') != std::string::npos || EqualsIgnoreCase(varName, "Path"))
+        ? REG_EXPAND_SZ
+        : REG_SZ;
+    const LSTATUS st = ::RegSetValueExW(
+        hk, wName.c_str(), 0, regType,
+        reinterpret_cast<const BYTE*>(wVal.c_str()),
+        static_cast<DWORD>((wVal.size() + 1) * sizeof(wchar_t)));
+    ::RegCloseKey(hk);
+    return st == ERROR_SUCCESS;
+}
+
+inline void DeletePersistentEnvironmentVar(
+    const std::filesystem::path& virtRegRoot,
+    bool machineScope,
+    const std::string& varName) noexcept
+{
+    const std::string rootCode = machineScope ? "HKLM" : "HKCU";
+    const wchar_t* subKey      = EnvironmentRegSubKey(machineScope);
+    const std::wstring wName   = Utf8ToWide(varName);
+    if (!virtRegRoot.empty()) {
+        VirtualRegDeleteValue(virtRegRoot, rootCode, subKey, wName);
+        return;
+    }
+    HKEY hk = nullptr;
+    if (::RegOpenKeyExW(machineScope ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER, subKey, 0,
+                        KEY_SET_VALUE | KEY_WOW64_64KEY, &hk) == ERROR_SUCCESS) {
+        ::RegDeleteValueW(hk, wName.c_str());
+        ::RegCloseKey(hk);
+    }
+}
+
+inline void BroadcastEnvironmentChangeIfLive(const std::filesystem::path& virtRegRoot) noexcept {
+    if (!virtRegRoot.empty()) return;
+    DWORD_PTR sendRes = 0;
+    ::SendMessageTimeoutW(
+        HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+        reinterpret_cast<LPARAM>(L"Environment"),
+        SMTO_ABORTIFHUNG, 150, &sendRes);
+}
+
 } // namespace native_detail
 
 inline std::string SerializeNativeOrSfxManifestIni(const NativeOrSfxManifest& m) {
@@ -505,6 +724,30 @@ inline std::string SerializeNativeOrSfxManifestIni(const NativeOrSfxManifest& m)
             << p << "Icon="  << m.fileAssocs[i].iconIndex << "\n"
             << p << "Feat="  << EscapeSingleLine(m.fileAssocs[i].featureId) << "\n";
     }
+
+    out << "EnvCount=" << m.environments.size() << "\n";
+    for (std::size_t i = 0; i < m.environments.size(); ++i) {
+        const std::string p = "Env_" + std::to_string(i) + "_";
+        out << p << "Name="   << EscapeSingleLine(m.environments[i].name) << "\n"
+            << p << "Val="    << EscapeSingleLine(m.environments[i].value) << "\n"
+            << p << "Act="    << EscapeSingleLine(m.environments[i].action) << "\n"
+            << p << "Scope="  << EscapeSingleLine(m.environments[i].scope) << "\n"
+            << p << "Uninst=" << EscapeSingleLine(m.environments[i].onUninstall) << "\n"
+            << p << "Feat="   << EscapeSingleLine(m.environments[i].featureId) << "\n";
+    }
+
+    out << "IniCount=" << m.iniFiles.size() << "\n";
+    for (std::size_t i = 0; i < m.iniFiles.size(); ++i) {
+        const std::string p = "Ini_" + std::to_string(i) + "_";
+        out << p << "File="   << EscapeSingleLine(m.iniFiles[i].fileName) << "\n"
+            << p << "Root="   << EscapeSingleLine(m.iniFiles[i].targetRoot) << "\n"
+            << p << "Sub="    << EscapeSingleLine(m.iniFiles[i].targetSubdir) << "\n"
+            << p << "Sec="    << EscapeSingleLine(m.iniFiles[i].section) << "\n"
+            << p << "Key="    << EscapeSingleLine(m.iniFiles[i].key) << "\n"
+            << p << "Val="    << EscapeSingleLine(m.iniFiles[i].value) << "\n"
+            << p << "Act="    << EscapeSingleLine(m.iniFiles[i].action) << "\n"
+            << p << "Feat="   << EscapeSingleLine(m.iniFiles[i].featureId) << "\n";
+    }
     return out.str();
 }
 
@@ -587,6 +830,21 @@ inline NativeOrSfxManifest ParseNativeOrSfxManifestIni(std::string_view text) {
                                 getS(p + "Verbs", "open:&Open:\"%1\""), getS(p + "Mime"), getS(p + "Perc"),
                                 std::atoi(getS(p + "Icon", "0").c_str()), getS(p + "Feat", "Main")});
     }
+
+    const int nEnv = std::clamp(std::atoi(kv["EnvCount"].c_str()), 0, 256);
+    for (int i = 0; i < nEnv; ++i) {
+        const std::string p = "Env_" + std::to_string(i) + "_";
+        m.environments.push_back({getS(p + "Name"), getS(p + "Val"), getS(p + "Act", "append_path"),
+                                  getS(p + "Scope", "auto"), getS(p + "Uninst", "remove"), getS(p + "Feat", "Main")});
+    }
+
+    const int nIni = std::clamp(std::atoi(kv["IniCount"].c_str()), 0, 512);
+    for (int i = 0; i < nIni; ++i) {
+        const std::string p = "Ini_" + std::to_string(i) + "_";
+        m.iniFiles.push_back({getS(p + "File"), getS(p + "Root", "INSTALLDIR"), getS(p + "Sub"),
+                              getS(p + "Sec"), getS(p + "Key"), getS(p + "Val"),
+                              getS(p + "Act", "set"), getS(p + "Feat", "Main")});
+    }
     return m;
 }
 
@@ -641,6 +899,13 @@ inline bool ExecuteNativeOrSfxTransaction(
         bool         createdKey = false;
     };
     std::vector<RegUndoItem> regUndoStack;
+    struct EnvUndoItem {
+        bool        machineScope = false;
+        std::string name;
+        bool        hadPrior     = false;
+        std::string priorValue;
+    };
+    std::vector<EnvUndoItem> envUndoStack;
 
     auto ensureTrackedDirectories = [&](const std::filesystem::path& dirPath) -> bool {
         std::vector<std::filesystem::path> missingChain;
@@ -664,6 +929,16 @@ inline bool ExecuteNativeOrSfxTransaction(
     const std::filesystem::path virtRegRoot = native_detail::GetVirtualRegistryStoreRoot();
     auto performLifoRollback = [&]() {
         if (onProgress) onProgress(0, L"Rolling back changes to restore previous system state...");
+        for (auto it = envUndoStack.rbegin(); it != envUndoStack.rend(); ++it) {
+            if (it->hadPrior) {
+                native_detail::WritePersistentEnvironmentVar(virtRegRoot, it->machineScope, it->name, it->priorValue);
+            } else {
+                native_detail::DeletePersistentEnvironmentVar(virtRegRoot, it->machineScope, it->name);
+            }
+        }
+        if (!envUndoStack.empty()) {
+            native_detail::BroadcastEnvironmentChangeIfLive(virtRegRoot);
+        }
         for (auto it = regUndoStack.rbegin(); it != regUndoStack.rend(); ++it) {
             if (!virtRegRoot.empty()) {
                 const std::string rc = (it->hRoot == HKEY_LOCAL_MACHINE) ? "HKLM" : "HKCU";
@@ -973,6 +1248,129 @@ inline bool ExecuteNativeOrSfxTransaction(
         }
     }
 
+    // 5B. Apply declarative `[IniFile.*]` rules (`WritePrivateProfileStringW`)!
+    for (const auto& ini : manifest.iniFiles) {
+        if (!ini.featureId.empty() && excludedFeaturesLower.count(AsciiLower(ini.featureId)) > 0) continue;
+        if (ini.fileName.empty() || ini.section.empty() || ini.key.empty()) continue;
+        auto baseDir = native_detail::ResolveSystemRootFolder(ini.targetRoot, opts.targetDir, effStartMenu, manifest.perMachine);
+        if (!ini.targetSubdir.empty()) baseDir /= Utf8ToWide(ini.targetSubdir);
+        const std::filesystem::path iniPath = (baseDir / Utf8ToWide(ini.fileName)).lexically_normal();
+        const bool existedBefore = std::filesystem::exists(iniPath, ec);
+        if (!ensureTrackedDirectories(iniPath.parent_path())) {
+            outError = "Could not create folder for INI file '" + WideToUtf8(iniPath.wstring()) + "'.";
+            performLifoRollback();
+            std::filesystem::remove(journalFile, ec);
+            return false;
+        }
+        const std::string act  = AsciiLower(TrimAscii(ini.action));
+        const std::wstring wSec = Utf8ToWide(ini.section);
+        const std::wstring wKey = Utf8ToWide(ini.key);
+        const std::string expVal = native_detail::ExpandInstallTokens(ini.value, opts.targetDir, manifest.version);
+        if (act == "remove_key") {
+            ::WritePrivateProfileStringW(wSec.c_str(), wKey.c_str(), nullptr, iniPath.wstring().c_str());
+        } else if (act == "create_only") {
+            wchar_t existingBuf[512]{};
+            const DWORD got = ::GetPrivateProfileStringW(wSec.c_str(), wKey.c_str(), L"\x01__ABSENT__", existingBuf, static_cast<DWORD>(std::size(existingBuf)), iniPath.wstring().c_str());
+            if (got == 0 || std::wcscmp(existingBuf, L"\x01__ABSENT__") == 0) {
+                ::WritePrivateProfileStringW(wSec.c_str(), wKey.c_str(), Utf8ToWide(expVal).c_str(), iniPath.wstring().c_str());
+            }
+        } else if (act == "add_tag") {
+            wchar_t existingBuf[2048]{};
+            ::GetPrivateProfileStringW(wSec.c_str(), wKey.c_str(), L"", existingBuf, static_cast<DWORD>(std::size(existingBuf)), iniPath.wstring().c_str());
+            bool modified = false;
+            const std::string merged = native_detail::MergePathSegmentNonClobbering(WideToUtf8(existingBuf), expVal, false, modified);
+            ::WritePrivateProfileStringW(wSec.c_str(), wKey.c_str(), Utf8ToWide(merged).c_str(), iniPath.wstring().c_str());
+        } else {
+            ::WritePrivateProfileStringW(wSec.c_str(), wKey.c_str(), Utf8ToWide(expVal).c_str(), iniPath.wstring().c_str());
+        }
+        if (!existedBefore && std::filesystem::exists(iniPath, ec)) {
+            newlyWrittenFiles.push_back(iniPath);
+        }
+    }
+
+    // 5C. Apply declarative `[Environment.*]` rules (non-clobbering `PATH` append/prepend + exact uninstall record)!
+    struct RecordedEnvUninstallItem {
+        bool        machineScope = false;
+        std::string name;
+        std::string mode;    // `"remove_segment"` or `"delete_var"`
+        std::string segment; // Expanded segment for `remove_segment`
+    };
+    std::vector<RecordedEnvUninstallItem> recordedEnvForUninstall;
+    bool envChangedLive = false;
+
+    for (const auto& env : manifest.environments) {
+        if (!env.featureId.empty() && excludedFeaturesLower.count(AsciiLower(env.featureId)) > 0) continue;
+        const std::string varName = TrimAscii(env.name);
+        if (varName.empty()) continue;
+
+        const std::string sc = AsciiLower(TrimAscii(env.scope));
+        const bool machScope = (sc == "machine") ? true : ((sc == "user") ? false : manifest.perMachine);
+        const std::string act = AsciiLower(TrimAscii(env.action));
+        const bool removeOnUninst = !EqualsIgnoreCase(TrimAscii(env.onUninstall), "keep");
+        std::string expVal = native_detail::ExpandInstallTokens(env.value, opts.targetDir, manifest.version);
+        while ((act == "append_path" || act == "prepend_path") && expVal.size() > 3 &&
+               (expVal.back() == '\\' || expVal.back() == '/')) {
+            expVal.pop_back();
+        }
+
+        std::string priorVal;
+        const bool hadPrior = native_detail::ReadPersistentEnvironmentVar(virtRegRoot, machScope, varName, priorVal);
+
+        if (act == "remove") {
+            if (hadPrior) {
+                envUndoStack.push_back({machScope, varName, true, priorVal});
+                native_detail::DeletePersistentEnvironmentVar(virtRegRoot, machScope, varName);
+                envChangedLive = true;
+            }
+        } else if (act == "append_path" || act == "prepend_path") {
+            bool mod = false;
+            const std::string merged = native_detail::MergePathSegmentNonClobbering(
+                priorVal, expVal, act == "prepend_path", mod);
+            if (mod || !hadPrior) {
+                if (!native_detail::WritePersistentEnvironmentVar(virtRegRoot, machScope, varName, merged)) {
+                    outError = "Failed updating environment variable '" + varName + "'.";
+                    performLifoRollback();
+                    std::filesystem::remove(journalFile, ec);
+                    return false;
+                }
+                envUndoStack.push_back({machScope, varName, hadPrior, priorVal});
+                envChangedLive = true;
+            }
+            if (removeOnUninst && !expVal.empty()) {
+                recordedEnvForUninstall.push_back({machScope, varName, "remove_segment", expVal});
+            }
+        } else if (act == "set_if_absent") {
+            if (!hadPrior || TrimAscii(priorVal).empty()) {
+                if (!native_detail::WritePersistentEnvironmentVar(virtRegRoot, machScope, varName, expVal)) {
+                    outError = "Failed writing environment variable '" + varName + "'.";
+                    performLifoRollback();
+                    std::filesystem::remove(journalFile, ec);
+                    return false;
+                }
+                envUndoStack.push_back({machScope, varName, hadPrior, priorVal});
+                envChangedLive = true;
+                if (removeOnUninst) {
+                    recordedEnvForUninstall.push_back({machScope, varName, "delete_var", expVal});
+                }
+            }
+        } else {
+            if (!native_detail::WritePersistentEnvironmentVar(virtRegRoot, machScope, varName, expVal)) {
+                outError = "Failed writing environment variable '" + varName + "'.";
+                performLifoRollback();
+                std::filesystem::remove(journalFile, ec);
+                return false;
+            }
+            envUndoStack.push_back({machScope, varName, hadPrior, priorVal});
+            envChangedLive = true;
+            if (removeOnUninst) {
+                recordedEnvForUninstall.push_back({machScope, varName, "delete_var", expVal});
+            }
+        }
+    }
+    if (envChangedLive) {
+        native_detail::BroadcastEnvironmentChangeIfLive(virtRegRoot);
+    }
+
     // 6. Emit signed `Uninstall.exe` + `Uninstall.rswm` & register in Windows *Installed apps*!
     if (onProgress) onProgress(970, L"Registering uninstaller...");
     std::filesystem::path srcStub = opts.runningSetupExePath;
@@ -1021,6 +1419,13 @@ inline bool ExecuteNativeOrSfxTransaction(
         for (std::size_t i = 0; i < recordedRegKeysForUninstall.size(); ++i) {
             um << "RegRoot_" << i << "=" << recordedRegKeysForUninstall[i].first << "\n"
                << "RegKey_"  << i << "=" << WideToUtf8(recordedRegKeysForUninstall[i].second) << "\n";
+        }
+        um << "EnvUninstallCount=" << recordedEnvForUninstall.size() << "\n";
+        for (std::size_t i = 0; i < recordedEnvForUninstall.size(); ++i) {
+            um << "EnvUnScope_" << i << "=" << (recordedEnvForUninstall[i].machineScope ? "machine" : "user") << "\n"
+               << "EnvUnName_"  << i << "=" << native_detail::EscapeSingleLine(recordedEnvForUninstall[i].name) << "\n"
+               << "EnvUnMode_"  << i << "=" << recordedEnvForUninstall[i].mode << "\n"
+               << "EnvUnSeg_"   << i << "=" << native_detail::EscapeSingleLine(recordedEnvForUninstall[i].segment) << "\n";
         }
     }
 
@@ -1119,6 +1524,39 @@ inline bool ExecuteNativeUninstallFromMeta(
     }
 
     const std::filesystem::path virtRegRoot = native_detail::GetVirtualRegistryStoreRoot();
+
+    // Cleanly remove any `[Environment.*]` `PATH` segments or owned variables without clobbering user `PATH`!
+    const int nEnvUn = std::clamp(std::atoi(kv["EnvUninstallCount"].c_str()), 0, 512);
+    bool envUnChanged = false;
+    for (int i = nEnvUn - 1; i >= 0; --i) {
+        const bool machScope   = EqualsIgnoreCase(kv["EnvUnScope_" + std::to_string(i)], "machine");
+        const std::string name = kv["EnvUnName_"  + std::to_string(i)];
+        const std::string mode = kv["EnvUnMode_"  + std::to_string(i)];
+        const std::string seg  = kv["EnvUnSeg_"   + std::to_string(i)];
+        if (name.empty()) continue;
+        if (mode == "remove_segment") {
+            std::string curVal;
+            if (native_detail::ReadPersistentEnvironmentVar(virtRegRoot, machScope, name, curVal)) {
+                bool mod = false;
+                const std::string cleaned = native_detail::RemovePathSegmentNonClobbering(curVal, seg, mod);
+                if (mod) {
+                    if (cleaned.empty()) {
+                        native_detail::DeletePersistentEnvironmentVar(virtRegRoot, machScope, name);
+                    } else {
+                        native_detail::WritePersistentEnvironmentVar(virtRegRoot, machScope, name, cleaned);
+                    }
+                    envUnChanged = true;
+                }
+            }
+        } else {
+            native_detail::DeletePersistentEnvironmentVar(virtRegRoot, machScope, name);
+            envUnChanged = true;
+        }
+    }
+    if (envUnChanged) {
+        native_detail::BroadcastEnvironmentChangeIfLive(virtRegRoot);
+    }
+
     const int nReg = std::clamp(std::atoi(kv["RegKeyCount"].c_str()), 0, 4096);
     for (int i = nReg - 1; i >= 0; --i) {
         const std::string rc = kv["RegRoot_" + std::to_string(i)];

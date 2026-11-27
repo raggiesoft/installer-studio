@@ -595,6 +595,17 @@ inline bool PopulateMsiInternalUiTables(
     const auto customDlgIds  = doc.GetNamedSectionIds("MsiDialog");
     const auto customCtrlIds = doc.GetNamedSectionIds("MsiControl");
 
+    // Sort custom `[MsiControl.<id>]` entries by `(TabOrder > 0 ? TabOrder : 10000 + origIdx)`
+    // so authors can control exact `Tab` focus traversal across custom `370 x 270` DLU dialogs!
+    std::vector<std::string> sortedCtrlIds = customCtrlIds;
+    std::stable_sort(sortedCtrlIds.begin(), sortedCtrlIds.end(), [&](const std::string& a, const std::string& b) {
+        const int ta = doc.GetInt("MsiControl", a, "TabOrder", 0);
+        const int tb = doc.GetInt("MsiControl", b, "TabOrder", 0);
+        const int ea = (ta > 0) ? ta : 100000;
+        const int eb = (tb > 0) ? tb : 100000;
+        return ea < eb;
+    });
+
     for (const auto& did : customDlgIds) {
         const std::string title    = doc.GetString("MsiDialog", did, "Title", "[ProductName] Setup");
         const int w                = doc.GetInt("MsiDialog", did, "Width",  370);
@@ -607,7 +618,7 @@ inline bool PopulateMsiInternalUiTables(
 
         // Find first interactive control belonging to `did` so `Control_First` + Tab chain stay valid!
         std::vector<std::string> myCtrls;
-        for (const auto& cid : customCtrlIds) {
+        for (const auto& cid : sortedCtrlIds) {
             if (EqualsIgnoreCase(doc.GetString("MsiControl", cid, "Dialog"), did)) {
                 const std::string tp = doc.GetString("MsiControl", cid, "Type", "Text");
                 if (!EqualsIgnoreCase(tp, "Text") && !EqualsIgnoreCase(tp, "Line") &&
@@ -652,18 +663,20 @@ inline bool PopulateMsiInternalUiTables(
         }
     }
 
-    for (std::size_t idx = 0; idx < customCtrlIds.size(); ++idx) {
-        const std::string& cid = customCtrlIds[idx];
-        const std::string dlg  = doc.GetString("MsiControl", cid, "Dialog");
-        const std::string type = doc.GetString("MsiControl", cid, "Type", "Text");
-        const int x            = doc.GetInt("MsiControl", cid, "X", 20);
-        const int y            = doc.GetInt("MsiControl", cid, "Y", 60);
-        const int w            = doc.GetInt("MsiControl", cid, "Width", 330);
-        const int h            = doc.GetInt("MsiControl", cid, "Height", 18);
-        const std::string prop = TrimAscii(doc.GetString("MsiControl", cid, "Property"));
-        const std::string defV = doc.GetString("MsiControl", cid, "DefaultValue");
-        const std::string txt  = doc.GetString("MsiControl", cid, "Text");
-        const std::string items= doc.GetString("MsiControl", cid, "Items");
+    for (std::size_t idx = 0; idx < sortedCtrlIds.size(); ++idx) {
+        const std::string& cid     = sortedCtrlIds[idx];
+        const std::string dlg      = doc.GetString("MsiControl", cid, "Dialog");
+        const std::string rawType  = doc.GetString("MsiControl", cid, "Type", "Text");
+        const bool isPasswordEdit  = EqualsIgnoreCase(rawType, "PasswordEdit");
+        const std::string type     = isPasswordEdit ? "Edit" : rawType;
+        const int x                = doc.GetInt("MsiControl", cid, "X", 20);
+        const int y                = doc.GetInt("MsiControl", cid, "Y", 60);
+        const int w                = doc.GetInt("MsiControl", cid, "Width", 330);
+        const int h                = doc.GetInt("MsiControl", cid, "Height", 18);
+        const std::string prop     = TrimAscii(doc.GetString("MsiControl", cid, "Property"));
+        const std::string defV     = doc.GetString("MsiControl", cid, "DefaultValue");
+        const std::string txt      = doc.GetString("MsiControl", cid, "Text");
+        const std::string items    = doc.GetString("MsiControl", cid, "Items");
 
         const bool nonTab = EqualsIgnoreCase(type, "Text") || EqualsIgnoreCase(type, "Line") ||
                             EqualsIgnoreCase(type, "Bitmap") || EqualsIgnoreCase(type, "GroupBox");
@@ -672,12 +685,12 @@ inline bool PopulateMsiInternalUiTables(
         SqlVal nextCtrl = std::monostate{};
         if (!nonTab) {
             std::string foundNext = "Back";
-            for (std::size_t j = idx + 1; j < customCtrlIds.size(); ++j) {
-                if (EqualsIgnoreCase(doc.GetString("MsiControl", customCtrlIds[j], "Dialog"), dlg)) {
-                    const std::string tp2 = doc.GetString("MsiControl", customCtrlIds[j], "Type", "Text");
+            for (std::size_t j = idx + 1; j < sortedCtrlIds.size(); ++j) {
+                if (EqualsIgnoreCase(doc.GetString("MsiControl", sortedCtrlIds[j], "Dialog"), dlg)) {
+                    const std::string tp2 = doc.GetString("MsiControl", sortedCtrlIds[j], "Type", "Text");
                     if (!EqualsIgnoreCase(tp2, "Text") && !EqualsIgnoreCase(tp2, "Line") &&
                         !EqualsIgnoreCase(tp2, "Bitmap") && !EqualsIgnoreCase(tp2, "GroupBox")) {
-                        foundNext = customCtrlIds[j];
+                        foundNext = sortedCtrlIds[j];
                         break;
                     }
                 }
@@ -692,7 +705,9 @@ inline bool PopulateMsiInternalUiTables(
             }
         }
 
-        const int attr = EqualsIgnoreCase(type, "Text") ? kVisTrans : kVisEn;
+        const int attr = EqualsIgnoreCase(type, "Text")
+            ? kVisTrans
+            : (isPasswordEdit ? (kVisEn | msidbControlAttributesPassword) : kVisEn);
         addCtrl(dlg, cid, type, x, y, w, h, attr,
                 prop.empty() ? SqlVal{std::monostate{}} : SqlVal{prop},
                 txt.empty()  ? SqlVal{std::monostate{}} : SqlVal{txt},

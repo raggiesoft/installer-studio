@@ -1,0 +1,40 @@
+// ================================================================================
+// FILE: includes/raggiesoft-dialogs.rssc
+// PROJECT: RaggieSoft Installer Studio — Standard Turnkey `RsDialog` Header
+// WEBSITE: https://raggiesoftstudio.com/raggiescript  |  DEV HUB: https://raggiesoft.dev
+// LICENSE: MIT License (Copyright (c) 2026 Michael P. Ragsdale / RaggieSoft)
+//
+// PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+//   What is `raggiesoft-dialogs.rssc`?
+//     Alongside the full blank-canvas WYSIWYG Dialog Designer in `InstallerStudio.exe`,
+//     RaggieSoft Installer Studio builds **12 turnkey `Rs*` wizard dialog functions**
+//     directly into the C++20 runtime (`RswRsDialogs.hpp`):
+//
+//       - `RsWelcome(title, message)`
+//       - `RsLicense(licenseFileOrText, ref accepted)`
+//       - `RsReadme(infoFileOrText, heading)`
+//       - `RsUserInfo(ref userName, ref companyName, ref serialKey, requireSerial: false)`
+//       - `RsSelectDestDir(prompt, ref installDir, minFreeMB: 0)`
+//       - `RsSetupType(prompt, ref chosenMode, preset: "express_custom")`
+//       - `RsFeatureTree(prompt)`
+//       - `RsAskOptions(prompt, optionLabels, ref selectedStates, exclusive: false)`
+//       - `RsAskText(prompt, fieldLabel, ref value, password: false)`
+//       - `RsReadyToInstall(summaryText, showUacShield: false)`
+//       - `RsFinish(title, message, ref launchApp, ref viewReadme)`
+//       - `RsFinishReboot(title, message, ref rebootNow)`
+//
+//     Every `Rs*` call returns `DialogResult.Next` (`1`), `DialogResult.Back` (`12`),
+//     or `DialogResult.Cancel` (`2`), participates automatically in `wizard { step ... }`
+//     `< &Back` step-stack navigation, and honors OS Dark/Light Mode + Contrast Themes!
+// ================================================================================
+
+// Standard helper building a formatted Ready-to-Install summary block for `RsReadyToInstall`:
+fn buildStandardInstallSummary(productTitle: string, targetDir: path, modeName: string, addToPath: bool) : string {
+    // Assemble a clean plain-English summary so the user can review every choice before UAC/Install.
+    let pathLine = addToPath ? "Yes (non-clobbering PATH update)" : "No";
+    return "Application:      ${productTitle}\r\n" +
+           "Setup Mode:       ${modeName}\r\n" +
+           "Destination Path: ${targetDir}\r\n" +
+           "Add CLI to PATH:  ${pathLine}\r\n\r\n" +
+           "Click Install to begin copying files, or click Back to adjust any setting.";
+}

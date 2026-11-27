@@ -607,6 +607,63 @@ inline ValidationReport ValidateManifestDocument(
                "WaitSpawnGraceMs must be between 0 and 60000 milliseconds.");
     }
 
+    // 4B. Validate `[Dialog.*]`, `[Control.*]`, `[MsiControl.*]`, `[Environment.*]`, & `[IniFile.*]` (`v0.7.0`)!
+    std::set<std::string> knownCppDialogsLower;
+    for (const auto& did : doc.GetNamedSectionIds("Dialog")) {
+        knownCppDialogsLower.insert(AsciiLower(did));
+    }
+    for (const auto& cid : doc.GetNamedSectionIds("Control")) {
+        const std::string refDlg = TrimAscii(doc.GetString("Control", cid, "Dialog"));
+        if (refDlg.empty() || knownCppDialogsLower.count(AsciiLower(refDlg)) == 0) {
+            addErr("RSW066", 1, "Control." + cid, "Dialog",
+                   "[Control." + cid + "] Dialog = '" + refDlg + "' must reference a declared [Dialog.<id>] section.");
+        }
+        const std::string tp  = TrimAscii(doc.GetString("Control", cid, "Type", "Text"));
+        const std::string txt = TrimAscii(doc.GetString("Control", cid, "Text"));
+        if (EqualsIgnoreCase(tp, "CheckBox") && !txt.empty() && txt.find('&') == std::string::npos) {
+            addWarn("RSW067", 1, "Control." + cid, "Text",
+                    "[Control." + cid + "] CheckBox label '" + txt + "' should include an '&' keyboard mnemonic (e.g. '&Enable Service') for WCAG 2.2 AA accessibility.");
+        }
+    }
+
+    std::set<std::string> knownMsiDialogsLower{
+        "welcomedlg", "licenseagreementdlg", "setuptypedlg", "customizedlg",
+        "installdirdlg", "shortcutsdlg", "repairmodedlg", "verifyreadydlg",
+        "exitdialog", "maintenancetypedlg", "verifyremovedlg"
+    };
+    for (const auto& mdid : doc.GetNamedSectionIds("MsiDialog")) {
+        knownMsiDialogsLower.insert(AsciiLower(mdid));
+    }
+    for (const auto& mcid : doc.GetNamedSectionIds("MsiControl")) {
+        const std::string refDlg = TrimAscii(doc.GetString("MsiControl", mcid, "Dialog"));
+        if (refDlg.empty() || knownMsiDialogsLower.count(AsciiLower(refDlg)) == 0) {
+            addErr("RSW066", 1, "MsiControl." + mcid, "Dialog",
+                   "[MsiControl." + mcid + "] Dialog = '" + refDlg + "' must reference a built-in MSI dialog or a declared [MsiDialog.<id>] section.");
+        }
+        const std::string tp  = TrimAscii(doc.GetString("MsiControl", mcid, "Type", "Text"));
+        const std::string txt = TrimAscii(doc.GetString("MsiControl", mcid, "Text"));
+        if (EqualsIgnoreCase(tp, "CheckBox") && !txt.empty() && txt.find('&') == std::string::npos) {
+            addWarn("RSW067", 1, "MsiControl." + mcid, "Text",
+                    "[MsiControl." + mcid + "] CheckBox label '" + txt + "' should include an '&' keyboard mnemonic for WCAG 2.2 AA keyboard access.");
+        }
+    }
+
+    for (const auto& eid : doc.GetNamedSectionIds("Environment")) {
+        const std::string nm = TrimAscii(doc.GetString("Environment", eid, "Name"));
+        if (nm.empty()) {
+            addErr("RSW068", 1, "Environment." + eid, "Name",
+                   "[Environment." + eid + "] requires a non-empty Name (e.g. 'PATH' or 'MYAPP_HOME').");
+        }
+    }
+    for (const auto& iid : doc.GetNamedSectionIds("IniFile")) {
+        if (TrimAscii(doc.GetString("IniFile", iid, "FileName")).empty() ||
+            TrimAscii(doc.GetString("IniFile", iid, "Section")).empty() ||
+            TrimAscii(doc.GetString("IniFile", iid, "Key")).empty()) {
+            addErr("RSW069", 1, "IniFile." + iid, "FileName",
+                   "[IniFile." + iid + "] requires non-empty FileName, Section, and Key fields.");
+        }
+    }
+
     // 5. WCAG 2.2 AA Brand Accent Contrast Verification (`[UI] AccentPrimaryHex`)
     const std::string rawPrimaryHex = TrimAscii(doc.GetString("UI", "", "AccentPrimaryHex"));
     if (!rawPrimaryHex.empty()) {

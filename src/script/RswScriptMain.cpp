@@ -56,6 +56,7 @@ void PrintBanner() {
         << "  raggiescript.exe check [--diagnostics=json] <script.rssc> [-DDEF=VAL]\n"
         << "  raggiescript.exe compile <script.rssc> <output.rswbc> [-DDEF=VAL]\n"
         << "  raggiescript.exe disasm <script.rssc | output.rswbc | packed.exe>\n"
+        << "  raggiescript.exe fmt [--check] <script.rssc>\n"
         << "  raggiescript.exe pack-exe <script.rssc> <output.exe> [--support-dir=<dir>] [--uac=<level>] [--icon=<ico>]\n"
         << "  raggiescript.exe --version | --help\n";
 }
@@ -412,6 +413,32 @@ int wmain(int argc, wchar_t* argv[]) {
             return 1;
         }
         std::cout << rsw::rssc::DisassembleRaggieScriptProgram(prog);
+        return 0;
+    }
+
+    // Command 3B: `fmt` (Comment-preserving 4-space source code formatter!)
+    if (cmd == "fmt") {
+        bool checkOnly = false;
+        for (const auto& sw : switches) {
+            if (sw == "--check") checkOnly = true;
+        }
+        if (pos.empty()) { std::cerr << "[ERROR] Usage: raggiescript.exe fmt [--check] <script.rssc>\n"; return 2; }
+        const std::filesystem::path fmtTarget(rsw::Utf8ToWide(pos[0]));
+        std::vector<std::uint8_t> rawBytes;
+        std::string rdErr;
+        if (!rsw::ReadBinaryFileBytes(fmtTarget, rawBytes, rdErr)) {
+            std::cerr << "[ERROR] " << rdErr << "\n";
+            return 1;
+        }
+        const std::string rawTxt(rawBytes.begin(), rawBytes.end());
+        const bool hadCrlf = (rawTxt.find("\r\n") != std::string::npos);
+        const std::string formatted = rsw::rssc::FormatRaggieScriptSource(rawTxt, hadCrlf);
+        if (checkOnly) {
+            return (formatted == rawTxt) ? 0 : 1;
+        }
+        std::ofstream out(fmtTarget, std::ios::binary | std::ios::trunc);
+        out.write(formatted.data(), static_cast<std::streamsize>(formatted.size()));
+        std::cout << "[OK] Formatted RaggieScript source: " << pos[0] << "\n";
         return 0;
     }
 

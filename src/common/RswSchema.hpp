@@ -88,9 +88,9 @@ inline constexpr std::string_view kAllowedWizardLayouts =
     "standard|wizard95|wizard97|aerowizard|fluentmica|oneclick|passivetoast|fullscreenblue|fullscreenteal|autorun16x9|simple";
 
 // ================================================================================
-// 1. CANONICAL `.RSIP` SECTION DESCRIPTOR TABLE (`21` SECTIONS)
+// 1. CANONICAL `.RSIP` SECTION DESCRIPTOR TABLE (`25` SECTIONS)
 // ================================================================================
-inline constexpr std::array<SectionDescriptor, 21> kSectionDescriptors{{
+inline constexpr std::array<SectionDescriptor, 25> kSectionDescriptors{{
     {"Package",         SectionCardinality::SingletonRequired, true,
      "Core product identity, PackageKind (msi/msm/sfx/suite), Engine (msi/native), UAC execution level, target CPU architecture (x64/arm64), and universal output settings."},
     {"Requirements",    SectionCardinality::SingletonOptional, false,
@@ -129,6 +129,14 @@ inline constexpr std::array<SectionDescriptor, 21> kSectionDescriptors{{
      "Creates an advertised-free Start Menu or Desktop shortcut ([Shortcut.<id>]) with ICE38 HKCU KeyPath & ICE64 RemoveFolder."},
     {"Registry",        SectionCardinality::NamedRepeatable,   false,
      "Writes an HKLM/HKCU/HKCR/HKMU registry value ([Registry.<id>]) tied to an auto or explicit 64-bit MSI Component."},
+    {"Environment",     SectionCardinality::NamedRepeatable,   false,
+     "Configures a user or system Environment Variable ([Environment.<id>]), including non-clobbering PATH append/prepend with exact uninstall removal via the MSI Environment table & Native Engine."},
+    {"IniFile",         SectionCardinality::NamedRepeatable,   false,
+     "Writes or updates a [Section] Key = Value entry inside a target .ini configuration file ([IniFile.<id>]) via the MSI IniFile table & Native Engine."},
+    {"Dialog",          SectionCardinality::NamedRepeatable,   false,
+     "Defines a custom C++ SetupWizard.exe page ([Dialog.<id>]) edited in the WYSIWYG Visual Dialog Designer and spliced into the runtime setup flow."},
+    {"Control",         SectionCardinality::NamedRepeatable,   false,
+     "Places a Per-Monitor V2 DPI Win32 control ([Control.<id>]: Label, Edit, PathEdit, CheckBox, RadioGroup, ComboBox, GroupBox) onto a custom C++ [Dialog.<id>] page."},
     {"MsiDialog",       SectionCardinality::NamedRepeatable,   false,
      "Defines a custom 370x270 Windows Installer SQL Dialog ([MsiDialog.<id>]) spliced into the MSI.DLL UI sequence."},
     {"MsiControl",      SectionCardinality::NamedRepeatable,   false,
@@ -580,7 +588,80 @@ inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>
     {"MsiControl", "Text",               FieldValueKind::String,      false, "",                  "",
      "Control label or rich text (`{\\DlgFontBold8}...`)."},
     {"MsiControl", "Items",              FieldValueKind::String,      false, "",                  "",
-     "Pipe-separated `Value:Caption` entries for `RadioButtonGroup`, `ComboBox`, or `ListBox` controls."}
+     "Pipe-separated `Value:Caption` entries for `RadioButtonGroup`, `ComboBox`, or `ListBox` controls."},
+
+    // --- [Environment.<id>] (Declarative Non-Clobbering PATH & System/User Environment Variables!) ---
+    {"Environment", "Name",              FieldValueKind::String,      true,  "PATH",              "",
+     "Environment variable name (e.g. `PATH` or `RAGGIESOFT_STUDIO_HOME`)."},
+    {"Environment", "Value",             FieldValueKind::String,      true,  "[INSTALLDIR]",      "",
+     "Formatted value or directory path to set/append (e.g. `[INSTALLDIR]` or `[INSTALLDIR]bin`)."},
+    {"Environment", "Action",            FieldValueKind::EnumChoice,  false, "append_path",       "append_path|prepend_path|set|create_if_absent",
+     "`append_path` (`[~];Value`) appends safely without clobbering existing entries and removes only its own entry on uninstall; `prepend_path` (`Value;[~]`) prepends; `set` overwrites; `create_if_absent` (`+Name`) sets only if unset."},
+    {"Environment", "Scope",             FieldValueKind::EnumChoice,  false, "auto",              "auto|machine|user",
+     "`auto` matches `[Package] Scope`, `machine` writes to System (`*Name`), and `user` writes to `HKCU\\Environment`."},
+    {"Environment", "RemoveOnUninstall", FieldValueKind::Boolean,     false, "true",              "",
+     "When `true` (default), removes this variable or `PATH` segment cleanly on uninstallation (`=-Name`)."},
+    {"Environment", "Condition",         FieldValueKind::String,      false, "",                  "",
+     "Optional MSI component condition (e.g. `ADD_TO_PATH = \"1\"` bound to a custom wizard checkbox!)."},
+    {"Environment", "Feature",           FieldValueKind::String,      false, "Main",              "",
+     "Feature ID owning this environment variable rule."},
+    {"Environment", "Component",         FieldValueKind::String,      false, "",                  "",
+     "Optional explicit `[Component.<id>]` name."},
+
+    // --- [IniFile.<id>] (Declarative `.INI` Configuration Stamper!) ---
+    {"IniFile", "FileName",              FieldValueKind::String,      true,  "settings.ini",      "",
+     "Target `.ini` filename inside `TargetRoot` / `TargetSubdir`."},
+    {"IniFile", "TargetRoot",            FieldValueKind::EnumChoice,  false, "INSTALLDIR",        kAllowedTargetRoots,
+     "Destination root folder containing `FileName` (`INSTALLDIR`, `AppDataFolder`, `LocalAppDataFolder`, `CommonAppDataFolder`, etc.)."},
+    {"IniFile", "TargetSubdir",          FieldValueKind::RelativePath,false, "",                  "",
+     "Optional subfolder inside `TargetRoot`."},
+    {"IniFile", "Section",               FieldValueKind::String,      true,  "General",           "",
+     "INI `[Section]` header name."},
+    {"IniFile", "Key",                   FieldValueKind::String,      true,  "",                  "",
+     "INI key name within `[Section]`."},
+    {"IniFile", "Value",                 FieldValueKind::String,      true,  "",                  "",
+     "Formatted INI value (supports `[INSTALLDIR]`, `[ProductVersion]`, and custom dialog properties)."},
+    {"IniFile", "Action",                FieldValueKind::EnumChoice,  false, "add_line",          "add_line|create_line|add_tag",
+     "`add_line` (`0` = create or update key), `create_line` (`1` = write only if key does not exist), or `add_tag` (`3` = append comma-separated tag)."},
+    {"IniFile", "Feature",               FieldValueKind::String,      false, "Main",              "",
+     "Feature ID owning this INI rule."},
+    {"IniFile", "Component",             FieldValueKind::String,      false, "",                  "",
+     "Optional explicit `[Component.<id>]` name."},
+
+    // --- [Dialog.<id>] (WYSIWYG Custom C++ `SetupWizard.exe` Pages!) ---
+    {"Dialog", "Title",                  FieldValueKind::String,      true,  "Custom Configuration", "",
+     "Heading displayed on this custom `SetupWizard.exe` page."},
+    {"Dialog", "Subtitle",               FieldValueKind::String,      false, "",                  "",
+     "Supporting subtitle displayed beneath `Title`."},
+    {"Dialog", "AfterPage",              FieldValueKind::EnumChoice,  false, "SetupType",         "Welcome|License|SetupType|CustomFeatures|CustomFolder|CustomShortcuts",
+     "Wizard step after which this custom page appears in `SetupWizard.exe`."},
+    {"Dialog", "ShowInModes",            FieldValueKind::EnumChoice,  false, "all",               "all|custom_only",
+     "`all` displays this page in Express & Custom flows; `custom_only` displays it only when Custom Setup is selected."},
+
+    // --- [Control.<id>] (Per-Monitor V2 DPI Controls on a Custom `[Dialog.<id>]` Page!) ---
+    {"Control", "Dialog",                FieldValueKind::String,      true,  "",                  "",
+     "Target `[Dialog.<id>]` page owning this control."},
+    {"Control", "Type",                  FieldValueKind::EnumChoice,  true,  "CheckBox",
+     "Label|Heading|Edit|PasswordEdit|PathEdit|CheckBox|RadioGroup|ComboBox|GroupBox",
+     "Control widget kind rendered in `SetupWizard.exe` and the IDE Visual Dialog Designer."},
+    {"Control", "X",                     FieldValueKind::Integer,     false, "24",                "",
+     "Horizontal position in 96-DPI logical pixels inside the wizard content area (`0..560`)."},
+    {"Control", "Y",                     FieldValueKind::Integer,     false, "20",                "",
+     "Vertical position in 96-DPI logical pixels inside the wizard content area (`0..240`)."},
+    {"Control", "Width",                 FieldValueKind::Integer,     false, "500",               "",
+     "Control width in 96-DPI logical pixels."},
+    {"Control", "Height",                FieldValueKind::Integer,     false, "26",                "",
+     "Control height in 96-DPI logical pixels."},
+    {"Control", "Property",              FieldValueKind::String,      false, "",                  "",
+     "Uppercase MSI / Native property bound two-way to this control (automatically added to `SecureCustomProperties`!)."},
+    {"Control", "DefaultValue",          FieldValueKind::String,      false, "",                  "",
+     "Initial value assigned to `Property` before the dialog opens."},
+    {"Control", "Text",                  FieldValueKind::String,      false, "",                  "",
+     "Control caption or prompt (include a `&` keyboard mnemonic on interactive inputs/checkboxes!)."},
+    {"Control", "Items",                 FieldValueKind::String,      false, "",                  "",
+     "Pipe-separated `Value:Caption` options for `RadioGroup` or `ComboBox` controls."},
+    {"Control", "TabOrder",              FieldValueKind::Integer,     false, "0",                 "",
+     "Explicit keyboard `Tab` focus sequence order (`0` = document order)."}
 });
 
 /// Returns `true` if `rootDirKey` points to a per-user Windows profile directory (requiring ICE38 HKCU KeyPath & ICE64 RemoveFolder!).

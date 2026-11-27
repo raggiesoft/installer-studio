@@ -1,0 +1,99 @@
+// ================================================================================
+// FILE: examples/raggiescript/rsdialog-turnkey-setup.rssc
+// PROJECT: RaggieSoft Installer Studio — Turnkey `RsDialog` Wizard Showcase
+// WEBSITE: https://raggiesoftstudio.com/raggiescript  |  DEV HUB: https://raggiesoft.dev
+// LICENSE: MIT License (Copyright (c) 2026 Michael P. Ragsdale / RaggieSoft)
+//
+// PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+//   What does this sample `.rssc` setup demonstrate?
+//     Shows how an author can wire up a full, accessible multi-step setup wizard
+//     in minutes using RaggieSoft's built-in `Rs*` turnkey dialog functions
+//     (`RsWelcome`, `RsLicense`, `RsUserInfo`, `RsSetupType`, `RsSelectDestDir`,
+//     `RsAskOptions`, `RsReadyToInstall`, and `RsFinish`) — complete with automatic
+//     `< &Back` step-history rewinding, deferred UAC elevation, and atomic rollback!
+//
+//   Fictitious Disclaimer: All sample personas, universities (CPI, VDU), and
+//   corporations referenced in RaggieSoft documentation are works of fiction.
+// ================================================================================
+
+use installer;
+use ui;
+
+include "../../includes/raggiesoft-dialogs.rssc";
+
+package "Commonwealth Poly Lab Toolkit" {
+    id:        "{7B92E410-3C18-4E55-9A11-524147474945}";
+    version:   0.7.0;
+    publisher: "RaggieSoft";
+    tagline:   "Turnkey RsDialog Multi-Step Wizard Demonstration";
+    website:   "https://raggiesoftstudio.com/installer-studio";
+    scope:     Scope.User;
+    uac:       Uac.AsInvoker;
+    style:     "aerowizard";
+}
+
+param installDir: path        = sys.localAppData / "RaggieSoft" / "Poly Lab Toolkit";
+param userName: string        = "Engineering Student";
+param orgName: string         = "Commonwealth Polytechnic Institute";
+param serialKey: string       = "";
+param setupMode: string       = "express";
+param addCliToPath: bool      = true;
+param createDesktopLink: bool = false;
+param launchAfterSetup: bool  = false;
+param viewReleaseNotes: bool  = false;
+
+wizard {
+    step Welcome {
+        RsWelcome(
+            "Welcome to Commonwealth Poly Lab Toolkit Setup",
+            "This wizard will guide you through installing Commonwealth Poly Lab Toolkit v0.7.0 on your workstation.\r\n\r\nClick Next to continue."
+        );
+    }
+
+    step License {
+        let accepted = false;
+        RsLicense(
+            "MIT License — Copyright (c) 2026 Michael P. Ragsdale / RaggieSoft.\r\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software...",
+            ref accepted
+        );
+    }
+
+    step Customer {
+        RsUserInfo(ref userName, ref orgName, ref serialKey, requireSerial: false);
+    }
+
+    step ChooseMode {
+        RsSetupType("Select how you would like to install the toolkit:", ref setupMode, preset: "express_custom");
+    }
+
+    step CustomFolder when (setupMode == "custom") {
+        RsSelectDestDir("Choose the destination folder for Commonwealth Poly Lab Toolkit:", ref installDir, minFreeMB: 25);
+    }
+
+    step ExtraTasks when (setupMode == "custom") {
+        let taskStates = [addCliToPath, createDesktopLink];
+        RsAskOptions(
+            "Select optional developer environment integration tasks:",
+            ["&Add command-line compiler tools to user PATH", "Create a &Desktop shortcut"],
+            ref taskStates
+        );
+        addCliToPath      = bool(taskStates[0]);
+        createDesktopLink = bool(taskStates[1]);
+    }
+
+    step Ready {
+        const summary = buildStandardInstallSummary(product.name, installDir, setupMode, addCliToPath);
+        RsReadyToInstall(summary, showUacShield: false);
+    }
+}
+
+install {
+    fs.mkdir(installDir);
+    fs.writeJson(installDir / "install-profile.json", {
+        user:        userName,
+        organization: orgName,
+        mode:        setupMode,
+        addedToPath: addCliToPath,
+        desktopLink: createDesktopLink
+    });
+}

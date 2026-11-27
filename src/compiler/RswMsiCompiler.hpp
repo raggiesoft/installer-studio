@@ -1078,6 +1078,8 @@ inline bool CompileManifestToMsi(
         "CREATE TABLE `Shortcut` (`Shortcut` CHAR(72) NOT NULL, `Directory_` CHAR(72) NOT NULL, `Name` CHAR(128) NOT NULL LOCALIZABLE, `Component_` CHAR(72) NOT NULL, `Target` CHAR(72) NOT NULL, `Arguments` CHAR(255), `Description` CHAR(255) LOCALIZABLE, `Hotkey` SHORT, `Icon_` CHAR(72), `IconIndex` SHORT, `ShowCmd` SHORT, `WkDir` CHAR(72) PRIMARY KEY `Shortcut`)",
         "CREATE TABLE `RemoveFile` (`FileKey` CHAR(72) NOT NULL, `Component_` CHAR(72) NOT NULL, `FileName` CHAR(255) LOCALIZABLE, `DirProperty` CHAR(72) NOT NULL, `InstallMode` SHORT NOT NULL PRIMARY KEY `FileKey`)",
         "CREATE TABLE `Registry` (`Registry` CHAR(72) NOT NULL, `Root` SHORT NOT NULL, `Key` CHAR(255) NOT NULL LOCALIZABLE, `Name` CHAR(255) LOCALIZABLE, `Value` LONGCHAR LOCALIZABLE, `Component_` CHAR(72) NOT NULL PRIMARY KEY `Registry`)",
+        "CREATE TABLE `Environment` (`Environment` CHAR(72) NOT NULL, `Name` CHAR(255) NOT NULL LOCALIZABLE, `Value` CHAR(255) LOCALIZABLE, `Component_` CHAR(72) NOT NULL PRIMARY KEY `Environment`)",
+        "CREATE TABLE `IniFile` (`IniFile` CHAR(72) NOT NULL, `FileName` CHAR(255) NOT NULL LOCALIZABLE, `DirProperty` CHAR(72), `Section` CHAR(96) NOT NULL LOCALIZABLE, `Key` CHAR(96) NOT NULL LOCALIZABLE, `Value` CHAR(255) NOT NULL LOCALIZABLE, `Action` SHORT NOT NULL, `Component_` CHAR(72) NOT NULL PRIMARY KEY `IniFile`)",
         "CREATE TABLE `ProgId` (`ProgId` CHAR(255) NOT NULL, `ProgId_Parent` CHAR(255), `Class_` CHAR(38), `Description` CHAR(255) LOCALIZABLE, `Icon_` CHAR(72), `IconIndex` SHORT PRIMARY KEY `ProgId`)",
         "CREATE TABLE `Extension` (`Extension` CHAR(255) NOT NULL, `Component_` CHAR(72) NOT NULL, `ProgId_` CHAR(255), `MIME_` CHAR(64), `Feature_` CHAR(38) NOT NULL PRIMARY KEY `Extension`, `Component_`)",
         "CREATE TABLE `Verb` (`Extension_` CHAR(255) NOT NULL, `Verb` CHAR(32) NOT NULL, `Sequence` SHORT, `Command` CHAR(64) LOCALIZABLE, `Argument` CHAR(255) LOCALIZABLE PRIMARY KEY `Extension_`, `Verb`)",
@@ -1632,6 +1634,132 @@ inline bool CompileManifestToMsi(
             outError);
     }
 
+    // 5E-2. Emit `[Environment.<id>]` (Non-Clobbering `PATH` Append/Prepend & System/User Variables!)
+    //       and `[IniFile.<id>]` Configuration Stampers + Custom `[Control.<id>]` Default Properties!
+    for (const auto& ctrlId : doc.GetNamedSectionIds("Control")) {
+        const std::string cProp = TrimAscii(doc.GetString("Control", ctrlId, "Property"));
+        if (!cProp.empty()) {
+            secureCustomProps.insert(cProp);
+            const std::string cDef = ExpandArchToken(doc.GetString("Control", ctrlId, "DefaultValue"), arch);
+            if (!cDef.empty()) {
+                addProp(cProp, cDef);
+            }
+        }
+    }
+
+    const auto envSectionIds = doc.GetNamedSectionIds("Environment");
+    bool hasEnvironmentRows  = false;
+    std::size_t envCounter   = 0;
+    for (const auto& eid : envSectionIds) {
+        ++envCounter;
+        const std::string rawName = TrimAscii(ExpandArchToken(doc.GetString("Environment", eid, "Name", "PATH"), arch));
+        const std::string rawVal  = ExpandArchToken(doc.GetString("Environment", eid, "Value", "[INSTALLDIR]"), arch);
+        const std::string action  = AsciiLower(doc.GetString("Environment", eid, "Action", "append_path"));
+        const std::string scope   = AsciiLower(doc.GetString("Environment", eid, "Scope", "auto"));
+        const bool remUninst      = doc.GetBool("Environment", eid, "RemoveOnUninstall", true);
+        const std::string cond    = ExpandArchToken(doc.GetString("Environment", eid, "Condition"), arch);
+        const std::string featId  = ensureFeatureExists(doc.GetString("Environment", eid, "Feature", features.front().id));
+        const std::string expComp = AsciiLower(TrimAscii(doc.GetString("Environment", eid, "Component")));
+        if (rawName.empty()) continue;
+
+        const bool isMachineEnv = (scope == "machine") || (scope == "auto" && outSummary.perMachine);
+        // Official Windows Installer `Environment.Name` prefix encoding:
+        //   `=` create/modify on install, `+` create only if absent, `-` remove on uninstall, `*` machine (`HKLM`)!
+        std::string msiEnvName;
+        msiEnvName += (action == "create_if_absent") ? "+" : "=";
+        if (remUninst)    msiEnvName += "-";
+        if (isMachineEnv) msiEnvName += "*";
+        msiEnvName += rawName;
+
+        std::string msiEnvVal = rawVal;
+        if (action == "append_path")       msiEnvVal = "[~];" + rawVal;
+        else if (action == "prepend_path") msiEnvVal = rawVal + ";[~]";
+
+        std::string eComp;
+        if (!expComp.empty() && explicitComps.count(expComp)) {
+            eComp = explicitComps[expComp].msiCompKey;
+        } else {
+            eComp = "c_env_" + std::to_string(envCounter);
+            const std::string kpReg = "r_env_kp_" + std::to_string(envCounter);
+            const std::string eGuid = ComputeDeterministicComponentGuid(outSummary.upgradeCode, arch, "env:" + AsciiLower(eid));
+            msi_sql::InsertRow(
+                hDb.Get(), "Component",
+                {"Component", "ComponentId", "Directory_", "Attributes", "Condition", "KeyPath"},
+                {eComp, eGuid, std::string("INSTALLDIR"), kCompAttr64BitReg,
+                 cond.empty() ? SqlParam{std::monostate{}} : SqlParam{cond}, kpReg},
+                outError);
+            ++totalComponents;
+            msi_sql::InsertRow(hDb.Get(), "FeatureComponents", {"Feature_", "Component_"}, {featId, eComp}, outError);
+            msi_sql::InsertRow(
+                hDb.Get(), "Registry",
+                {"Registry", "Root", "Key", "Name", "Value", "Component_"},
+                {kpReg, isMachineEnv ? 2 : 1,
+                 "Software\\" + outSummary.manufacturer + "\\" + outSummary.productName + "\\EnvironmentComponents",
+                 eid, std::string("#1"), eComp},
+                outError);
+        }
+
+        msi_sql::InsertRow(
+            hDb.Get(), "Environment",
+            {"Environment", "Name", "Value", "Component_"},
+            {"env_" + std::to_string(envCounter), msiEnvName, msiEnvVal, eComp},
+            outError);
+        hasEnvironmentRows = true;
+    }
+
+    const auto iniSectionIds = doc.GetNamedSectionIds("IniFile");
+    bool hasIniFileRows      = false;
+    std::size_t iniCounter   = 0;
+    for (const auto& iid : iniSectionIds) {
+        ++iniCounter;
+        const std::string fileName = TrimAscii(ExpandArchToken(doc.GetString("IniFile", iid, "FileName", "settings.ini"), arch));
+        const std::string tRoot    = doc.GetString("IniFile", iid, "TargetRoot", "INSTALLDIR");
+        const std::string tSub     = ExpandArchToken(doc.GetString("IniFile", iid, "TargetSubdir"), arch);
+        const std::string secName  = ExpandArchToken(doc.GetString("IniFile", iid, "Section", "General"), arch);
+        const std::string keyName  = ExpandArchToken(doc.GetString("IniFile", iid, "Key"), arch);
+        const std::string valText  = ExpandArchToken(doc.GetString("IniFile", iid, "Value"), arch);
+        const std::string actStr   = AsciiLower(doc.GetString("IniFile", iid, "Action", "add_line"));
+        const std::string featId   = ensureFeatureExists(doc.GetString("IniFile", iid, "Feature", features.front().id));
+        const std::string expComp  = AsciiLower(TrimAscii(doc.GetString("IniFile", iid, "Component")));
+        if (fileName.empty() || secName.empty() || keyName.empty()) continue;
+
+        const std::string iniDirKey = ensureTargetDirKey(tRoot, tSub);
+        int actionCode = 0; // `msidbIniFileActionAddLine = 0`
+        if (actStr == "create_line") actionCode = 1;
+        else if (actStr == "add_tag") actionCode = 3;
+
+        std::string iComp;
+        if (!expComp.empty() && explicitComps.count(expComp)) {
+            iComp = explicitComps[expComp].msiCompKey;
+        } else {
+            iComp = "c_ini_" + std::to_string(iniCounter);
+            const std::string kpReg = "r_ini_kp_" + std::to_string(iniCounter);
+            const std::string iGuid = ComputeDeterministicComponentGuid(outSummary.upgradeCode, arch, "ini:" + AsciiLower(iid));
+            msi_sql::InsertRow(
+                hDb.Get(), "Component",
+                {"Component", "ComponentId", "Directory_", "Attributes", "Condition", "KeyPath"},
+                {iComp, iGuid, iniDirKey, kCompAttr64BitReg, std::monostate{}, kpReg},
+                outError);
+            ++totalComponents;
+            msi_sql::InsertRow(hDb.Get(), "FeatureComponents", {"Feature_", "Component_"}, {featId, iComp}, outError);
+            msi_sql::InsertRow(
+                hDb.Get(), "Registry",
+                {"Registry", "Root", "Key", "Name", "Value", "Component_"},
+                {kpReg, outSummary.perMachine ? 2 : 1,
+                 "Software\\" + outSummary.manufacturer + "\\" + outSummary.productName + "\\IniComponents",
+                 iid, std::string("#1"), iComp},
+                outError);
+        }
+
+        msi_sql::InsertRow(
+            hDb.Get(), "IniFile",
+            {"IniFile", "FileName", "DirProperty", "Section", "Key", "Value", "Action", "Component_"},
+            {"ini_" + std::to_string(iniCounter), FormatMsiShortLongName(fileName, 900 + iniCounter),
+             iniDirKey, secName, keyName, valText, actionCode, iComp},
+            outError);
+        hasIniFileRows = true;
+    }
+
     // 5F. Emit `[FileAssociation.<id>]` (Both Clean `HKMU\Software\Classes` AND Native `ProgId`/`Extension`/`Verb`/`MIME`!)
     std::size_t assocCounter = 0;
     std::set<std::string> emittedProgIds;
@@ -2010,6 +2138,10 @@ inline bool CompileManifestToMsi(
         {"UnregisterFonts",         "Unregistering fonts...",                     "Font: [1]"},
         {"CreateShortcuts",         "Creating shortcuts...",                      "Shortcut: [1]"},
         {"WriteRegistryValues",     "Writing system registry values...",          "Key: [1]\r\nName: [2]"},
+        {"WriteIniValues",          "Writing INI configuration values...",        "File: [1]\r\nSection: [2]\r\nKey: [3]"},
+        {"RemoveIniValues",         "Removing INI configuration values...",       "File: [1]\r\nSection: [2]\r\nKey: [3]"},
+        {"WriteEnvironmentStrings", "Updating environment variables...",          "Name: [1]\r\nValue: [2]"},
+        {"RemoveEnvironmentStrings","Removing environment variables...",          "Name: [1]\r\nValue: [2]"},
         {"RegisterProgIdInfo",      "Registering document types...",              "ProgId: [1]"},
         {"UnregisterProgIdInfo",    "Unregistering document types...",            "ProgId: [1]"},
         {"RegisterExtensionInfo",   "Registering file extensions...",             "Extension: [1]"},
@@ -2104,6 +2236,14 @@ inline bool CompileManifestToMsi(
         execSeq.push_back({"RegisterProgIdInfo",      nullptr, 4700});
         execSeq.push_back({"RegisterExtensionInfo",   nullptr, 4800});
         execSeq.push_back({"RegisterMIMEInfo",        nullptr, 4900});
+    }
+    if (hasIniFileRows) {
+        execSeq.push_back({"RemoveIniValues", nullptr, 3100});
+        execSeq.push_back({"WriteIniValues",  nullptr, 5100});
+    }
+    if (hasEnvironmentRows) {
+        execSeq.push_back({"RemoveEnvironmentStrings", nullptr, 3300});
+        execSeq.push_back({"WriteEnvironmentStrings",  nullptr, 5200});
     }
     for (const auto& s : execSeq) {
         msi_sql::InsertRow(

@@ -2070,10 +2070,10 @@ inline bool EmitRaggieScriptBytecode(
 
     outBytes.clear();
     outBytes.reserve(48 + body.size());
-    const char magic[8] = {'R', 'S', 'W', 'B', 'C', '1', '\0', '\0'};
+    const char magic[8] = {'R', 'S', 'W', 'B', 'C', '2', '\0', '\0'};
     outBytes.insert(outBytes.end(), reinterpret_cast<const std::uint8_t*>(magic),
                     reinterpret_cast<const std::uint8_t*>(magic) + 8);
-    PutU32(outBytes, 1u);
+    PutU32(outBytes, 2u);
     PutU32(outBytes, static_cast<std::uint32_t>(body.size()));
     for (std::size_t i = 0; i < 32; ++i) {
         const unsigned int byteVal = std::strtoul(shaHex.substr(i * 2, 2).c_str(), nullptr, 16);
@@ -2083,7 +2083,7 @@ inline bool EmitRaggieScriptBytecode(
     return true;
 }
 
-/// Loads and cryptographically verifies an `RSWBC1` bytecode stream back into a `ScriptProgram`.
+/// Loads and cryptographically verifies an `RSWBC2` (or backward-compatible `RSWBC1`) bytecode stream into `ScriptProgram`.
 inline bool LoadRaggieScriptBytecode(
     const std::uint8_t* bytes,
     std::size_t size,
@@ -2092,18 +2092,20 @@ inline bool LoadRaggieScriptBytecode(
 {
     using namespace bc_detail;
     if (!bytes || size < 48) {
-        outError = "Truncated RSWBC1 bytecode header.";
+        outError = "Truncated RSWBC bytecode header.";
         return false;
     }
-    if (std::memcmp(bytes, "RSWBC1\0\0", 8) != 0) {
-        outError = "Invalid RSWBC1 bytecode magic signature.";
+    const bool isV1 = (std::memcmp(bytes, "RSWBC1\0\0", 8) == 0);
+    const bool isV2 = (std::memcmp(bytes, "RSWBC2\0\0", 8) == 0);
+    if (!isV1 && !isV2) {
+        outError = "Invalid RSWBC bytecode magic signature.";
         return false;
     }
     Reader hdr{bytes, 16, 8, true};
     const std::uint32_t ver = hdr.GetU32();
     const std::uint32_t bodyLen = hdr.GetU32();
-    if (ver != 1u || 48ull + bodyLen != size) {
-        outError = "Unsupported RSWBC1 format version or mismatched stream length.";
+    if ((ver != 1u && ver != 2u) || 48ull + bodyLen != size) {
+        outError = "Unsupported RSWBC format version or mismatched stream length.";
         return false;
     }
 
@@ -2244,7 +2246,7 @@ inline bool LoadRaggieScriptBytecode(
 inline std::string DisassembleRaggieScriptProgram(const ScriptProgram& prog) {
     std::ostringstream oss;
     oss << "; ======================================================================\n"
-        << "; RaggieScript Bytecode Disassembly (Format: RSWBC1 v1)\n"
+        << "; RaggieScript Bytecode Disassembly (Format: RSWBC2 v0.7)\n"
         << "; Source      : " << prog.sourcePath << "\n"
         << "; Capabilities: ";
     bool first = true;
@@ -2285,6 +2287,67 @@ inline std::string DisassembleRaggieScriptProgram(const ScriptProgram& prog) {
         << "  UNINSTALL_PHASE: " << (prog.uninstallBlock ? "PRESENT" : "NONE") << "\n"
         << "  EVENT_HANDLERS : " << prog.eventHandlers.size() << "\n";
     return oss.str();
+}
+
+/// Canonical comment-preserving 4-space formatter for `.rssc` scripts (`raggiescript.exe fmt` & IDE `Ctrl+Shift+F`).
+inline std::string FormatRaggieScriptSource(std::string_view rawSource, bool useCrlf = true) {
+    const std::string eol = useCrlf ? "\r\n" : "\n";
+    std::istringstream iss{std::string(rawSource)};
+    std::ostringstream out;
+    std::string line;
+    int indentDepth = 0;
+    bool inBlockComment = false;
+    int blankRun = 0;
+
+    while (std::getline(iss, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const std::string trimmed = TrimAscii(line);
+        if (trimmed.empty()) {
+            if (++blankRun <= 1) out << eol;
+            continue;
+        }
+        blankRun = 0;
+
+        int leadingClose = 0;
+        int delta = 0;
+        bool seenNonClose = false;
+        bool inStr = false;
+        for (std::size_t i = 0; i < trimmed.size(); ++i) {
+            const char c = trimmed[i];
+            if (inBlockComment) {
+                if (c == '*' && i + 1 < trimmed.size() && trimmed[i + 1] == '/') { inBlockComment = false; ++i; }
+                continue;
+            }
+            if (!inStr && c == '/' && i + 1 < trimmed.size() && trimmed[i + 1] == '/') break;
+            if (!inStr && c == '/' && i + 1 < trimmed.size() && trimmed[i + 1] == '*') { inBlockComment = true; ++i; continue; }
+            if (c == '"') {
+                if (!inStr) inStr = true;
+                else {
+                    std::size_t bs = 0, k = i;
+                    while (k > 0 && trimmed[k - 1] == '\\') { ++bs; --k; }
+                    if ((bs % 2) == 0) inStr = false;
+                }
+                continue;
+            }
+            if (inStr) continue;
+            if (c == '}' || c == ')' || c == ']') {
+                --delta;
+                if (!seenNonClose) ++leadingClose;
+            } else if (c == '{' || c == '(' || c == '[') {
+                seenNonClose = true;
+                ++delta;
+            } else if (c != ' ' && c != '\t') {
+                seenNonClose = true;
+            }
+        }
+
+        const int lineIndent = (!trimmed.empty() && trimmed.front() == '#')
+            ? 0
+            : std::max(0, indentDepth - leadingClose);
+        out << std::string(static_cast<std::size_t>(lineIndent * 4), ' ') << trimmed << eol;
+        indentDepth = std::max(0, indentDepth + delta);
+    }
+    return out.str();
 }
 
 } // namespace rsw::rssc

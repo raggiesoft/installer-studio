@@ -56,6 +56,7 @@
 #include "RswPlatform.hpp"
 #include "RswPrerequisites.hpp"
 #include "RswRaggieScript.hpp"
+#include "RswRsDialogs.hpp"
 #include "RswVersion.hpp"
 #include "RswZipAndPak.hpp"
 
@@ -1140,6 +1141,7 @@ struct VmExecutionOptions {
     std::set<std::string>                                 lockedCliProperties; // `INSTALLDIR:...` (immutable policy lock!)
     std::vector<std::string>                              rawCliSwitches;   // `/s`, `/rsupdate`, etc.
     int                                                   simulateFaultAfterOps = 0;
+    std::vector<rsdlg::RsDialogMockStep>                  mockDialogSteps;  // Headless CI scripted responses for `Rs*` turnkey dialogs!
     const std::atomic<bool>*                              cancelFlag        = nullptr;
     std::function<void(int permille, int compPermille, const std::wstring& status)> onProgress;
     std::function<void(const std::string& line)>          onStdout;
@@ -1154,6 +1156,7 @@ struct VmExecutionResult {
     int                   errorLine     = 0;
     std::filesystem::path resolvedInstallDir;
     std::vector<std::string> consoleLines;
+    std::vector<std::string> visitedRsDialogs;
 };
 
 class RaggieScriptVm {
@@ -1193,7 +1196,7 @@ public:
         static const std::set<std::string> kSkipBuiltIns = {
             "EXIT_OK", "EXIT_ELEVATION_REQUIRED", "EXIT_REBOOT_NEEDED", "EXIT_UNSUPPORTED_OS",
             "EXIT_PREREQ_MISSING", "EXIT_DOWNLOAD_FAILED", "Scope", "Uac", "Token", "RegView",
-            "Icon", "Hive", "SetupMode", "WizardStyle", "Delivery", "product"
+            "Icon", "Hive", "SetupMode", "WizardStyle", "Delivery", "DialogResult", "product"
         };
         for (const auto& [k, slot] : globalScope_.vars) {
             if (kSkipBuiltIns.count(k)) continue;
@@ -1560,10 +1563,13 @@ private:
     int                       exitCode_                   = 0;
     bool                      rebootNeeded_               = false;
     bool                      inWizardPhase_              = false;
+    bool                      inWizardStepBody_           = false;
+    std::size_t               currentWizardStepIndex_     = 0;
     bool                      arpRegisteredDuringInstall_ = false;
     std::string               errorMsg_;
     int                       errorLine_                  = 0;
     std::vector<std::string>  consoleLines_;
+    std::vector<std::string>  visitedRsDialogs_;
     std::map<std::string, Value> showcaseState_;
     std::map<std::string, bool>  featureStates_;
     DWORD                        rmSessionHandle_ = 0;
@@ -1591,17 +1597,19 @@ private:
         if (globalScope_.TryGet("installDir", dirVal)) {
             res.resolvedInstallDir = dirVal.AsPath();
         }
-        res.consoleLines = consoleLines_;
+        res.consoleLines     = consoleLines_;
+        res.visitedRsDialogs = visitedRsDialogs_;
         return res;
     }
 
     VmExecutionResult BuildFailureResult(VmExecutionResult& res) {
-        res.ok           = false;
-        res.exitCode     = (exitCode_ != 0) ? exitCode_ : 1603;
-        res.rebootNeeded = rebootNeeded_;
-        res.errorMessage = errorMsg_;
-        res.errorLine    = errorLine_;
-        res.consoleLines = consoleLines_;
+        res.ok               = false;
+        res.exitCode         = (exitCode_ != 0) ? exitCode_ : 1603;
+        res.rebootNeeded     = rebootNeeded_;
+        res.errorMessage     = errorMsg_;
+        res.errorLine        = errorLine_;
+        res.consoleLines     = consoleLines_;
+        res.visitedRsDialogs = visitedRsDialogs_;
         return res;
     }
 
@@ -1665,6 +1673,11 @@ private:
         globalScope_.Declare("Delivery", Value::FromMap({
             {"Embedded", Value::FromStr("embedded")},
             {"OnDemand", Value::FromStr("ondemand")}
+        }), true);
+        globalScope_.Declare("DialogResult", Value::FromMap({
+            {"Next",   Value::FromInt(rsdlg::kResultNext)},
+            {"Back",   Value::FromInt(rsdlg::kResultBack)},
+            {"Cancel", Value::FromInt(rsdlg::kResultCancel)}
         }), true);
         globalScope_.Declare("product", Value::FromMap({
             {"id",        Value::FromStr(prog_.package.id.empty() ? prog_.package.name : prog_.package.id)},
@@ -1748,7 +1761,10 @@ private:
             }
 
             Scope stepScope(&globalScope_);
+            inWizardStepBody_       = true;
+            currentWizardStepIndex_ = history.size();
             ExecStmt(st->body, stepScope);
+            inWizardStepBody_       = false;
             if (flow_ == FlowKind::WizardBack) {
                 flow_ = FlowKind::Normal;
                 if (!history.empty()) {
@@ -2385,7 +2401,219 @@ private:
                ns == "net" || ns == "proc" || ns == "ffi" || ns == "msi" || ns == "prereq" ||
                ns == "shortcut" || ns == "shell" || ns == "env" || ns == "arp" || ns == "svc" ||
                ns == "task" || ns == "firewall" || ns == "acl" || ns == "ui" || ns == "wizard" ||
-               ns == "feature" || ns == "compile" || ns == "payload" || ns == "showcase" || ns == "log";
+               ns == "feature" || ns == "compile" || ns == "payload" || ns == "showcase" ||
+               ns == "RsDialog" || ns == "rsdialog" || ns == "log";
+    }
+
+    /// Dispatches all 12 turnkey `Rs*` wizard dialog functions (`RsWelcome`, `RsLicense`, `RsReadme`,
+    /// `RsUserInfo`, `RsSelectDestDir`, `RsSetupType`, `RsFeatureTree`, `RsAskOptions`, `RsAskText`,
+    /// `RsReadyToInstall`, `RsFinish`, `RsFinishReboot`) and integrates `< &Back` / `Cancel` automatically!
+    bool TryInvokeRsTurnkeyDialog(const std::string& rawName, const EvaluatedArgs& args, int line, Value& out) {
+        std::string norm = rawName;
+        if (EqualsIgnoreCase(norm, "welcome"))          norm = "RsWelcome";
+        else if (EqualsIgnoreCase(norm, "license"))     norm = "RsLicense";
+        else if (EqualsIgnoreCase(norm, "readme"))      norm = "RsReadme";
+        else if (EqualsIgnoreCase(norm, "userinfo"))    norm = "RsUserInfo";
+        else if (EqualsIgnoreCase(norm, "selectdestdir") || EqualsIgnoreCase(norm, "RsSelectDestPath")) norm = "RsSelectDestDir";
+        else if (EqualsIgnoreCase(norm, "setuptype"))   norm = "RsSetupType";
+        else if (EqualsIgnoreCase(norm, "featuretree")) norm = "RsFeatureTree";
+        else if (EqualsIgnoreCase(norm, "askoptions"))  norm = "RsAskOptions";
+        else if (EqualsIgnoreCase(norm, "asktext"))     norm = "RsAskText";
+        else if (EqualsIgnoreCase(norm, "readytoinstall")) norm = "RsReadyToInstall";
+        else if (EqualsIgnoreCase(norm, "finish"))      norm = "RsFinish";
+        else if (EqualsIgnoreCase(norm, "finishreboot"))norm = "RsFinishReboot";
+        else if (EqualsIgnoreCase(norm, "RsLicenseRtf"))norm = "RsLicense";
+        else if (EqualsIgnoreCase(norm, "RsRegisterUser")) norm = "RsUserInfo";
+
+        rsdlg::RsDialogSpec sp{};
+        sp.windowTitle    = (prog_.package.name.empty() ? "Application" : prog_.package.name) + " Setup";
+        sp.showBackButton = (!inWizardStepBody_ || currentWizardStepIndex_ > 0);
+        bool matched      = true;
+
+        if (norm == "RsWelcome") {
+            sp.kind           = rsdlg::RsDialogKind::Welcome;
+            sp.showBackButton = false;
+            sp.headerTitle    = args.NamedOrPos("title", 0, Value::FromStr("Welcome to " + sp.windowTitle)).AsString();
+            sp.headerSubtitle = prog_.package.tagline.empty() ? "Guided Setup Wizard" : prog_.package.tagline;
+            sp.bodyText       = args.NamedOrPos("message", 1, Value::FromStr("Click Next to continue installing " + prog_.package.name + ".")).AsString();
+        } else if (norm == "RsLicense") {
+            sp.kind           = rsdlg::RsDialogKind::License;
+            sp.headerTitle    = "License Agreement";
+            sp.headerSubtitle = "Please review the license terms before installing.";
+            const std::string src = args.NamedOrPos("license", 0).AsString();
+            std::vector<std::uint8_t> fBytes;
+            std::string fErr;
+            if (!src.empty() && src.size() < 260 && ReadBinaryFileBytes(std::filesystem::path(Utf8ToWide(src)), fBytes, fErr)) {
+                sp.bodyText.assign(fBytes.begin(), fBytes.end());
+            } else {
+                sp.bodyText = src;
+            }
+            sp.boolA = args.At(1, Value::FromBool(false)).AsBool();
+        } else if (norm == "RsReadme") {
+            sp.kind           = rsdlg::RsDialogKind::Readme;
+            sp.headerTitle    = args.NamedOrPos("heading", 1, Value::FromStr("Information & Release Notes")).AsString();
+            sp.headerSubtitle = "Review important setup notes below.";
+            const std::string src = args.NamedOrPos("readme", 0).AsString();
+            std::vector<std::uint8_t> fBytes;
+            std::string fErr;
+            if (!src.empty() && src.size() < 260 && ReadBinaryFileBytes(std::filesystem::path(Utf8ToWide(src)), fBytes, fErr)) {
+                sp.bodyText.assign(fBytes.begin(), fBytes.end());
+            } else {
+                sp.bodyText = src;
+            }
+        } else if (norm == "RsUserInfo") {
+            sp.kind           = rsdlg::RsDialogKind::UserInfo;
+            sp.headerTitle    = "Customer Information";
+            sp.headerSubtitle = "Please enter your name and organization.";
+            sp.fieldLabelA    = "&User Name:";
+            sp.fieldLabelB    = "&Organization:";
+            sp.fieldLabelC    = "&Serial Number:";
+            sp.valA           = args.At(0).AsString();
+            sp.valB           = args.At(1).AsString();
+            sp.valC           = args.At(2).AsString();
+            sp.requireSerial  = args.NamedOrPos("requireSerial", 3, Value::FromBool(false)).AsBool();
+        } else if (norm == "RsSelectDestDir") {
+            sp.kind           = rsdlg::RsDialogKind::SelectDestDir;
+            sp.headerTitle    = "Destination Folder";
+            sp.headerSubtitle = "Choose where Setup will install files.";
+            sp.bodyText       = args.NamedOrPos("prompt", 0, Value::FromStr("Select the destination folder below, or click Browse to choose another location.")).AsString();
+            sp.fieldLabelA    = "&Destination folder:";
+            sp.valA           = args.At(1).AsString();
+            sp.minFreeMB      = args.NamedOrPos("minFreeMB", 2, Value::FromInt(0)).AsInt();
+        } else if (norm == "RsSetupType") {
+            sp.kind           = rsdlg::RsDialogKind::SetupType;
+            sp.headerTitle    = "Choose Setup Type";
+            sp.headerSubtitle = "Select the installation mode that best fits your needs.";
+            sp.bodyText       = args.NamedOrPos("prompt", 0, Value::FromStr("Choose a setup configuration:")).AsString();
+            sp.valA           = args.At(1, Value::FromStr("express")).AsString();
+            const std::string preset = args.NamedOrPos("preset", 2, Value::FromStr("express_custom")).AsString();
+            if (EqualsIgnoreCase(preset, "win95_classic")) {
+                sp.optionLabels = {
+                    "&Typical — Recommended program files and standard tools",
+                    "Co&mpact — Essential core files only (minimum disk space)",
+                    "Com&plete — All features, templates, and documentation",
+                    "C&ustom — Choose individual features and destination folder"
+                };
+                sp.optionValues = {"typical", "compact", "complete", "custom"};
+            } else {
+                sp.optionLabels = {
+                    "&Express Setup (Recommended) — Default folder & shortcuts",
+                    "Co&mpact Core Setup — Essential files with minimal footprint",
+                    "C&ustom Setup — Choose destination folder, features & tasks"
+                };
+                sp.optionValues = {"express", "compact", "custom"};
+            }
+        } else if (norm == "RsFeatureTree") {
+            sp.kind           = rsdlg::RsDialogKind::FeatureTree;
+            sp.headerTitle    = "Select Features";
+            sp.headerSubtitle = "Check the program components you want installed.";
+            sp.bodyText       = args.NamedOrPos("prompt", 0, Value::FromStr("Select features to install:")).AsString();
+            for (const auto& ft : prog_.features) {
+                const bool curSel = featureStates_.count(ft.id) ? featureStates_[ft.id] : ft.defaultSelected;
+                sp.features.push_back({ft.id, ft.title.empty() ? ft.id : ft.title, ft.description, ft.required, curSel});
+            }
+        } else if (norm == "RsAskOptions") {
+            sp.kind             = rsdlg::RsDialogKind::AskOptions;
+            sp.headerTitle      = "Additional Options";
+            sp.headerSubtitle   = "Customize optional installation tasks.";
+            sp.bodyText         = args.NamedOrPos("prompt", 0).AsString();
+            sp.exclusiveOptions = args.NamedOrPos("exclusive", 3, Value::FromBool(false)).AsBool();
+            const Value lblArr  = args.At(1);
+            if (lblArr.kind == ValKind::Array && lblArr.arrVal) {
+                for (const auto& lv : *lblArr.arrVal) sp.optionLabels.push_back(lv.AsString());
+            }
+            const Value stArr = args.At(2);
+            if (stArr.kind == ValKind::Array && stArr.arrVal) {
+                for (const auto& sv : *stArr.arrVal) sp.optionStates.push_back(sv.AsBool());
+            }
+            sp.optionStates.resize(sp.optionLabels.size(), false);
+        } else if (norm == "RsAskText") {
+            sp.kind           = rsdlg::RsDialogKind::AskText;
+            sp.headerTitle    = "Configuration Input";
+            sp.headerSubtitle = "Enter the requested configuration value.";
+            sp.bodyText       = args.NamedOrPos("prompt", 0).AsString();
+            sp.fieldLabelA    = args.NamedOrPos("label", 1, Value::FromStr("&Value:")).AsString();
+            sp.valA           = args.At(2).AsString();
+            sp.passwordInput  = args.NamedOrPos("password", 3, Value::FromBool(false)).AsBool();
+        } else if (norm == "RsReadyToInstall") {
+            sp.kind           = rsdlg::RsDialogKind::ReadyToInstall;
+            sp.headerTitle    = "Ready to Install";
+            sp.headerSubtitle = "Setup is ready to begin installation on your computer.";
+            sp.bodyText       = args.NamedOrPos("summary", 0, Value::FromStr("Click Install to begin copying files.")).AsString();
+            sp.primaryBtnText = "&Install";
+            sp.showUacShield  = args.NamedOrPos("showUacShield", 1, Value::FromBool(EqualsIgnoreCase(prog_.package.uac, "deferred"))).AsBool();
+        } else if (norm == "RsFinish") {
+            sp.kind           = rsdlg::RsDialogKind::Finish;
+            sp.showBackButton = false;
+            sp.primaryBtnText = "&Finish";
+            sp.headerTitle    = args.NamedOrPos("title", 0, Value::FromStr("Setup Complete")).AsString();
+            sp.headerSubtitle = prog_.package.name + " has been installed.";
+            sp.bodyText       = args.NamedOrPos("message", 1, Value::FromStr("Click Finish to exit Setup.")).AsString();
+            sp.checkLabelA    = (args.pos.size() >= 3) ? "&Launch application when Setup closes" : "";
+            sp.checkLabelB    = (args.pos.size() >= 4) ? "View &ReadMe / Release Notes" : "";
+            sp.boolA          = args.At(2, Value::FromBool(false)).AsBool();
+            sp.boolB          = args.At(3, Value::FromBool(false)).AsBool();
+        } else if (norm == "RsFinishReboot") {
+            sp.kind           = rsdlg::RsDialogKind::FinishReboot;
+            sp.showBackButton = false;
+            sp.primaryBtnText = "&Finish";
+            sp.headerTitle    = args.NamedOrPos("title", 0, Value::FromStr("Restart Required")).AsString();
+            sp.headerSubtitle = "Setup must restart Windows to complete installation.";
+            sp.bodyText       = args.NamedOrPos("message", 1).AsString();
+            sp.boolA          = args.At(2, Value::FromBool(false)).AsBool();
+        } else {
+            matched = false;
+        }
+
+        if (!matched) return false;
+
+        visitedRsDialogs_.push_back(norm);
+        const int dlgRc = rsdlg::ExecuteRsDialog(sp, opts_.silentMode, opts_.parentHwnd, opts_.mockDialogSteps);
+
+        // Write updated outputs back through `ref` parameters when advancing (`Next` / `Finish`)!
+        if (dlgRc == rsdlg::kResultNext) {
+            std::string refErr;
+            if (norm == "RsLicense") {
+                WriteThroughRef(args.RawNamedOrPos("accepted", 1), Value::FromBool(sp.boolA), refErr);
+            } else if (norm == "RsUserInfo") {
+                WriteThroughRef(args.RawNamedOrPos("userName", 0),    Value::FromStr(sp.valA), refErr);
+                WriteThroughRef(args.RawNamedOrPos("companyName", 1), Value::FromStr(sp.valB), refErr);
+                if (args.pos.size() >= 3) WriteThroughRef(args.RawNamedOrPos("serialKey", 2), Value::FromStr(sp.valC), refErr);
+            } else if (norm == "RsSelectDestDir") {
+                WriteThroughRef(args.RawNamedOrPos("installDir", 1), Value::FromPathUtf8(sp.valA), refErr);
+            } else if (norm == "RsSetupType") {
+                WriteThroughRef(args.RawNamedOrPos("chosenMode", 1), Value::FromStr(sp.valA), refErr);
+            } else if (norm == "RsFeatureTree") {
+                for (const auto& f : sp.features) featureStates_[f.id] = f.selected;
+            } else if (norm == "RsAskOptions") {
+                std::vector<Value> boolVals;
+                for (bool b : sp.optionStates) boolVals.push_back(Value::FromBool(b));
+                WriteThroughRef(args.RawNamedOrPos("selectedStates", 2), Value::FromArray(std::move(boolVals)), refErr);
+            } else if (norm == "RsAskText") {
+                WriteThroughRef(args.RawNamedOrPos("value", 2), Value::FromStr(sp.valA), refErr);
+            } else if (norm == "RsFinish") {
+                if (args.pos.size() >= 3) WriteThroughRef(args.RawNamedOrPos("launchApp", 2), Value::FromBool(sp.boolA), refErr);
+                if (args.pos.size() >= 4) WriteThroughRef(args.RawNamedOrPos("viewReadme", 3), Value::FromBool(sp.boolB), refErr);
+            } else if (norm == "RsFinishReboot") {
+                if (args.pos.size() >= 3) WriteThroughRef(args.RawNamedOrPos("rebootNow", 2), Value::FromBool(sp.boolA), refErr);
+                if (sp.boolA) rebootNeeded_ = true;
+            }
+            if (!refErr.empty()) {
+                RaiseError(line, refErr);
+                out = Value::FromInt(rsdlg::kResultCancel);
+                return true;
+            }
+        } else if (dlgRc == rsdlg::kResultBack) {
+            if (inWizardStepBody_) {
+                flow_ = FlowKind::WizardBack;
+            }
+        } else if (dlgRc == rsdlg::kResultCancel) {
+            exitCode_ = ERROR_INSTALL_USEREXIT;
+            flow_     = FlowKind::ExitSetup;
+        }
+
+        out = Value::FromInt(dlgRc);
+        return true;
     }
 
     bool TryInvokeGlobalBuiltIn(const std::string& name, const EvaluatedArgs& args, int line, Value& out) {
@@ -2400,6 +2628,9 @@ private:
             return true;
         }
         if (name == "str")    { out = Value::FromStr(args.At(0).AsString()); return true; }
+        if (TryInvokeRsTurnkeyDialog(name, args, line, out)) {
+            return true;
+        }
         if (name == "int")    { out = Value::FromInt(args.At(0).AsInt()); return true; }
         if (name == "float")  { out = Value::FromFloat(args.At(0).AsFloat()); return true; }
         if (name == "bool")   { out = Value::FromBool(args.At(0).AsBool()); return true; }
@@ -2486,6 +2717,10 @@ private:
                 flow_     = FlowKind::ExitSetup;
                 return Value::Null();
             }
+        }
+        if (ns == "RsDialog" || ns == "rsdialog") {
+            Value dlgOut;
+            if (TryInvokeRsTurnkeyDialog(m, args, line, dlgOut)) return dlgOut;
         }
 
         if (ns == "sys")      return CallSys(m, args, line);
