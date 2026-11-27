@@ -817,7 +817,11 @@ inline int RunNativeOrSfxEntrypoint(
         app.pakSize          = pakSz;
         app.featurePacks     = featurePacks;
         app.suiteManagedFlag = suiteManaged;
-        app.targetDir        = targetDir;
+        app.targetDir        = !exportShotDir.empty()
+            ? ((manifest.mode == "sfx")
+                   ? std::filesystem::path(L"C:\\PortableApps\\ZipUtility")
+                   : std::filesystem::path(L"C:\\Program Files\\Sample Studio\\App"))
+            : targetDir;
         app.exportShotDir    = exportShotDir;
 
         const COLORREF pCol = ui::ParseHexColor(manifest.accentPrimaryHex, RGB(37, 99, 235));
@@ -859,6 +863,15 @@ inline int RunNativeOrSfxEntrypoint(
             ::ShowWindow(hWnd, nCmdShow);
             ::UpdateWindow(hWnd);
             if (!exportShotDir.empty()) {
+                ::SendMessageW(app.hProgBar, PBM_SETRANGE32, 0, 1000);
+                ::SendMessageW(app.hProgBar, PBM_SETPOS, 421, 0);
+                ::SendMessageW(app.hProgBar, PBM_SETPOS, 420, 0);
+                ::SetWindowTextW(
+                    app.hStatusLbl,
+                    (manifest.mode == "sfx")
+                        ? L"Unpacking LZMS archive (42%) \u2014 Docs\\Guide.txt"
+                        : L"Installing native payload (42%)...");
+                ::RedrawWindow(hWnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
                 const bool okShot = ui::CaptureWindowToPngFile(hWnd, exportShotDir / L"setupwizard-simple-compact.png");
                 ::DestroyWindow(hWnd);
                 exitRc = okShot ? 0 : 2;
