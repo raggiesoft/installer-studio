@@ -146,6 +146,11 @@ Name                  = RaggieSoft MSI Prism
 TargetFile            = msiprism.exe
 Location              = StartMenu
 
+[Shortcut.SelfExtractor]
+Name                  = RaggieSoft Self-Extractor
+TargetFile            = rswsfx.exe
+Location              = StartMenu
+
 [Shortcut.HelpViewer]
 Name                  = RaggieSoft Help Viewer
 TargetFile            = RaggieSoftHelp.exe

@@ -24,6 +24,7 @@
 #pragma once
 
 #include "../common/RswCryptoAndPe.hpp"
+#include "../common/RswEditions.hpp"
 #include "../common/RswManifestAst.hpp"
 #include "../common/RswSchema.hpp"
 #include "../common/RswWcagContrast.hpp"
@@ -55,6 +56,7 @@ struct RswDiagnostic {
 struct ValidationReport {
     std::filesystem::path      manifestPath;
     std::string                resolvedArchitecture;
+    RswIdeEdition              activeEdition = RswIdeEdition::Community;
     std::vector<RswDiagnostic> diagnostics;
 
     [[nodiscard]] std::size_t ErrorCount() const noexcept {
@@ -193,18 +195,23 @@ inline bool EnumContainsToken(std::string_view pipeList, std::string_view candid
     return false;
 }
 
-/// Runs complete structural, schema, filesystem, and Windows Installer rule validation on `doc`.
+/// Runs complete structural, schema, filesystem, edition, and Windows Installer rule validation on `doc`.
 inline ValidationReport ValidateManifestDocument(
     const RswManifestDocument& doc,
-    std::string_view cliArchOverride = "")
+    std::string_view cliArchOverride = "",
+    RswIdeEdition activeEdition = RswIdeEdition::Community)
 {
     ValidationReport rep;
-    rep.manifestPath = doc.sourcePath;
+    rep.manifestPath  = doc.sourcePath;
+    rep.activeEdition = activeEdition;
 
     std::string rawArch = !cliArchOverride.empty()
         ? std::string(cliArchOverride)
         : doc.GetString("Package", "", "Architecture", "arm64");
     rep.resolvedArchitecture = AsciiLower(TrimAscii(rawArch));
+    if (rep.resolvedArchitecture == "$(arch)") {
+        rep.resolvedArchitecture = std::string(QueryHostPlatform().NativeArchSlug());
+    }
 
     auto addErr = [&](std::string code, int line, std::string sec, std::string key, std::string msg) {
         rep.diagnostics.push_back({DiagnosticSeverity::Error, std::move(code), line, std::move(sec), std::move(key), std::move(msg)});
@@ -617,6 +624,54 @@ inline ValidationReport ValidateManifestDocument(
         }
     }
 
+    // 6. Official Four-Edition Capability Enforcement (`Community == 100% Architect Parity`!)
+    //    Note: WCAG 2.2 AA accessibility, Authenticode/Azure Signing, `.MSM` consumption,
+    //    `PackageKind = sfx` Self-Extractors, Universal `Setup.exe`, and Major Upgrades are
+    //    100% unlocked in EVERY edition (never paywalled!).
+    if (!EditionHasFullArchitectParity(activeEdition)) {
+        const std::string pkgKind = AsciiLower(TrimAscii(doc.GetString("Package", "", "PackageKind", "msi")));
+        const std::string engine  = AsciiLower(TrimAscii(doc.GetString("Package", "", "Engine", "msi")));
+        const std::string edLabel = WideToUtf8(EditionDisplayName(activeEdition));
+
+        if (pkgKind == "msm" && !EditionSupportsCompilingMergeModules(activeEdition)) {
+            addErr("RSW091", 1, "Package", "PackageKind",
+                   edLabel + " can consume existing [MergeModule.*] (.msm) files, while compiling new .MSM Merge Modules requires Developer, Architect, or Community Edition.");
+        }
+        if (pkgKind != "sfx" && engine == "native" && !EditionSupportsNativeEngineAndScripting(activeEdition)) {
+            addErr("RSW092", 1, "Package", "Engine",
+                   "Engine = native and RaggieScript (.rssc) scripting require Developer, Architect, or Community Edition (currently running " + edLabel + ").");
+        }
+        if (!EditionSupportsCustomDialogAndSetupTypeDesign(activeEdition)) {
+            if (!doc.GetNamedSectionIds("MsiDialog").empty() ||
+                !doc.GetNamedSectionIds("MsiControl").empty() ||
+                !doc.GetNamedSectionIds("Dialog").empty() ||
+                !doc.GetNamedSectionIds("Control").empty() ||
+                !doc.GetNamedSectionIds("SetupType").empty()) {
+                addErr("RSW093", 1, "UI", "CustomDesign",
+                       "Custom [Dialog.*], [MsiDialog.*], and [SetupType.*] definitions require Developer, Architect, or Community Edition (currently running " + edLabel + "; built-in Express/Custom and Typical/Compact/Complete presets remain available).");
+            }
+        }
+        if ((pkgKind == "suite" || !doc.GetNamedSectionIds("SuitePackage").empty()) &&
+            !EditionSupportsUnifiedSuites(activeEdition)) {
+            addErr("RSW094", 1, "Package", "PackageKind",
+                   "Unified Multi-Product Suites (PackageKind = suite / .rsis) require Architect or Community Edition (currently running " + edLabel + ").");
+        }
+        if (!EditionSupportsEnterpriseMediaAndPaks(activeEdition)) {
+            const std::string mediaComp = AsciiLower(TrimAscii(doc.GetString("Media", "", "Compression", "cab")));
+            bool hasExternalPak = false;
+            for (const auto& fid : doc.GetNamedSectionIds("Feature")) {
+                if (EqualsIgnoreCase(doc.GetString("Feature", fid, "Delivery", "embedded"), "download")) {
+                    hasExternalPak = true;
+                    break;
+                }
+            }
+            if (maxCabMb > 0 || maxCabKb > 0 || mediaComp == "none" || hasExternalPak) {
+                addErr("RSW096", 1, "Media", "EnterpriseMedia",
+                       "Multi-volume disk spanning, uncompressed loose source media (msiexec /a), and on-demand .rswpak CDN feature packs require Architect or Community Edition (currently running " + edLabel + ").");
+            }
+        }
+    }
+
     return rep;
 }
 
@@ -627,6 +682,7 @@ inline std::string FormatValidationReportAsJson(const ValidationReport& rep) {
         << "  \"ok\": " << (rep.IsOk() ? "true" : "false") << ",\n"
         << "  \"manifest\": \"" << JsonEscapeString(WideToUtf8(rep.manifestPath.wstring())) << "\",\n"
         << "  \"architecture\": \"" << JsonEscapeString(rep.resolvedArchitecture) << "\",\n"
+        << "  \"edition\": \"" << EditionSlug(rep.activeEdition) << "\",\n"
         << "  \"errorCount\": " << rep.ErrorCount() << ",\n"
         << "  \"warningCount\": " << rep.WarningCount() << ",\n"
         << "  \"diagnostics\": [";

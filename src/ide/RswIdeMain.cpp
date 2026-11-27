@@ -43,6 +43,7 @@
 
 #include "../common/RswGlassRenderer.hpp"
 #include "../common/RswCryptoAndPe.hpp"
+#include "../common/RswEditions.hpp"
 #include "../common/RswManifestAst.hpp"
 #include "../common/RswMsiFeatureTree.hpp"
 #include "../common/RswPlatform.hpp"
@@ -127,6 +128,8 @@ enum IdeId : int {
     IDM_HELP_ABOUT           = 2024,
     IDM_HELP_TOPICS          = 2025,
     IDM_FILE_NEW_RSSC        = 2026,
+    IDM_EDITION_MATRIX       = 2027,
+    IDM_LAUNCH_RSWSFX        = 2028,
 
     // Persistent Toolbar & Category Navigation Tree
     IDC_TB_WIZARD            = 2100,
@@ -813,23 +816,25 @@ public:
         ::AppendMenuW(hBuild, MF_SEPARATOR, 0, nullptr);
         ::AppendMenuW(hBuild, MF_STRING, IDM_BUILD_VPAT,      L"Export Installer &VPAT 2.5 HTML5 Report");
         ::AppendMenuW(hBuild, MF_STRING, IDM_BUILD_EMIT_AI,   L"Emit &llms.txt + SKILL.md");
-        ::AppendMenuW(hBuild, MF_STRING, IDM_LAUNCH_MSIPRISM, L"Open &MSI Prism Inspector (msiprism.exe)");
+        ::AppendMenuW(hBuild, MF_STRING, IDM_LAUNCH_MSIPRISM, L"Open &MSI Prism SQL Editor (msiprism.exe)");
+        ::AppendMenuW(hBuild, MF_STRING, IDM_LAUNCH_RSWSFX,   L"Open Standalone &Self-Extractor (rswsfx.exe)");
         ::AppendMenuW(hBuild, MF_STRING, IDM_OPEN_OUTDIR,     L"Open &Output Folder in Explorer");
 
         HMENU hEd = ::CreatePopupMenu();
         ::AppendMenuW(hEd, MF_STRING,              IDM_HELP_TOPICS,          L"&Help Topics (Offline C++ Help Viewer)\tF1");
+        ::AppendMenuW(hEd, MF_STRING,              IDM_EDITION_MATRIX,       L"Compare All 4 &Editions && Capabilities...");
         ::AppendMenuW(hEd, MF_SEPARATOR, 0, nullptr);
         ::AppendMenuW(hEd, MF_STRING | MF_CHECKED, IDM_EDITION_COMMUNITY,    L"&Community Edition (100% Architect Parity — Free)");
-        ::AppendMenuW(hEd, MF_STRING,              IDM_EDITION_ESSENTIALS,   L"&Essentials Edition (Commercial Tier 1 — Guided MSI & SFX)");
-        ::AppendMenuW(hEd, MF_STRING,              IDM_EDITION_DEVELOPER,    L"&Developer Edition (Commercial Tier 2 — RaggieScript & .MSM)");
-        ::AppendMenuW(hEd, MF_STRING,              IDM_EDITION_ARCHITECT,    L"&Architect Edition (Commercial Tier 3 — Suites, .MSP & VPAT)");
+        ::AppendMenuW(hEd, MF_STRING,              IDM_EDITION_ESSENTIALS,   L"E&ssentials Edition (Commercial Tier 1 — Guided MSI && SFX)");
+        ::AppendMenuW(hEd, MF_STRING,              IDM_EDITION_DEVELOPER,    L"&Developer Edition (Commercial Tier 2 — RaggieScript && .MSM)");
+        ::AppendMenuW(hEd, MF_STRING,              IDM_EDITION_ARCHITECT,    L"&Architect Edition (Commercial Tier 3 — Suites, .MSP && VPAT)");
         ::AppendMenuW(hEd, MF_SEPARATOR, 0, nullptr);
         ::AppendMenuW(hEd, MF_STRING,              IDM_HELP_ABOUT,           L"&About RaggieSoft Installer Studio...");
 
         ::AppendMenuW(hBar, MF_POPUP, reinterpret_cast<UINT_PTR>(hFile),  L"&File");
         ::AppendMenuW(hBar, MF_POPUP, reinterpret_cast<UINT_PTR>(hWiz),   L"&Wizards (Aero)");
-        ::AppendMenuW(hBar, MF_POPUP, reinterpret_cast<UINT_PTR>(hBuild), L"&Build & Compliance");
-        ::AppendMenuW(hBar, MF_POPUP, reinterpret_cast<UINT_PTR>(hEd),    L"&Editions & Help");
+        ::AppendMenuW(hBar, MF_POPUP, reinterpret_cast<UINT_PTR>(hBuild), L"&Build && Compliance");
+        ::AppendMenuW(hBar, MF_POPUP, reinterpret_cast<UINT_PTR>(hEd),    L"&Editions && Help");
         return hBar;
     }
 
@@ -2488,6 +2493,55 @@ public:
             "}\r\n";
     }
 
+    /// Synchronizes all IDE menu items, toolbar buttons, and view-specific buttons with `activeEdition`!
+    /// Accessibility (`Auto-Fix WCAG`), Code Signing (`[Signing]`), `.MSM` consumption (`+ Add .MSM`),
+    /// and Self-Extractor tools (`rswsfx.exe`) remain 100% enabled across EVERY edition!
+    void ApplyEditionUiState() {
+        const bool canMsm    = rsw::EditionSupportsCompilingMergeModules(activeEdition);
+        const bool canScript = rsw::EditionSupportsNativeEngineAndScripting(activeEdition);
+        const bool canDlg    = rsw::EditionSupportsCustomDialogAndSetupTypeDesign(activeEdition);
+        const bool canPrism  = rsw::EditionSupportsMsiPrismEditor(activeEdition);
+        const bool canSuite  = rsw::EditionSupportsUnifiedSuites(activeEdition);
+        const bool canMsp    = rsw::EditionSupportsMspPatchesAndMstTransforms(activeEdition);
+        const bool canVpat   = rsw::EditionSupportsAutoVpatExport(activeEdition);
+
+        HMENU hMenu = ::GetMenu(hWnd);
+        if (hMenu) {
+            const int activeMenuId = IDM_EDITION_COMMUNITY + static_cast<int>(activeEdition);
+            ::CheckMenuRadioItem(hMenu, IDM_EDITION_COMMUNITY, IDM_EDITION_ARCHITECT, activeMenuId, MF_BYCOMMAND);
+            auto enMenu = [&](UINT cmdId, bool en) {
+                ::EnableMenuItem(hMenu, cmdId, MF_BYCOMMAND | (en ? MF_ENABLED : MF_GRAYED));
+            };
+            enMenu(IDM_FILE_NEW_RSSC,   canScript);
+            enMenu(IDM_WIZ_SUITE,       canSuite);
+            enMenu(IDM_WIZ_RELEASE,     canMsp);
+            enMenu(IDM_BUILD_MSM,       canMsm);
+            enMenu(IDM_BUILD_VPAT,      canVpat);
+            enMenu(IDM_LAUNCH_MSIPRISM, canPrism);
+            ::DrawMenuBar(hWnd);
+        }
+
+        auto enWnd = [](HWND h, bool en) {
+            if (h) {
+                ::EnableWindow(h, en ? TRUE : FALSE);
+                ::InvalidateRect(h, nullptr, FALSE);
+            }
+        };
+        enWnd(hBtnBuildMsm,   canMsm);
+        enWnd(hBtnExportVpat, canVpat);
+        enWnd(hBtnMsiPrism,   canPrism);
+        enWnd(hSuiteCombo,    canSuite);
+        enWnd(hMsiAddDlgBtn,  canDlg);
+        enWnd(hMsiAddCtrlBtn, canDlg);
+        enWnd(hMsiIncludeBtn, canDlg);
+        enWnd(hEntGenMst,     canMsp);
+        enWnd(hEntGenMsp,     canMsp);
+        enWnd(hEntRelWizBtn,  canMsp);
+
+        UpdateWindowCaptionWithEdition();
+        ::InvalidateRect(hWnd, nullptr, FALSE);
+    }
+
     void UpdateWindowCaptionWithEdition() {
         std::wstring title = L"RaggieSoft Installer Studio v" + std::wstring(rsw::kVersionStringWide) +
                              L" [" + std::wstring(rsw::EditionDisplayName(activeEdition)) + L"] — ";
@@ -2753,6 +2807,11 @@ public:
     void RunValidation() {
         ::SetWindowTextW(hConsoleEdit, L"");
         if (isRsscMode) {
+            if (!rsw::EditionSupportsNativeEngineAndScripting(activeEdition)) {
+                AppendConsole(L"[RSW092] RaggieScript (.rssc) native scripting requires Developer, Architect, or Community Edition (currently running " +
+                              std::wstring(rsw::EditionDisplayName(activeEdition)) + L").\r\n");
+                return;
+            }
             rsw::rssc::ScriptProgram prog;
             std::vector<rsw::rssc::ScriptDiagnostic> diags;
             std::map<std::string, std::string> defs{{"ARCH", SelectedArch()}};
@@ -2779,9 +2838,10 @@ public:
             AppendConsole(L"[ERROR] " + rsw::Utf8ToWide(incErr) + L"\r\n");
             return;
         }
-        const auto rep = rsw::ValidateManifestDocument(resolvedDoc, SelectedArch());
+        const auto rep = rsw::ValidateManifestDocument(resolvedDoc, SelectedArch(), activeEdition);
         if (rep.IsOk()) {
-            AppendConsole(L"[PASS] 0 errors — Manifest & Microsoft Component Rules (Single-Directory, ICE18, ICE38, ICE80) verified for '" +
+            AppendConsole(L"[PASS] 0 errors — Manifest, Edition (" + std::wstring(rsw::EditionDisplayName(activeEdition)) +
+                          L"), & Microsoft Component Rules (Single-Directory, ICE18, ICE38, ICE80) verified for '" +
                           rsw::Utf8ToWide(rep.resolvedArchitecture) + L"'.\r\n");
         } else {
             for (const auto& d : rep.diagnostics) {
@@ -2792,23 +2852,29 @@ public:
     }
 
     void InvokeInstBuild(bool mergeModule) {
+        if (mergeModule && !rsw::EditionSupportsCompilingMergeModules(activeEdition)) {
+            AppendConsole(L"[RSW091] " + std::wstring(rsw::EditionDisplayName(activeEdition)) +
+                          L" can consume existing .MSM Merge Modules, while compiling new .MSM files requires Developer, Architect, or Community Edition.\r\n");
+            return;
+        }
         if (!SaveCurrentProject()) return;
         const auto cliExe = ideExeDir / L"instbuild.exe";
         if (!std::filesystem::exists(cliExe)) {
             AppendConsole(L"[ERROR] instbuild.exe not found next to InstallerStudio.exe.\r\n");
             return;
         }
-        const std::wstring arch = rsw::Utf8ToWide(SelectedArch());
+        const std::wstring arch   = rsw::Utf8ToWide(SelectedArch());
+        const std::wstring edArg  = L" --edition=" + rsw::Utf8ToWide(rsw::EditionSlug(activeEdition));
         const bool buildUniv = (!mergeModule && !isRsscMode) && ResolvedEffectiveDoc().GetBool("Package", "", "BuildUniversal", false);
         std::wstring cmd = L"\"" + cliExe.wstring() + L"\" ";
         if (mergeModule) {
             const auto msmOut = currentFilePath.parent_path() / L"out" /
                                 (currentFilePath.stem().wstring() + L"-" + arch + L".msm");
-            cmd += L"--emit-msm \"" + currentFilePath.wstring() + L"\" \"" + msmOut.wstring() + L"\" --arch=" + arch;
+            cmd += L"--emit-msm \"" + currentFilePath.wstring() + L"\" \"" + msmOut.wstring() + L"\" --arch=" + arch + edArg;
         } else if (buildUniv) {
-            cmd += L"\"" + currentFilePath.wstring() + L"\" --universal";
+            cmd += L"\"" + currentFilePath.wstring() + L"\" --universal" + edArg;
         } else {
-            cmd += L"\"" + currentFilePath.wstring() + L"\" --arch=" + arch;
+            cmd += L"\"" + currentFilePath.wstring() + L"\" --arch=" + arch + edArg;
         }
         ::SetWindowTextW(hConsoleEdit, (L"> " + cmd + L"\r\n").c_str());
         ::UpdateWindow(hConsoleEdit);
@@ -2817,6 +2883,11 @@ public:
     }
 
     void ExportVpatHtml() {
+        if (!rsw::EditionSupportsAutoVpatExport(activeEdition)) {
+            AppendConsole(L"[RSW096] Automated HTML5 VPAT 2.5 report export requires Architect or Community Edition (currently running " +
+                          std::wstring(rsw::EditionDisplayName(activeEdition)) + L").\r\n");
+            return;
+        }
         astDoc = rsw::ParseManifestText(ReadSourceEditorUtf8(), currentFilePath);
         rsw::RswManifestDocument resolvedDoc;
         std::string err;
@@ -3419,8 +3490,17 @@ public:
 
         const int pillW = S(228);
         RECT pillRc{W - pillW - S(14), S(11), W - S(14), S(39)};
-        Gdiplus::SolidBrush pillBr(rsw::ui::ToGpColor(theme.accentPrimary, 215));
-        Gdiplus::Pen pillPen(Gdiplus::Color(180, 255, 255, 255), 1.0f);
+        COLORREF pillCol = theme.accentPrimary;
+        if (!theme.isHighContrast) {
+            switch (activeEdition) {
+                case rsw::RswIdeEdition::Community:  pillCol = RGB(4, 120, 87);  break; // Deep Emerald (>= 5.4:1 vs #FFF)
+                case rsw::RswIdeEdition::Essentials: pillCol = RGB(3, 105, 161); break; // Deep Sky (>= 5.8:1 vs #FFF)
+                case rsw::RswIdeEdition::Developer:  pillCol = RGB(29, 78, 216); break; // Royal Cobalt (>= 6.7:1 vs #FFF)
+                case rsw::RswIdeEdition::Architect:  pillCol = RGB(146, 64, 14); break; // Rich Bronze-Gold (>= 5.9:1 vs #FFF)
+            }
+        }
+        Gdiplus::SolidBrush pillBr(rsw::ui::ToGpColor(pillCol, 235));
+        Gdiplus::Pen pillPen(Gdiplus::Color(195, 255, 255, 255), 1.0f);
         rsw::ui::FillAndStrokeRoundRect(
             g, static_cast<float>(pillRc.left), static_cast<float>(pillRc.top),
             static_cast<float>(pillW), static_cast<float>(S(28)), static_cast<float>(S(14)), &pillBr, &pillPen);
@@ -3768,18 +3848,22 @@ public:
                         return 0;
 
                     // --- Editions & About Menu (`Community == 100% Architect Parity`) ---
+                    case IDM_EDITION_MATRIX: {
+                        const std::wstring body = rsw::BuildEditionsComparisonText(self->activeEdition);
+                        ::TaskDialog(hWnd, ::GetModuleHandleW(nullptr),
+                                     L"RaggieSoft Installer Studio — Official Editions Matrix",
+                                     L"Four Product Editions (Community Permanently Equals 100% of Architect)",
+                                     body.c_str(), TDCBF_OK_BUTTON, TD_INFORMATION_ICON, nullptr);
+                        return 0;
+                    }
                     case IDM_EDITION_COMMUNITY:
                     case IDM_EDITION_ESSENTIALS:
                     case IDM_EDITION_DEVELOPER:
                     case IDM_EDITION_ARCHITECT: {
                         self->activeEdition = static_cast<rsw::RswIdeEdition>(id - IDM_EDITION_COMMUNITY);
-                        HMENU hMenu = ::GetMenu(hWnd);
-                        if (hMenu) {
-                            ::CheckMenuRadioItem(hMenu, IDM_EDITION_COMMUNITY, IDM_EDITION_ARCHITECT, id, MF_BYCOMMAND);
-                        }
-                        self->UpdateWindowCaptionWithEdition();
-                        ::InvalidateRect(hWnd, nullptr, FALSE);
-                        self->AppendConsole(L"[EDITION] Switched active tier badge to " +
+                        rsw::SavePersistedEdition(self->activeEdition);
+                        self->ApplyEditionUiState();
+                        self->AppendConsole(L"[EDITION] Active IDE & CLI tier set to " +
                                             std::wstring(rsw::EditionDisplayName(self->activeEdition)) +
                                             L" — " + std::wstring(rsw::EditionSummary(self->activeEdition)) + L"\r\n");
                         return 0;
@@ -4448,8 +4532,17 @@ public:
                     }
                     case IDM_LAUNCH_MSIPRISM:
                     case IDC_TB_MSIPRISM: {
+                        if (!rsw::EditionSupportsMsiPrismEditor(self->activeEdition)) {
+                            self->AppendConsole(L"[EDITION] RaggieSoft MSI Prism requires Developer, Architect, or Community Edition.\r\n");
+                            return 0;
+                        }
                         const auto prismExe = self->ideExeDir / L"msiprism.exe";
                         ::ShellExecuteW(hWnd, L"open", prismExe.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                        return 0;
+                    }
+                    case IDM_LAUNCH_RSWSFX: {
+                        const auto sfxExe = self->ideExeDir / L"rswsfx.exe";
+                        ::ShellExecuteW(hWnd, L"open", sfxExe.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                         return 0;
                     }
                     case IDM_OPEN_OUTDIR: {
@@ -4592,11 +4685,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         }
     }
 
+    if (exportShotDir.empty()) {
+        ide.activeEdition = rsw::LoadPersistedEdition();
+    }
     if (!initialProjectArg.empty()) {
         ide.OpenProjectOrSuiteFile(initialProjectArg);
     } else {
         ide.LoadProjectText(BuildStarterRsipTemplate(), {});
     }
+    ide.ApplyEditionUiState();
     ide.AppendConsole(L"RaggieSoft Installer Studio v" + std::wstring(rsw::kVersionStringWide) +
                       L" ready. Press F1 for the Offline C++ Help Viewer, Ctrl+W for the Aero Project Assistant, or F5 to build.\r\n");
 

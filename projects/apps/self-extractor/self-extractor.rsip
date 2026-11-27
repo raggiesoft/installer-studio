@@ -1,0 +1,86 @@
+; ================================================================================
+; FILE: projects/apps/self-extractor/self-extractor.rsip
+; PROJECT: RaggieSoft Self-Extractor — Standalone LZMS Archive & %TEMP% Setup Tool
+; WEBSITE: https://raggiesoftstudio.com/installer-studio  |  DEV HUB: https://raggiesoft.dev
+; LICENSE: MIT License (Copyright (c) 2026 Michael P. Ragsdale / RaggieSoft)
+;
+; PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+;   Packages **RaggieSoft Self-Extractor** (`rswsfx.exe` + `SetupWizard.exe`
+;   runtime stub) as its own standalone, single-purpose Windows 11 (`x64` &
+;   `ARM64`) desktop utility! Turns any folder or `.zip` archive into a signed,
+;   WCAG 2.2 AA accessible `LZMS` self-extracting `.exe`—supporting both Standard
+;   Archive Extraction and `%TEMP%` Software Installation Wrapper mode (watching
+;   child cleanup processes like `_ISDEL.EXE` before scrubbing `%TEMP%`).
+; ================================================================================
+
+@include "..\..\shared\raggiesoft-defaults.rsii"
+
+[Package]
+Name                     = RaggieSoft Self-Extractor
+Tagline                  = Standalone LZMS Folder & .ZIP Self-Extractor with %TEMP% Setup Wrapper
+WebsiteLabel             = raggiesoftstudio.com
+Version                  = 0.6.0
+Manufacturer             = RaggieSoft
+UpgradeCode              = {7C48E1A5-62D4-4B9E-8F13-524147534658}
+Architecture             = $(ARCH)
+Scope                    = machine
+OutputName               = raggiesoft-self-extractor-v$(VERSION)-$(ARCH)
+UniversalOutputName      = raggiesoft-self-extractor-v$(VERSION)
+BuildUniversal           = true
+UniversalDownloadBaseUrl = https://assets.raggiesoft.com/desktop-apps/windows/apps/self-extractor/releases/v$(VERSION)
+OutputDir                = out
+BuildBootstrapper        = true
+AboutUrl                 = https://raggiesoftstudio.com/installer-studio
+
+[Install]
+DefaultSubdir         = RaggieSoft\RaggieSoft Studio\Self-Extractor
+StartMenuFolder       = RaggieSoft Studio
+MainExecutable        = rswsfx.exe
+
+[UI]
+WizardLayout          = fluentmica
+AccentPrimaryHex      = #1D4ED8
+AccentSecondaryHex    = #FBBF24
+LicenseRtf            = ..\..\..\examples\hello-raggiesoft\License.rtf
+IconFile              = ..\..\..\examples\hello-raggiesoft\HelloRaggieSoft.ico
+WelcomeHeadline       = Welcome to RaggieSoft Self-Extractor Setup
+InstallButtonText     = &Install
+FinishLaunchCheckbox  = &Launch RaggieSoft Self-Extractor when setup finishes
+OfferLaunchOnFinish   = true
+
+[Feature.Main]
+Title                 = RaggieSoft Self-Extractor Desktop & CLI Builder
+Description           = Native 64-bit LZMS self-extracting .EXE builder (rswsfx.exe) and WCAG 2.2 AA extraction stub (SetupWizard.exe).
+Inclusion             = minimal
+DisallowAbsent        = true
+
+[Payload.SfxBuilderExe]
+Source                = ..\..\..\bin\$(ARCH)\rswsfx.exe
+Feature               = Main
+
+[Payload.StubExe]
+Source                = ..\..\..\bin\$(ARCH)\SetupWizard.exe
+Feature               = Main
+
+[Payload.LicenseDoc]
+Source                = ..\..\..\examples\hello-raggiesoft\License.rtf
+Feature               = Main
+
+[Shortcut.StartMenu]
+Name                  = RaggieSoft Self-Extractor
+TargetFile            = rswsfx.exe
+Location              = StartMenu
+Feature               = Main
+
+[Shortcut.Desktop]
+Name                  = RaggieSoft Self-Extractor
+TargetFile            = rswsfx.exe
+Location              = Desktop
+Feature               = Main
+
+[Registry.StudioDiscovery]
+Root                  = HKLM
+Key                   = Software\RaggieSoft\RaggieSoft Studio\Self-Extractor
+Name                  = Install Path
+Value                 = [INSTALLDIR]
+Feature               = Main

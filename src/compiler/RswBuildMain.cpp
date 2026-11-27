@@ -48,8 +48,8 @@ void PrintUsageBanner() {
         << "Zero-Dependency Native Win32 C++20 Compiler (`instbuild.exe` -> MSI, MSM, MST, MSP, RaggieScript .rssc, Universal Setup.exe & VPAT 2.5)\n\n"
         << "Usage:\n"
         << "  instbuild.exe <project.rsip | suite.rsis | script.rssc> [--arch=x64|arm64] [--universal] [--with-vpat] [--out-dir=<dir>]\n"
-        << "                [--version-override=<X.Y.Z>] [--output-name=<stem>] [--universal-name=<stem>] [--web-base-url=<url>]\n"
-        << "  instbuild.exe --validate [--diagnostics=json] <project.rsip | suite.rsis | script.rssc> [--arch=x64|arm64]\n"
+        << "                [--edition=community|essentials|developer|architect] [--version-override=<X.Y.Z>] [--output-name=<stem>]\n"
+        << "  instbuild.exe --validate [--diagnostics=json] [--edition=<tier>] <project.rsip | suite.rsis | script.rssc> [--arch=x64|arm64]\n"
         << "  instbuild.exe --emit-ai-spec <output-dir>\n"
         << "  instbuild.exe --emit-vpat <project.rsip> <output-dir>\n"
         << "  instbuild.exe --emit-msm <project.rsip> <output.msm> [--arch=x64|arm64]\n"
@@ -77,6 +77,7 @@ int ProcessSingleProject(
     bool validateOnly,
     bool jsonDiagnostics,
     bool emitVpatAlongside,
+    rsw::RswIdeEdition activeEdition,
     const CliPackageOverrides& pkgOverrides,
     const std::filesystem::path& compilerExeDir)
 {
@@ -134,9 +135,15 @@ int ProcessSingleProject(
                                 pkgKind != "msm" &&
                                 (forceUniversal || doc.GetBool("Package", "", "BuildUniversal", false));
 
+    if (emitVpatAlongside && !rsw::EditionSupportsAutoVpatExport(activeEdition)) {
+        std::cerr << "[RSW096] --with-vpat automated HTML5 VPAT 2.5 export requires Architect or Community Edition (currently running "
+                  << rsw::WideToUtf8(rsw::EditionDisplayName(activeEdition)) << ").\n";
+        return 1;
+    }
+
     if (buildUniversal && !validateOnly) {
         for (const char* arch : {"x64", "arm64"}) {
-            const auto rep = rsw::ValidateManifestDocument(doc, arch);
+            const auto rep = rsw::ValidateManifestDocument(doc, arch, activeEdition);
             if (!rep.IsOk()) {
                 for (const auto& d : rep.diagnostics) {
                     std::cerr << "[" << d.code << " Line " << d.lineNumber << "] " << d.message << "\n";
@@ -199,7 +206,7 @@ int ProcessSingleProject(
         return 0;
     }
 
-    const auto report = rsw::ValidateManifestDocument(doc, archOverride);
+    const auto report = rsw::ValidateManifestDocument(doc, archOverride, activeEdition);
     if (validateOnly || !report.IsOk()) {
         if (jsonDiagnostics) {
             std::cout << rsw::FormatValidationReportAsJson(report);
@@ -315,11 +322,28 @@ int wmain(int argc, wchar_t* argv[]) {
     bool emitVpatFlag = false;
     bool universalFlag = false;
     std::string archOverride;
+    std::string cliEditionFlag;
     std::string categoryFilter;
     std::string projectFilter;
     CliPackageOverrides pkgOverrides{};
     std::map<std::string, std::string> cliVariables;
     std::vector<std::string> positional;
+
+    // Pre-scan `--edition=<tier>` so standalone flags (`--emit-vpat`, `--emit-msm`, `--generate-msp`, `--generate-mst`)
+    // honor explicit CLI edition selection regardless of argument position!
+    for (const auto& rawArg : args) {
+        if (rawArg.rfind("--edition=", 0) == 0) {
+            cliEditionFlag = rawArg.substr(10);
+        }
+    }
+    rsw::RswIdeEdition activeEdition = rsw::RswIdeEdition::Community;
+    {
+        std::string edErr;
+        if (!rsw::ResolveEffectiveCliEdition(cliEditionFlag, activeEdition, edErr)) {
+            std::cerr << "[ERROR] " << edErr << "\n";
+            return 2;
+        }
+    }
 
     for (std::size_t i = 0; i < args.size(); ++i) {
         const std::string& a = args[i];
@@ -354,6 +378,11 @@ int wmain(int argc, wchar_t* argv[]) {
             if (i + 2 >= args.size()) {
                 std::cerr << "[ERROR] Usage: instbuild.exe --emit-vpat <project.rsip> <output-dir>\n";
                 return 2;
+            }
+            if (!rsw::EditionSupportsAutoVpatExport(activeEdition)) {
+                std::cerr << "[RSW096] Automated HTML5 VPAT 2.5 report generation (--emit-vpat) requires Architect or Community Edition (currently running "
+                          << rsw::WideToUtf8(rsw::EditionDisplayName(activeEdition)) << ").\n";
+                return 1;
             }
             rsw::RswManifestDocument rawDoc, vpatDoc;
             std::string err;
@@ -446,6 +475,11 @@ int wmain(int argc, wchar_t* argv[]) {
                 std::cerr << "[ERROR] Usage: instbuild.exe --generate-mst <base.msi> <target.msi> <output.mst>\n";
                 return 2;
             }
+            if (!rsw::EditionSupportsMspPatchesAndMstTransforms(activeEdition)) {
+                std::cerr << "[RSW095] Windows Installer Transform (.mst) generation requires Architect or Community Edition (currently running "
+                          << rsw::WideToUtf8(rsw::EditionDisplayName(activeEdition)) << ").\n";
+                return 1;
+            }
             std::string err;
             if (!rsw::GenerateMsiTransform(
                     std::filesystem::path(rsw::Utf8ToWide(args[i + 1])),
@@ -463,6 +497,11 @@ int wmain(int argc, wchar_t* argv[]) {
                 std::cerr << "[ERROR] Usage: instbuild.exe --generate-msp <base.msi> <upgraded.msi> <output.msp>\n";
                 return 2;
             }
+            if (!rsw::EditionSupportsMspPatchesAndMstTransforms(activeEdition)) {
+                std::cerr << "[RSW095] Binary-delta Patch (.msp) generation requires Architect or Community Edition (currently running "
+                          << rsw::WideToUtf8(rsw::EditionDisplayName(activeEdition)) << "; Essentials and Developer service updates via Major Upgrades).\n";
+                return 1;
+            }
             std::string err;
             if (!rsw::GenerateMsiPatchPackage(
                     std::filesystem::path(rsw::Utf8ToWide(args[i + 1])),
@@ -479,6 +518,11 @@ int wmain(int argc, wchar_t* argv[]) {
             if (i + 2 >= args.size()) {
                 std::cerr << "[ERROR] Usage: instbuild.exe --emit-msm <project.rsip> <output.msm> [--arch=x64|arm64]\n";
                 return 2;
+            }
+            if (!rsw::EditionSupportsCompilingMergeModules(activeEdition)) {
+                std::cerr << "[RSW091] " << rsw::WideToUtf8(rsw::EditionDisplayName(activeEdition))
+                          << " can consume existing [MergeModule.*] (.msm) files, while compiling new .MSM Merge Modules requires Developer, Architect, or Community Edition.\n";
+                return 1;
             }
             const std::filesystem::path mPath(rsw::Utf8ToWide(args[i + 1]));
             const std::filesystem::path oPath(rsw::Utf8ToWide(args[i + 2]));
@@ -504,6 +548,7 @@ int wmain(int argc, wchar_t* argv[]) {
         if (a == "--diagnostics=json") { jsonDiagnostics = true; continue; }
         if (a == "--with-vpat") { emitVpatFlag = true; continue; }
         if (a == "--universal") { universalFlag = true; continue; }
+        if (a.rfind("--edition=", 0) == 0) { continue; }
         if (a.rfind("--arch=", 0) == 0) { archOverride = a.substr(7); continue; }
         if (a.rfind("--category=", 0) == 0) { categoryFilter = a.substr(11); continue; }
         if (a.rfind("--project=", 0) == 0) { projectFilter = a.substr(10); continue; }
@@ -535,6 +580,21 @@ int wmain(int argc, wchar_t* argv[]) {
 
     // Dispatch standalone `RaggieScript` (`.rssc`) compilation or `--validate` directly!
     if (rsw::EqualsIgnoreCase(rsw::WideToUtf8(inputPath.extension().wstring()), ".rssc")) {
+        if (!rsw::EditionSupportsNativeEngineAndScripting(activeEdition)) {
+            const std::string edMsg = "RaggieScript (.rssc) native scripting requires Developer, Architect, or Community Edition (currently running " +
+                                      rsw::WideToUtf8(rsw::EditionDisplayName(activeEdition)) + ").";
+            if (jsonDiagnostics) {
+                rsw::ValidationReport rep;
+                rep.manifestPath         = inputPath;
+                rep.resolvedArchitecture = archOverride.empty() ? std::string(rsw::QueryHostPlatform().NativeArchSlug()) : rsw::AsciiLower(archOverride);
+                rep.activeEdition        = activeEdition;
+                rep.diagnostics.push_back({rsw::DiagnosticSeverity::Error, "RSW092", 1, "RaggieScript", "Edition", edMsg});
+                std::cout << rsw::FormatValidationReportAsJson(rep);
+            } else {
+                std::cerr << "[RSW092] " << edMsg << "\n";
+            }
+            return 1;
+        }
         if (validateOnly) {
             rsw::rssc::ScriptProgram prog;
             std::vector<rsw::rssc::ScriptDiagnostic> diags;
@@ -610,6 +670,11 @@ int wmain(int argc, wchar_t* argv[]) {
 
     // Dispatch `.rsis` Multi-Project Suite (just like `dotnet build RaggieSoft.slnx`)!
     if (rsw::IsSuiteFilePath(inputPath)) {
+        if (!rsw::EditionSupportsUnifiedSuites(activeEdition)) {
+            std::cerr << "[RSW094] Multi-Project Suites (.rsis) require Architect or Community Edition (currently running "
+                      << rsw::WideToUtf8(rsw::EditionDisplayName(activeEdition)) << ").\n";
+            return 1;
+        }
         rsw::RswManifestDocument suiteDoc;
         std::string err;
         if (!rsw::LoadManifestFile(inputPath, suiteDoc, err)) {
@@ -649,13 +714,13 @@ int wmain(int argc, wchar_t* argv[]) {
             if (projWantsUniv) {
                 const int rc = ProcessSingleProject(
                     proj.resolvedPath, suite.variables, "", true,
-                    false, false, emitVpatFlag, pkgOverrides, compilerExeDir);
+                    false, false, emitVpatFlag, activeEdition, pkgOverrides, compilerExeDir);
                 if (rc != 0) return rc;
             } else {
                 for (const auto& arch : archList) {
                     const int rc = ProcessSingleProject(
                         proj.resolvedPath, suite.variables, arch, false,
-                        validateOnly, false, emitVpatFlag, pkgOverrides, compilerExeDir);
+                        validateOnly, false, emitVpatFlag, activeEdition, pkgOverrides, compilerExeDir);
                     if (rc != 0) {
                         return rc;
                     }
@@ -773,5 +838,5 @@ int wmain(int argc, wchar_t* argv[]) {
 
     return ProcessSingleProject(
         inputPath, cliVariables, archOverride, universalFlag,
-        validateOnly, jsonDiagnostics, emitVpatFlag, pkgOverrides, compilerExeDir);
+        validateOnly, jsonDiagnostics, emitVpatFlag, activeEdition, pkgOverrides, compilerExeDir);
 }

@@ -1989,12 +1989,12 @@ int wmain() {
                   "bld=" + std::to_string(bldRsscRc) + " inst=" + std::to_string(instRsscRc) + " unErr=" + unErr);
 
             // 3. Test RaggieScript Direct MSI SQL Surgeon (`msi-table-surgeon.rssc`) + `msiprism.exe --exec-sql` & `--export-table-json`!
-            std::string err;
+            std::string surgErr;
             const auto surgeonScript = binDir / L".." / L".." / L"examples" / L"raggiescript" / L"msi-table-surgeon.rssc";
             const auto surgeonDir    = rsscWorkDir / L"msi-surgeon";
             const DWORD surgeonRc    = runCli(raggiescriptExe, L"run \"" + surgeonScript.wstring() + L"\" workDir=\"" + surgeonDir.wstring() + L"\"");
             std::vector<std::uint8_t> repBytes;
-            rsw::ReadBinaryFileBytes(surgeonDir / L"surgeon-report.json", repBytes, err);
+            rsw::ReadBinaryFileBytes(surgeonDir / L"surgeon-report.json", repBytes, surgErr);
             const std::string repJson(repBytes.begin(), repBytes.end());
             const bool surgeonOk =
                 (surgeonRc == 0) &&
@@ -2004,17 +2004,17 @@ int wmain() {
                   "RaggieScript msi.* creates .msi from scratch, executes DDL/DML SQL tables, stamps SummaryInformation, & emits .mst Transform",
                   "rc=" + std::to_string(surgeonRc) + " json=" + repJson);
 
-            const auto prismExe      = binDir / L"msiprism.exe";
+            const auto prismBin      = binDir / L"msiprism.exe";
             const auto corpMsiPath   = surgeonDir / L"EnterpriseCustomized.msi";
             const auto prismJsonOut  = surgeonDir / L"prism-property-table.json";
             const DWORD prismSqlRc   = surgeonOk
-                ? runCli(prismExe, L"--exec-sql \"" + corpMsiPath.wstring() + L"\" \"INSERT INTO `Property` (`Property`, `Value`) VALUES ('PRISM_DIRECT_EDIT', 'ENABLED')\"")
+                ? runCli(prismBin, L"--exec-sql \"" + corpMsiPath.wstring() + L"\" \"INSERT INTO `Property` (`Property`, `Value`) VALUES ('PRISM_DIRECT_EDIT', 'ENABLED')\"")
                 : 1u;
             const DWORD prismExpRc   = (prismSqlRc == 0)
-                ? runCli(prismExe, L"--export-table-json \"" + corpMsiPath.wstring() + L"\" Property \"" + prismJsonOut.wstring() + L"\"")
+                ? runCli(prismBin, L"--export-table-json \"" + corpMsiPath.wstring() + L"\" Property \"" + prismJsonOut.wstring() + L"\"")
                 : 1u;
             std::vector<std::uint8_t> pJsonBytes;
-            rsw::ReadBinaryFileBytes(prismJsonOut, pJsonBytes, err);
+            rsw::ReadBinaryFileBytes(prismJsonOut, pJsonBytes, surgErr);
             const std::string pJsonStr(pJsonBytes.begin(), pJsonBytes.end());
             Check(prismSqlRc == 0 && prismExpRc == 0 && pJsonStr.find("PRISM_DIRECT_EDIT") != std::string::npos,
                   "msiprism.exe --exec-sql mutates MSI tables in-place and --export-table-json exports verified JSON",
@@ -2053,7 +2053,7 @@ int wmain() {
                 L"\"" + defUacScript.wstring() + L"\" --out-dir=\"" + defUacOutDir.wstring() + L"\" --output-name=deferred-uac-demo");
             const auto duExePath = defUacOutDir / L"deferred-uac-demo-setup.exe";
             std::vector<std::uint8_t> duExeBytes;
-            rsw::ReadBinaryFileBytes(duExePath, duExeBytes, err);
+            rsw::ReadBinaryFileBytes(duExePath, duExeBytes, surgErr);
             const std::string duExeRaw(reinterpret_cast<const char*>(duExeBytes.data()), duExeBytes.size());
             const bool manifestIsAsInvoker = (duExeRaw.find("level=\"asInvoker\"") != std::string::npos);
 
@@ -2075,7 +2075,7 @@ int wmain() {
                 if (workerVm.ImportWizardStateJson(stateJson)) {
                     const auto cRes = workerVm.ExecuteCommitPhaseOnly();
                     std::vector<std::uint8_t> hoBytes;
-                    rsw::ReadBinaryFileBytes(defUacDest / L"uac-handoff.json", hoBytes, err);
+                    rsw::ReadBinaryFileBytes(defUacDest / L"uac-handoff.json", hoBytes, surgErr);
                     const std::string hoTxt(hoBytes.begin(), hoBytes.end());
                     handoffOk = cRes.ok && (hoTxt.find("elevated-broker") != std::string::npos);
                 }
@@ -2118,7 +2118,7 @@ int wmain() {
             std::filesystem::remove(ctJsonFile, ec);
             const DWORD advRunRc  = (advCompRc == 0) ? runCli(raggiescriptExe, L"run \"" + advBcFile.wstring() + L"\"") : 1u;
             std::vector<std::uint8_t> advBytes;
-            rsw::ReadBinaryFileBytes(advReport, advBytes, err);
+            rsw::ReadBinaryFileBytes(advReport, advBytes, surgErr);
             const std::string advTxt(advBytes.begin(), advBytes.end());
             Check(advCompRc == 0 && advRunRc == 0 && advTxt == "NebulaForge|four|CoalescedOK|StudioV060|pid=true|locks=array",
                   "RaggieScript compile.json, -D/#define, ?? coalesce, elif, 64-bit ffi.call, and Restart ManagerRmGetList verified",
@@ -2132,6 +2132,55 @@ int wmain() {
             Check(bkValRc == 0 && alValRc == 0,
                   "Book and Album CD-Autorun RaggieScript templates pass RSW701/RSW702 static validation",
                   "bookRc=" + std::to_string(bkValRc) + " albumRc=" + std::to_string(alValRc));
+
+            // 7. Test Official Four-Edition Capability Enforcement (`Community == Architect`, `Essentials`, `Developer`, `Architect`)
+            //    AND Standalone `rswsfx.exe --pack` Self-Extractor CLI!
+            const auto stdSampleRsip = binDir / L".." / L".." / L"examples" / L"hello-raggiesoft" / L"hello-raggiesoft.rsip";
+            const auto suiteRsip     = binDir / L".." / L".." / L"examples" / L"hello-raggiesoft" / L"hello-raggiesoft-suite.rsis";
+
+            // Essentials ALLOWS standard MSI + Setup.exe + Signing + SFX, but GATES .rssc (RSW092), --emit-msm (RSW091), .rsis (RSW094), & --emit-vpat (RSW096)!
+            const std::wstring archFlag = L" --arch=" + rsw::Utf8ToWide(hostArch);
+            const DWORD essMsiOk    = runCli(instbuildExe, L"--validate --edition=essentials \"" + stdSampleRsip.wstring() + L"\"" + archFlag);
+            const DWORD essRsscGate = runCli(instbuildExe, L"--validate --edition=essentials \"" + sampleScriptPath.wstring() + L"\"");
+            const DWORD essSuiteGate= runCli(instbuildExe, L"--validate --edition=essentials \"" + suiteRsip.wstring() + L"\"");
+            const DWORD essVpatGate = runCli(instbuildExe, L"--emit-vpat --edition=essentials \"" + stdSampleRsip.wstring() + L"\" \"" + (rsscWorkDir / L"ess-vpat").wstring() + L"\"");
+
+            // Developer UNLOCKS .rssc & .MSM compilation, while still gating .rsis Suites & --emit-vpat to Architect / Community!
+            const DWORD devRsscOk   = runCli(instbuildExe, L"--validate --edition=developer \"" + sampleScriptPath.wstring() + L"\"");
+            const DWORD devSuiteGate= runCli(instbuildExe, L"--validate --edition=developer \"" + suiteRsip.wstring() + L"\"");
+
+            // Community & Architect BOTH pass 100% of capabilities (`Community == 100% Architect Parity`)!
+            const DWORD comSuiteOk  = runCli(instbuildExe, L"--validate --edition=community \"" + suiteRsip.wstring() + L"\"");
+            const DWORD arcSuiteOk  = runCli(instbuildExe, L"--validate --edition=architect \"" + suiteRsip.wstring() + L"\"");
+            Check(essMsiOk == 0 && essRsscGate != 0 && essSuiteGate != 0 && essVpatGate != 0 &&
+                  devRsscOk == 0 && devSuiteGate != 0 && comSuiteOk == 0 && arcSuiteOk == 0,
+                  "Four-Edition capability gates (--edition=community|essentials|developer|architect) enforce exact tier rules & Community == Architect parity",
+                  "essMsi=" + std::to_string(essMsiOk) + " essRssc=" + std::to_string(essRsscGate) +
+                  " devRssc=" + std::to_string(devRsscOk) + " devSuite=" + std::to_string(devSuiteGate) +
+                  " comSuite=" + std::to_string(comSuiteOk) + " arcSuite=" + std::to_string(arcSuiteOk));
+
+            // Test standalone `rswsfx.exe --pack` building a working self-extracting `.exe` and extracting it silently (`/s`)!
+            const auto rswSfxExe    = binDir / L"rswsfx.exe";
+            const auto sfxSrcFolder = rsscWorkDir / L"sfx-cli-src";
+            const auto sfxBuiltExe  = rsscWorkDir / L"sfx-cli-out" / L"StandaloneArchive.exe";
+            const auto sfxUnpackDir = rsscWorkDir / L"sfx-cli-unpacked";
+            std::filesystem::create_directories(sfxSrcFolder, ec);
+            {
+                std::ofstream f(sfxSrcFolder / L"PayloadVerify.txt", std::ios::binary | std::ios::trunc);
+                f << "RSWSFX_STANDALONE_OK";
+            }
+            const DWORD sfxPackRc = runCli(
+                rswSfxExe,
+                L"--pack \"" + sfxSrcFolder.wstring() + L"\" \"" + sfxBuiltExe.wstring() + L"\" --title=\"Standalone SFX Test\" --uac=asInvoker");
+            const DWORD sfxRunRc  = (sfxPackRc == 0)
+                ? runCli(sfxBuiltExe, L"/s INSTALLDIR=\"" + sfxUnpackDir.wstring() + L"\"")
+                : 1u;
+            std::vector<std::uint8_t> sfxOutBytes;
+            rsw::ReadBinaryFileBytes(sfxUnpackDir / L"PayloadVerify.txt", sfxOutBytes, surgErr);
+            const std::string sfxOutStr(sfxOutBytes.begin(), sfxOutBytes.end());
+            Check(sfxPackRc == 0 && sfxRunRc == 0 && sfxOutStr == "RSWSFX_STANDALONE_OK",
+                  "Standalone rswsfx.exe --pack builds LZMS self-extracting .exe and extracts byte-for-byte in /s mode",
+                  "pack=" + std::to_string(sfxPackRc) + " run=" + std::to_string(sfxRunRc) + " txt=" + sfxOutStr);
         }
 
         if (rsscVirtReg) {

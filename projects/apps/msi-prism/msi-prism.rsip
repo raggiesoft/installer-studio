@@ -17,8 +17,8 @@ SchemaVersion         = 0.6
 Name                  = RaggieSoft MSI Prism
 Tagline               = 64-Bit Read/Write MSI, MSM, MST & MSP Relational SQL Table Editor
 Version               = 0.6.0
-Publisher             = RaggieSoft
 Manufacturer          = RaggieSoft
+WebsiteLabel          = raggiesoftstudio.com
 AboutUrl              = https://raggiesoftstudio.com/installer-studio
 UpgradeCode           = {3E94B7C2-84A1-4F6D-9B28-524147505249}
 Description           = Standalone 64-bit Windows Installer SQL database inspector, table editor, ICE80 validator, and MST/MSP diff generator
@@ -42,7 +42,7 @@ MainExecutable        = msiprism.exe
 
 [UI]
 WizardLayout          = fluentmica
-AccentPrimaryHex      = #0EA5E9
+AccentPrimaryHex      = #2563EB
 AccentSecondaryHex    = #FBBF24
 LicenseRtf            = ..\..\..\examples\hello-raggiesoft\License.rtf
 IconFile              = ..\..\..\examples\hello-raggiesoft\HelloRaggieSoft.ico
@@ -54,7 +54,7 @@ OfferLaunchOnFinish   = true
 [Feature.Main]
 Title                 = RaggieSoft MSI Prism SQL Editor
 Description           = Native 64-bit read/write MSI, MSM, MST, and MSP relational SQL table editor and CLI inspector (msiprism.exe).
-Inclusion             = required
+Inclusion             = minimal
 DisallowAbsent        = true
 
 [Payload.PrismExe]
@@ -69,14 +69,12 @@ Feature               = Main
 Name                  = RaggieSoft MSI Prism
 TargetFile            = msiprism.exe
 Location              = StartMenu
-Description           = Inspect and edit .MSI, .MSM, and .MSP relational SQL tables
 Feature               = Main
 
 [Shortcut.Desktop]
 Name                  = RaggieSoft MSI Prism
 TargetFile            = msiprism.exe
 Location              = Desktop
-Description           = Inspect and edit .MSI, .MSM, and .MSP relational SQL tables
 Feature               = Main
 
 [Registry.StudioDiscovery]
