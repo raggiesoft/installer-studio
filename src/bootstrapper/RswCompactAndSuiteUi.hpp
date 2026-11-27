@@ -819,8 +819,8 @@ inline int RunNativeOrSfxEntrypoint(
         app.suiteManagedFlag = suiteManaged;
         app.targetDir        = !exportShotDir.empty()
             ? ((manifest.mode == "sfx")
-                   ? std::filesystem::path(L"C:\\PortableApps\\ZipUtility")
-                   : std::filesystem::path(L"C:\\Program Files\\Sample Studio\\App"))
+                   ? std::filesystem::path(L"C:\\RaggieSoft\\Samples\\ZipUtility")
+                   : std::filesystem::path(L"C:\\Program Files\\RaggieSoft\\Sample App"))
             : targetDir;
         app.exportShotDir    = exportShotDir;
 
