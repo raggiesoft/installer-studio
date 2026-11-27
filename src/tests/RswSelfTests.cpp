@@ -2372,7 +2372,7 @@ int wmain() {
                             DWORD cn = 128, cv = 256;
                             ::MsiRecordGetStringW(hRec, 1, nBuf, &cn);
                             ::MsiRecordGetStringW(hRec, 2, vBuf, &cv);
-                            msiTablesOk = (std::wstring(nBuf) == L"=*Path") && (std::wstring(vBuf) == L"[~];[INSTALLDIR]bin");
+                            msiTablesOk = (std::wstring(nBuf) == L"=-Path") && (std::wstring(vBuf) == L"[~];[INSTALLDIR]bin");
                             ::MsiCloseHandle(hRec);
                         }
                         if (hView) ::MsiCloseHandle(hView);

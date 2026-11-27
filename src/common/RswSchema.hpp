@@ -601,6 +601,8 @@ inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>
      "`auto` matches `[Package] Scope`, `machine` writes to System (`*Name`), and `user` writes to `HKCU\\Environment`."},
     {"Environment", "RemoveOnUninstall", FieldValueKind::Boolean,     false, "true",              "",
      "When `true` (default), removes this variable or `PATH` segment cleanly on uninstallation (`=-Name`)."},
+    {"Environment", "OnUninstall",       FieldValueKind::EnumChoice,  false, "remove",            "remove|keep",
+     "Alias for `RemoveOnUninstall` (`remove` removes this variable or `PATH` segment on uninstallation; `keep` leaves it intact)."},
     {"Environment", "Condition",         FieldValueKind::String,      false, "",                  "",
      "Optional MSI component condition (e.g. `ADD_TO_PATH = \"1\"` bound to a custom wizard checkbox!)."},
     {"Environment", "Feature",           FieldValueKind::String,      false, "Main",              "",
@@ -621,8 +623,8 @@ inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>
      "INI key name within `[Section]`."},
     {"IniFile", "Value",                 FieldValueKind::String,      true,  "",                  "",
      "Formatted INI value (supports `[INSTALLDIR]`, `[ProductVersion]`, and custom dialog properties)."},
-    {"IniFile", "Action",                FieldValueKind::EnumChoice,  false, "add_line",          "add_line|create_line|add_tag",
-     "`add_line` (`0` = create or update key), `create_line` (`1` = write only if key does not exist), or `add_tag` (`3` = append comma-separated tag)."},
+    {"IniFile", "Action",                FieldValueKind::EnumChoice,  false, "add_line",          "add_line|set|create_line|create_only|add_tag|remove_key",
+     "`add_line` / `set` (`0` = create or update key), `create_line` / `create_only` (`1` = write only if key does not exist), `add_tag` (`3` = append comma-separated tag), or `remove_key`."},
     {"IniFile", "Feature",               FieldValueKind::String,      false, "Main",              "",
      "Feature ID owning this INI rule."},
     {"IniFile", "Component",             FieldValueKind::String,      false, "",                  "",
@@ -642,7 +644,7 @@ inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>
     {"Control", "Dialog",                FieldValueKind::String,      true,  "",                  "",
      "Target `[Dialog.<id>]` page owning this control."},
     {"Control", "Type",                  FieldValueKind::EnumChoice,  true,  "CheckBox",
-     "Label|Heading|Edit|PasswordEdit|PathEdit|CheckBox|RadioGroup|ComboBox|GroupBox",
+     "Text|Label|Heading|Edit|PasswordEdit|PathEdit|CheckBox|RadioGroup|RadioButtonGroup|ComboBox|ListBox|GroupBox|Line",
      "Control widget kind rendered in `SetupWizard.exe` and the IDE Visual Dialog Designer."},
     {"Control", "X",                     FieldValueKind::Integer,     false, "24",                "",
      "Horizontal position in 96-DPI logical pixels inside the wizard content area (`0..560`)."},
@@ -659,9 +661,11 @@ inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>
     {"Control", "Text",                  FieldValueKind::String,      false, "",                  "",
      "Control caption or prompt (include a `&` keyboard mnemonic on interactive inputs/checkboxes!)."},
     {"Control", "Items",                 FieldValueKind::String,      false, "",                  "",
-     "Pipe-separated `Value:Caption` options for `RadioGroup` or `ComboBox` controls."},
+     "Pipe-separated `Value:Caption` options for `RadioGroup`, `RadioButtonGroup`, `ComboBox`, or `ListBox` controls."},
     {"Control", "TabOrder",              FieldValueKind::Integer,     false, "0",                 "",
-     "Explicit keyboard `Tab` focus sequence order (`0` = document order)."}
+     "Explicit keyboard `Tab` focus sequence order (`0` = document order)."},
+    {"Control", "Required",              FieldValueKind::Boolean,     false, "false",             "",
+     "When `true`, blocks `&Next >` on this custom page until the user supplies a non-empty value."}
 });
 
 /// Returns `true` if `rootDirKey` points to a per-user Windows profile directory (requiring ICE38 HKCU KeyPath & ICE64 RemoveFolder!).

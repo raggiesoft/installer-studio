@@ -326,6 +326,7 @@ int wmain(int argc, wchar_t* argv[]) {
     for (std::size_t i = 1; i < args.size(); ++i) {
         const std::string& a = args[i];
         if (a == "--diagnostics=json") { jsonDiag = true; continue; }
+        if (a == "--check")            { switches.push_back(a); continue; }
         if (a == "--silent" || a == "/s" || a == "/S" || a == "/qn") { silentFlag = true; switches.push_back(a); continue; }
         if (a.rfind("/l=", 0) == 0 || a.rfind("--log=", 0) == 0) {
             logFilePath = std::filesystem::path(rsw::Utf8ToWide(a.substr(a.find('=') + 1)));

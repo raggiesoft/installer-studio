@@ -1656,7 +1656,10 @@ inline bool CompileManifestToMsi(
         const std::string rawVal  = ExpandArchToken(doc.GetString("Environment", eid, "Value", "[INSTALLDIR]"), arch);
         const std::string action  = AsciiLower(doc.GetString("Environment", eid, "Action", "append_path"));
         const std::string scope   = AsciiLower(doc.GetString("Environment", eid, "Scope", "auto"));
-        const bool remUninst      = doc.GetBool("Environment", eid, "RemoveOnUninstall", true);
+        const std::string onUnRaw = AsciiLower(TrimAscii(doc.GetString("Environment", eid, "OnUninstall")));
+        const bool remUninst      = !onUnRaw.empty()
+            ? (onUnRaw != "keep")
+            : doc.GetBool("Environment", eid, "RemoveOnUninstall", true);
         const std::string cond    = ExpandArchToken(doc.GetString("Environment", eid, "Condition"), arch);
         const std::string featId  = ensureFeatureExists(doc.GetString("Environment", eid, "Feature", features.front().id));
         const std::string expComp = AsciiLower(TrimAscii(doc.GetString("Environment", eid, "Component")));
@@ -1724,8 +1727,9 @@ inline bool CompileManifestToMsi(
         if (fileName.empty() || secName.empty() || keyName.empty()) continue;
 
         const std::string iniDirKey = ensureTargetDirKey(tRoot, tSub);
-        int actionCode = 0; // `msidbIniFileActionAddLine = 0`
-        if (actStr == "create_line") actionCode = 1;
+        int actionCode = 0; // `msidbIniFileActionAddLine = 0` (`add_line` / `set`)
+        if (actStr == "create_line" || actStr == "create_only") actionCode = 1;
+        else if (actStr == "remove_key") actionCode = 2;
         else if (actStr == "add_tag") actionCode = 3;
 
         std::string iComp;

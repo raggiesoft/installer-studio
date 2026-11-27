@@ -1268,7 +1268,7 @@ inline bool ExecuteNativeOrSfxTransaction(
         const std::string expVal = native_detail::ExpandInstallTokens(ini.value, opts.targetDir, manifest.version);
         if (act == "remove_key") {
             ::WritePrivateProfileStringW(wSec.c_str(), wKey.c_str(), nullptr, iniPath.wstring().c_str());
-        } else if (act == "create_only") {
+        } else if (act == "create_only" || act == "create_line") {
             wchar_t existingBuf[512]{};
             const DWORD got = ::GetPrivateProfileStringW(wSec.c_str(), wKey.c_str(), L"\x01__ABSENT__", existingBuf, static_cast<DWORD>(std::size(existingBuf)), iniPath.wstring().c_str());
             if (got == 0 || std::wcscmp(existingBuf, L"\x01__ABSENT__") == 0) {
@@ -1339,7 +1339,7 @@ inline bool ExecuteNativeOrSfxTransaction(
             if (removeOnUninst && !expVal.empty()) {
                 recordedEnvForUninstall.push_back({machScope, varName, "remove_segment", expVal});
             }
-        } else if (act == "set_if_absent") {
+        } else if (act == "set_if_absent" || act == "create_if_absent") {
             if (!hadPrior || TrimAscii(priorVal).empty()) {
                 if (!native_detail::WritePersistentEnvironmentVar(virtRegRoot, machScope, varName, expVal)) {
                     outError = "Failed writing environment variable '" + varName + "'.";

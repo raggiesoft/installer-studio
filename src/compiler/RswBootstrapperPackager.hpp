@@ -1607,12 +1607,16 @@ inline bool PackageNativeOrSfxExecutable(
              });
          }
          for (const auto& eid : doc.GetNamedSectionIds("Environment")) {
+             const std::string rawOnUn = TrimAscii(doc.GetString("Environment", eid, "OnUninstall"));
+             const std::string effOnUn = !rawOnUn.empty()
+                 ? rawOnUn
+                 : (doc.GetBool("Environment", eid, "RemoveOnUninstall", true) ? "remove" : "keep");
              nm.environments.push_back({
                  ExpandArchToken(doc.GetString("Environment", eid, "Name"), arch),
                  ExpandArchToken(doc.GetString("Environment", eid, "Value", "[INSTALLDIR]"), arch),
                  doc.GetString("Environment", eid, "Action", "append_path"),
                  doc.GetString("Environment", eid, "Scope", "auto"),
-                 doc.GetString("Environment", eid, "OnUninstall", "remove"),
+                 effOnUn,
                  doc.GetString("Environment", eid, "Feature", "Main")
              });
          }
