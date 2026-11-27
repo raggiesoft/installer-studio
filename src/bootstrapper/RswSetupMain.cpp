@@ -5607,6 +5607,55 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
             if (i + 1 >= args.size()) return ERROR_BAD_ARGUMENTS;
             return rsw::compact_suite::RunElevatedSuiteWorkerJob(std::filesystem::path(args[i + 1]));
         }
+        if (args[i] == L"--elevated-rssc-worker") {
+            if (i + 2 >= args.size()) return ERROR_BAD_ARGUMENTS;
+            const std::filesystem::path statePath(args[i + 1]);
+            const std::filesystem::path resultPath(args[i + 2]);
+            const std::uint8_t* bcPtr = nullptr;
+            std::size_t bcSz = 0;
+            std::vector<std::uint8_t> bcRaw;
+            std::string bcErr;
+            rsw::rssc::ScriptProgram prog;
+            if (!GetEmbeddedRcDataView(rsw::kResIdScriptBytecode, bcPtr, bcSz) || bcSz == 0 ||
+                !rsw::DecompressLzmsOrCopyRaw(bcPtr, bcSz, bcRaw, bcErr) ||
+                !rsw::rssc::LoadRaggieScriptBytecode(bcRaw.data(), bcRaw.size(), prog, bcErr)) {
+                return ERROR_INVALID_DATA;
+            }
+            rsw::rssc::VmExecutionOptions wOpts{};
+            wOpts.isElevatedWorker = true;
+            wchar_t selfExe[MAX_PATH * 4]{};
+            ::GetModuleFileNameW(nullptr, selfExe, static_cast<DWORD>(std::size(selfExe)));
+            wOpts.runningExePath = std::filesystem::path(selfExe);
+            const std::uint8_t* pakPtr = nullptr;
+            std::size_t pakSz = 0;
+            if (GetEmbeddedRcDataView(rsw::kResIdSfxOrNativeArchive, pakPtr, pakSz) && pakSz > 0) {
+                wOpts.embeddedPakBytes = pakPtr;
+                wOpts.embeddedPakSize  = pakSz;
+            }
+            std::ifstream sf(statePath, std::ios::binary);
+            std::ostringstream sss;
+            sss << sf.rdbuf();
+            ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+            rsw::rssc::RaggieScriptVm vm(prog, wOpts);
+            vm.ImportWizardStateJson(sss.str());
+            const auto res = vm.ExecuteCommitPhaseOnly();
+            {
+                std::ofstream rf(resultPath, std::ios::binary | std::ios::trunc);
+                rsw::rssc::Value outMap = rsw::rssc::Value::FromMap({
+                    {"ok",           rsw::rssc::Value::FromBool(res.ok)},
+                    {"exitCode",     rsw::rssc::Value::FromInt(res.exitCode)},
+                    {"rebootNeeded", rsw::rssc::Value::FromBool(res.rebootNeeded)},
+                    {"rolledBack",   rsw::rssc::Value::FromBool(res.rolledBack)},
+                    {"errorMessage", rsw::rssc::Value::FromStr(res.errorMessage)}
+                });
+                std::ostringstream jss;
+                rsw::rssc::json_detail::StringifyJsonRec(jss, outMap, 2, 0);
+                const std::string jstr = jss.str();
+                rf.write(jstr.data(), static_cast<std::streamsize>(jstr.size()));
+            }
+            ::CoUninitialize();
+            return res.exitCode;
+        }
         if (args[i] == L"--native-uninstall") {
             bool quietUninst = false;
             for (const auto& ua : args) {
@@ -5682,6 +5731,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
             }
 
             rsw::rssc::VmExecutionOptions vmOpts{};
+            vmOpts.enableDeferredUacBroker = true;
             wchar_t selfBuf[MAX_PATH * 4]{};
             ::GetModuleFileNameW(nullptr, selfBuf, static_cast<DWORD>(std::size(selfBuf)));
             vmOpts.runningExePath = std::filesystem::path(selfBuf);

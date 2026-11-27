@@ -56,7 +56,9 @@
 #include "../compiler/RswExtraPackages.hpp"
 #include "../compiler/RswValidator.hpp"
 #include "../compiler/RswVpatEmitter.hpp"
+#include "../common/RswRaggieScript.hpp"
 #include "RswIdeAeroWizards.hpp"
+#include "RswSyntaxHighlighter.hpp"
 
 #include <commdlg.h>
 #include <shellapi.h>
@@ -124,6 +126,7 @@ enum IdeId : int {
     IDM_EDITION_ARCHITECT    = 2023,
     IDM_HELP_ABOUT           = 2024,
     IDM_HELP_TOPICS          = 2025,
+    IDM_FILE_NEW_RSSC        = 2026,
 
     // Persistent Toolbar & Category Navigation Tree
     IDC_TB_WIZARD            = 2100,
@@ -731,8 +734,12 @@ public:
     HWND hEntBase = nullptr, hEntBaseBtn = nullptr, hEntTarg = nullptr, hEntTargBtn = nullptr;
     HWND hEntGenMst = nullptr, hEntGenMsp = nullptr, hEntRelWizBtn = nullptr;
 
-    // View 11: Full Monospace `.rsip` Source
+    // View 11: Full Syntax-Highlighted `.rsip` / `.rssc` Code Editor (`Msftedit.dll` RichEdit 5.0 + Gutter!)
+    static constexpr UINT_PTR kSyntaxHighlightTimerId = 9901;
     HWND hSourceEdit = nullptr;
+    RECT sourceGutterRc{};
+    bool isRsscMode           = false;
+    bool suppressSourceChange = false;
 
     ~InstallerStudioIde() {
         DestroyFonts();
@@ -782,7 +789,8 @@ public:
         ::AppendMenuW(hFile, MF_STRING, IDM_WIZ_SUITE,      L"New Unified Multi-Product &Suite Wizard (.rsip)...");
         ::AppendMenuW(hFile, MF_STRING, IDM_WIZ_SFX_SIMPLE, L"New Self-Extracting .E&XE / Simple Native Setup Wizard...");
         ::AppendMenuW(hFile, MF_STRING, IDM_FILE_NEW,       L"&New Starter .rsip Project\tCtrl+N");
-        ::AppendMenuW(hFile, MF_STRING, IDM_FILE_OPEN,      L"&Open .rsip Project or .rsis Suite...\tCtrl+O");
+        ::AppendMenuW(hFile, MF_STRING, IDM_FILE_NEW_RSSC,  L"New &RaggieScript (.rssc) Setup...");
+        ::AppendMenuW(hFile, MF_STRING, IDM_FILE_OPEN,      L"&Open .rsip, .rsis, or .rssc...\tCtrl+O");
         ::AppendMenuW(hFile, MF_STRING, IDM_FILE_SAVE,      L"&Save Project (Lossless AST)\tCtrl+S");
         ::AppendMenuW(hFile, MF_SEPARATOR, 0, nullptr);
         ::AppendMenuW(hFile, MF_STRING, IDM_FILE_EXIT,      L"E&xit");
@@ -890,8 +898,8 @@ public:
         addView(hUi, VIEW_MSI_DIALOGS, L"MSI.DLL Dialog Designer", rsw::ui::StudioTreeIcon::MsiDialogSql);
 
         HTREEITEM hDep = addCat(L"Deployment & Source");
-        addView(hDep, VIEW_SIGN_REL, L"Signing, .MST & .MSP", rsw::ui::StudioTreeIcon::CertShield);
-        addView(hDep, VIEW_SOURCE,   L".RSIP Source (AST)",   rsw::ui::StudioTreeIcon::SourceCode);
+        addView(hDep, VIEW_SIGN_REL, L"Signing, .MST & .MSP",  rsw::ui::StudioTreeIcon::CertShield);
+        addView(hDep, VIEW_SOURCE,   L"Source & RaggieScript", rsw::ui::StudioTreeIcon::SourceCode);
 
         for (HTREEITEM c : {hAppInfo, hArch, hUi, hDep}) {
             TreeView_Expand(hNavTree, c, TVE_EXPAND);
@@ -1203,12 +1211,16 @@ public:
         hEntGenMsp    = mkBtn(VIEW_SIGN_REL, L"Emit .MS&P Patch",     IDC_ENT_GEN_MSP);
         hEntRelWizBtn = mkBtn(VIEW_SIGN_REL, L"&Release / .MST / .MSP AeroWizard...", IDC_ENT_REL_WIZ_BTN);
 
-        // --- VIEW 11: Lossless `.rsip` Source ---
+        // --- VIEW 11: Syntax-Highlighted `.rsip` / `.rssc` Code Editor (`Msftedit.dll` RichEdit 5.0) ---
+        const bool hasRichEdit = rsw::ide_syntax::EnsureRichEdit50Loaded();
         hSourceEdit = RegisterViewCtrl(VIEW_SOURCE, ::CreateWindowExW(
-            WS_EX_CLIENTEDGE, L"EDIT", L"",
+            WS_EX_CLIENTEDGE, hasRichEdit ? MSFTEDIT_CLASS : L"EDIT", L"",
             WS_CHILD | WS_TABSTOP | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_WANTRETURN,
             0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SOURCE_EDIT)), hInst, nullptr));
-        ::SendMessageW(hSourceEdit, EM_SETLIMITTEXT, 0, 0);
+        ::SendMessageW(hSourceEdit, EM_EXLIMITTEXT, 0, static_cast<LPARAM>(8 * 1024 * 1024));
+        if (hasRichEdit) {
+            ::SendMessageW(hSourceEdit, EM_SETEVENTMASK, 0, ENM_CHANGE | ENM_SCROLL);
+        }
 
         // Bottom Console (`view = -1`)
         hConsoleEdit = RegisterViewCtrl(-1, ::CreateWindowExW(
@@ -1633,8 +1645,13 @@ public:
             }
         }
 
-        // View 11: Full Monospace `.rsip` Source
-        ::MoveWindow(hSourceEdit, paneX, contentTop, paneW, mainH, TRUE);
+        // View 11: Syntax-Highlighted `.rsip` / `.rssc` Code Editor + Line-Number Gutter
+        {
+            const int gutterW = S(48);
+            sourceGutterRc = RECT{paneX, contentTop, paneX + gutterW, contentTop + mainH};
+            ::MoveWindow(hSourceEdit, paneX + gutterW, contentTop, std::max(S(240), paneW - gutterW), mainH, TRUE);
+            RefreshSourceSyntaxHighlighting();
+        }
 
         UpdateActiveViewVisibility();
         ::InvalidateRect(hWnd, nullptr, TRUE);
@@ -1653,15 +1670,30 @@ public:
     std::string ReadSourceEditorUtf8() const {
         const int cch = ::GetWindowTextLengthW(hSourceEdit);
         if (cch <= 0) return {};
-        std::wstring ws(static_cast<std::size_t>(cch) + 1, L'\0');
-        ::GetWindowTextW(hSourceEdit, ws.data(), cch + 1);
-        ws.resize(static_cast<std::size_t>(cch));
+        std::wstring ws(static_cast<std::size_t>(cch) + 4, L'\0');
+        const int got = ::GetWindowTextW(hSourceEdit, ws.data(), cch + 4);
+        ws.resize(static_cast<std::size_t>(std::max(0, got)));
         return rsw::WideToUtf8(ws);
+    }
+
+    void RefreshSourceSyntaxHighlighting() {
+        if (!hSourceEdit || !rsw::ide_syntax::EnsureRichEdit50Loaded()) return;
+        const std::wstring sample = rsw::Utf8ToWide(ReadSourceEditorUtf8().substr(0, 512));
+        const auto mode = isRsscMode
+            ? rsw::ide_syntax::SourceSyntaxMode::RaggieScript
+            : rsw::ide_syntax::DetectSyntaxMode(currentFilePath, sample);
+        rsw::ide_syntax::ApplySyntaxHighlightingToRichEdit(hSourceEdit, mode, theme, suppressSourceChange);
+        if (activeView == VIEW_SOURCE && hWnd) {
+            ::InvalidateRect(hWnd, &sourceGutterRc, FALSE);
+        }
     }
 
     void SyncSourceEditorFromAst() {
         astDoc.useCrlf = true;
+        suppressSourceChange = true;
         ::SetWindowTextW(hSourceEdit, rsw::Utf8ToWide(astDoc.Serialize()).c_str());
+        suppressSourceChange = false;
+        RefreshSourceSyntaxHighlighting();
     }
 
     rsw::RswManifestDocument ResolvedEffectiveDoc() const {
@@ -2398,6 +2430,7 @@ public:
             ::SendMessageW(hSuiteCombo, CB_SETCURSEL, 0, 0);
         }
         currentFilePath = path;
+        isRsscMode = (_wcsicmp(path.extension().wstring().c_str(), L".rssc") == 0);
         selectedDestRoot.clear();
         selectedDestSubdir.clear();
         selectedFtId.clear();
@@ -2407,10 +2440,52 @@ public:
         extraSessionRegKeys.clear();
         activeRegFeatureFilter.clear();
 
+        if (isRsscMode) {
+            suppressSourceChange = true;
+            ::SetWindowTextW(hSourceEdit, rsw::Utf8ToWide(utf8).c_str());
+            suppressSourceChange = false;
+            RefreshSourceSyntaxHighlighting();
+            SelectIdeView(VIEW_SOURCE);
+            UpdateWindowCaptionWithEdition();
+            return;
+        }
+
         astDoc = rsw::ParseManifestText(utf8, path);
         SyncSourceEditorFromAst();
         SyncAllViewsFromAst();
         UpdateWindowCaptionWithEdition();
+    }
+
+    static std::string BuildStarterRsscTemplate() {
+        return
+            "// ================================================================================\r\n"
+            "// Starter RaggieScript (.rssc) Setup — RaggieSoft Installer Studio\r\n"
+            "//   Press F7 to run compile-time RSW701/RSW702 checks, or F5 to compile Setup.exe!\r\n"
+            "// ================================================================================\r\n\r\n"
+            "use installer;\r\n\r\n"
+            "package \"My RaggieSoft Application\" {\r\n"
+            "    version: v\"1.0.0\";\r\n"
+            "    publisher: \"RaggieSoft\";\r\n"
+            "    scope: Scope.Machine;\r\n"
+            "    uac: Uac.Deferred; // Runs wizard un-elevated, then prompts UAC right at Install!\r\n"
+            "}\r\n\r\n"
+            "param createDesktopIcon: bool = true;\r\n\r\n"
+            "wizard {\r\n"
+            "    step Welcome {\r\n"
+            "        if (!ui.confirm(\"Ready to Install\", \"Click Continue to begin installation.\", shield: true)) {\r\n"
+            "            wizard.cancel();\r\n"
+            "        }\r\n"
+            "    }\r\n"
+            "}\r\n\r\n"
+            "install {\r\n"
+            "    ui.progress(25, \"Creating installation directory...\");\r\n"
+            "    fs.mkdir(installDir);\r\n"
+            "    fs.writeJson(installDir / \"install-receipt.json\", {\r\n"
+            "        arch: sys.arch(),\r\n"
+            "        version: str(product.version)\r\n"
+            "    });\r\n"
+            "    ui.progress(100, \"Installation complete.\");\r\n"
+            "}\r\n";
     }
 
     void UpdateWindowCaptionWithEdition() {
@@ -2419,7 +2494,9 @@ public:
         if (hasActiveSuite) {
             title += rsw::Utf8ToWide(activeSuite.name) + L" / ";
         }
-        title += currentFilePath.empty() ? L"[Untitled.rsip]" : currentFilePath.filename().wstring();
+        title += currentFilePath.empty()
+            ? (isRsscMode ? L"[Untitled.rssc]" : L"[Untitled.rsip]")
+            : currentFilePath.filename().wstring();
         ::SetWindowTextW(hWnd, title.c_str());
     }
 
@@ -2452,6 +2529,18 @@ public:
     }
 
     void OpenProjectOrSuiteFile(const std::filesystem::path& path) {
+        if (_wcsicmp(path.extension().wstring().c_str(), L".rssc") == 0) {
+            std::ifstream in(path, std::ios::binary);
+            if (!in) {
+                AppendConsole(L"[ERROR] Could not open RaggieScript file: " + path.wstring() + L"\r\n");
+                return;
+            }
+            std::ostringstream ss;
+            ss << in.rdbuf();
+            LoadProjectText(ss.str(), path, false);
+            AppendConsole(L"[RAGGIESCRIPT] Opened " + path.filename().wstring() + L" with RichEdit 5.0 syntax highlighting.\r\n");
+            return;
+        }
         rsw::RswManifestDocument d;
         std::string err;
         if (!rsw::LoadManifestFile(path, d, err)) {
@@ -2607,6 +2696,31 @@ public:
     }
 
     bool SaveCurrentProject() {
+        if (isRsscMode) {
+            if (currentFilePath.empty()) {
+                wchar_t buf[MAX_PATH * 2] = L"setup.rssc";
+                OPENFILENAMEW ofn{};
+                ofn.lStructSize = sizeof(ofn);
+                ofn.hwndOwner   = hWnd;
+                ofn.lpstrFilter = L"RaggieScript Files (*.rssc)\0*.rssc\0All Files (*.*)\0*.*\0";
+                ofn.lpstrFile   = buf;
+                ofn.nMaxFile    = static_cast<DWORD>(std::size(buf));
+                ofn.lpstrDefExt = L"rssc";
+                ofn.Flags       = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+                if (!::GetSaveFileNameW(&ofn)) return false;
+                currentFilePath = buf;
+            }
+            const std::string raw = ReadSourceEditorUtf8();
+            std::ofstream out(currentFilePath, std::ios::binary | std::ios::trunc);
+            if (!out) {
+                AppendConsole(L"[ERROR] Failed saving RaggieScript file: " + currentFilePath.wstring() + L"\r\n");
+                return false;
+            }
+            out.write(raw.data(), static_cast<std::streamsize>(raw.size()));
+            UpdateWindowCaptionWithEdition();
+            AppendConsole(L"[OK] Saved RaggieScript (.rssc): " + currentFilePath.wstring() + L"\r\n");
+            return true;
+        }
         astDoc = rsw::ParseManifestText(ReadSourceEditorUtf8(), currentFilePath);
         astDoc.useCrlf = true;
         if (currentFilePath.empty()) {
@@ -2637,10 +2751,26 @@ public:
     }
 
     void RunValidation() {
+        ::SetWindowTextW(hConsoleEdit, L"");
+        if (isRsscMode) {
+            rsw::rssc::ScriptProgram prog;
+            std::vector<rsw::rssc::ScriptDiagnostic> diags;
+            std::map<std::string, std::string> defs{{"ARCH", SelectedArch()}};
+            const bool ok = rsw::rssc::CompileRaggieScriptText(ReadSourceEditorUtf8(), currentFilePath, prog, diags, defs);
+            if (ok) {
+                AppendConsole(L"[PASS] 0 errors — RaggieScript syntax, RSW701 Wizard Phase Isolation, & RSW702 Capability Sandbox verified for '" +
+                              rsw::Utf8ToWide(SelectedArch()) + L"'.\r\n");
+            } else {
+                for (const auto& d : diags) {
+                    AppendConsole(L"[" + rsw::Utf8ToWide(d.code) + L" Line " + std::to_wstring(d.line) + L"] " +
+                                  rsw::Utf8ToWide(d.message) + L"\r\n");
+                }
+            }
+            return;
+        }
         astDoc = rsw::ParseManifestText(ReadSourceEditorUtf8(), currentFilePath);
         rsw::RswManifestDocument resolvedDoc;
         std::string incErr;
-        ::SetWindowTextW(hConsoleEdit, L"");
         if (!rsw::ResolveManifestIncludesAndVars(
                 astDoc,
                 hasActiveSuite ? activeSuite.variables : std::map<std::string, std::string>{},
@@ -3306,6 +3436,8 @@ public:
             PaintLiveWizardPreview(hdc, previewCanvasRc, dpi);
         } else if (activeView == VIEW_MSI_DIALOGS && msiCanvasRc.right > msiCanvasRc.left + S(160)) {
             PaintMsiDialogDesignerCanvas(hdc, msiCanvasRc, dpi);
+        } else if (activeView == VIEW_SOURCE && sourceGutterRc.right > sourceGutterRc.left) {
+            rsw::ide_syntax::PaintLineNumberGutter(hdc, sourceGutterRc, hSourceEdit, hFontMono, theme);
         }
 
         ::SelectObject(hdc, oldF);
@@ -3521,6 +3653,14 @@ public:
                 }
                 break;
             }
+            case WM_TIMER: {
+                if (wParam == kSyntaxHighlightTimerId) {
+                    ::KillTimer(hWnd, kSyntaxHighlightTimerId);
+                    self->RefreshSourceSyntaxHighlighting();
+                    return 0;
+                }
+                break;
+            }
             case WM_ERASEBKGND:
                 return 1;
             case WM_PAINT: {
@@ -3555,6 +3695,16 @@ public:
             case WM_COMMAND: {
                 const int id   = LOWORD(wParam);
                 const int code = HIWORD(wParam);
+
+                if (id == IDC_SOURCE_EDIT) {
+                    if (code == EN_CHANGE && !self->suppressSourceChange) {
+                        ::SetTimer(hWnd, kSyntaxHighlightTimerId, 220, nullptr);
+                        if (self->activeView == VIEW_SOURCE) ::InvalidateRect(hWnd, &self->sourceGutterRc, FALSE);
+                    } else if (code == EN_VSCROLL && self->activeView == VIEW_SOURCE) {
+                        ::InvalidateRect(hWnd, &self->sourceGutterRc, FALSE);
+                    }
+                    return 0;
+                }
 
                 if ((id == IDC_UI_PREVIEW_STEP || id == IDC_UI_SETUP_TYPES || id == IDC_MSI_DLG_SELECT) && code == CBN_SELCHANGE) {
                     ::InvalidateRect(hWnd, nullptr, FALSE);
@@ -3744,14 +3894,23 @@ public:
                     // --- File & Standard Views ---
                     case IDM_FILE_NEW:
                     case IDC_TB_NEW:
+                        self->isRsscMode = false;
                         self->LoadProjectText(BuildStarterRsipTemplate(), {});
+                        return 0;
+                    case IDM_FILE_NEW_RSSC:
+                        self->isRsscMode = true;
+                        self->LoadProjectText(BuildStarterRsscTemplate(), {});
+                        self->isRsscMode = true;
+                        self->RefreshSourceSyntaxHighlighting();
+                        self->UpdateWindowCaptionWithEdition();
+                        self->AppendConsole(L"[RAGGIESCRIPT] Created starter .rssc setup script with deferred UAC.\r\n");
                         return 0;
                     case IDM_FILE_OPEN:
                     case IDC_TB_OPEN: {
                         std::wstring p;
                         if (self->PickPathDialog(
                                 false,
-                                L"Installer Studio Projects & Suites (*.rsip;*.rsis;*.rsii)\0*.rsip;*.rsis;*.rsii;*.rssp;*.rsw\0All Files\0*.*\0",
+                                L"Installer Studio Projects, Suites & RaggieScript (*.rsip;*.rsis;*.rssc;*.rsii)\0*.rsip;*.rsis;*.rssc;*.rsii;*.rssp;*.rsw\0RaggieScript Files (*.rssc)\0*.rssc\0All Files\0*.*\0",
                                 p)) {
                             self->OpenProjectOrSuiteFile(p);
                         }
@@ -4367,6 +4526,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
             std::filesystem::remove_all(tmpVpatDir, ec);
 
             const auto rep = rsw::ValidateManifestDocument(resolved, "arm64");
+            // Also verify RichEdit 5.0 lexical syntax tokenizer for both `.rsip` and `.rssc`!
+            const auto palDark = rsw::ide_syntax::SyntaxPalette::FromTheme(rsw::ui::RswTheme{});
+            std::vector<rsw::ide_syntax::ColorSpan> rsipSpans, rsscSpans;
+            rsw::ide_syntax::TokenizeForHighlighting(rsw::Utf8ToWide(roundTrip), rsw::ide_syntax::SourceSyntaxMode::ManifestIni, palDark, rsipSpans);
+            rsw::ide_syntax::TokenizeForHighlighting(rsw::Utf8ToWide(InstallerStudioIde::BuildStarterRsscTemplate()), rsw::ide_syntax::SourceSyntaxMode::RaggieScript, palDark, rsscSpans);
+            if (rsipSpans.size() < 5 || rsscSpans.size() < 10) return 7;
             return rep.IsOk() ? 0 : 4;
         }
     }

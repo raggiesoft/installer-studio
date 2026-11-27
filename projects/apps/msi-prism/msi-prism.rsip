@@ -1,0 +1,88 @@
+; ================================================================================
+; FILE: projects/apps/msi-prism/msi-prism.rsip
+; PROJECT: RaggieSoft MSI Prism — Standalone Windows 11 MSI/MSM/MST/MSP SQL Editor
+; WEBSITE: https://raggiesoftstudio.com  |  DEV HUB: https://raggiesoft.dev
+; LICENSE: MIT License (Copyright (c) 2026 Michael P. Ragsdale / RaggieSoft)
+;
+; PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+;   Packages **RaggieSoft MSI Prism** (`msiprism.exe`) as its own standalone,
+;   zero-dependency 64-bit (`x64` & `ARM64`) Windows 11 developer application!
+;   Can be installed standalone alongside or independently of RaggieSoft Installer
+;   Studio, registering `.msi`, `.msm`, and `.msp` right-click "Open in MSI Prism"
+;   verbs and a Start Menu shortcut.
+; ================================================================================
+
+[Package]
+SchemaVersion         = 0.6
+Name                  = RaggieSoft MSI Prism
+Tagline               = 64-Bit Read/Write MSI, MSM, MST & MSP Relational SQL Table Editor
+Version               = 0.6.0
+Publisher             = RaggieSoft
+Manufacturer          = RaggieSoft
+AboutUrl              = https://raggiesoftstudio.com/installer-studio
+UpgradeCode           = {3E94B7C2-84A1-4F6D-9B28-524147505249}
+Description           = Standalone 64-bit Windows Installer SQL database inspector, table editor, ICE80 validator, and MST/MSP diff generator
+Architecture          = $(ARCH)
+Scope                 = machine
+OutputName            = raggiesoft-msi-prism-v$(VERSION)-$(ARCH)
+UniversalOutputName   = raggiesoft-msi-prism-v$(VERSION)
+OutputDir             = out
+BuildBootstrapper     = true
+BuildUniversal        = true
+CabinetCompression    = lzx
+
+[Requirements]
+MinWindowsBuild       = 22000
+OsLaunchMessage       = RaggieSoft MSI Prism requires 64-bit Windows 11 (Build 22000) or later.
+
+[Install]
+DefaultSubdir         = RaggieSoft\RaggieSoft Studio\MSI Prism
+StartMenuFolder       = RaggieSoft Studio
+MainExecutable        = msiprism.exe
+
+[UI]
+WizardLayout          = fluentmica
+AccentPrimaryHex      = #0EA5E9
+AccentSecondaryHex    = #FBBF24
+LicenseRtf            = ..\..\..\examples\hello-raggiesoft\License.rtf
+IconFile              = ..\..\..\examples\hello-raggiesoft\HelloRaggieSoft.ico
+WelcomeHeadline       = Welcome to RaggieSoft MSI Prism Setup
+InstallButtonText     = &Install
+FinishLaunchCheckbox  = &Launch RaggieSoft MSI Prism when setup finishes
+OfferLaunchOnFinish   = true
+
+[Feature.Main]
+Title                 = RaggieSoft MSI Prism SQL Editor
+Description           = Native 64-bit read/write MSI, MSM, MST, and MSP relational SQL table editor and CLI inspector (msiprism.exe).
+Inclusion             = required
+DisallowAbsent        = true
+
+[Payload.PrismExe]
+Source                = ..\..\..\bin\$(ARCH)\msiprism.exe
+Feature               = Main
+
+[Payload.LicenseDoc]
+Source                = ..\..\..\examples\hello-raggiesoft\License.rtf
+Feature               = Main
+
+[Shortcut.StartMenu]
+Name                  = RaggieSoft MSI Prism
+TargetFile            = msiprism.exe
+Location              = StartMenu
+Description           = Inspect and edit .MSI, .MSM, and .MSP relational SQL tables
+Feature               = Main
+
+[Shortcut.Desktop]
+Name                  = RaggieSoft MSI Prism
+TargetFile            = msiprism.exe
+Location              = Desktop
+Description           = Inspect and edit .MSI, .MSM, and .MSP relational SQL tables
+Feature               = Main
+
+[Registry.StudioDiscovery]
+Root                  = HKLM
+Key                   = SOFTWARE\RaggieSoft\RaggieSoft Studio\MSI Prism
+Name                  = Install Path
+Value                 = [INSTALLDIR]
+Type                  = string
+Feature               = Main

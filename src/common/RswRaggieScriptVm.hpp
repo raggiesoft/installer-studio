@@ -62,7 +62,9 @@
 #include <aclapi.h>
 #include <commctrl.h>
 #include <msi.h>
+#include <msiquery.h>
 #include <regex>
+#include <restartmanager.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shobjidl.h>
@@ -96,6 +98,7 @@
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "msi.lib")
+#pragma comment(lib, "rstrtmgr.lib")
 #pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 namespace rsw::rssc {
@@ -1034,6 +1037,85 @@ inline bool VerifyAuthenticodeSignature(const std::filesystem::path& filePath) n
     return status == ERROR_SUCCESS;
 }
 
+/// RAII `MSIHANDLE` wrapper for direct SQL table queries, mutations, and stream operations inside `msi.*`.
+struct VmMsiHandle {
+    MSIHANDLE h = 0;
+    VmMsiHandle() = default;
+    explicit VmMsiHandle(MSIHANDLE inH) noexcept : h(inH) {}
+    ~VmMsiHandle() { if (h) ::MsiCloseHandle(h); }
+    VmMsiHandle(const VmMsiHandle&) = delete;
+    VmMsiHandle& operator=(const VmMsiHandle&) = delete;
+    VmMsiHandle(VmMsiHandle&& o) noexcept : h(o.h) { o.h = 0; }
+    VmMsiHandle& operator=(VmMsiHandle&& o) noexcept {
+        if (this != &o) {
+            if (h) ::MsiCloseHandle(h);
+            h = o.h;
+            o.h = 0;
+        }
+        return *this;
+    }
+    MSIHANDLE Get() const noexcept { return h; }
+    MSIHANDLE* Put() noexcept {
+        if (h) { ::MsiCloseHandle(h); h = 0; }
+        return &h;
+    }
+    explicit operator bool() const noexcept { return h != 0; }
+};
+
+/// External UI callback context forwarding Windows Installer ticks & action descriptions into `RaggieScriptVm`!
+struct RsscMsiExternalUiContext {
+    const std::atomic<bool>* cancelFlag = nullptr;
+    std::function<void(int permille, int compPermille, const std::wstring& status)> onProgress;
+    long long totalTicks = 1000;
+    long long curTicks   = 0;
+    long long stepTicks  = 1;
+    bool      forward    = true;
+    int       permille   = 0;
+    std::wstring curDesc;
+};
+
+inline INT CALLBACK OnRsscMsiExternalUiRecord(void* pvContext, UINT iMessageType, MSIHANDLE hRecord) {
+    auto* ctx = static_cast<RsscMsiExternalUiContext*>(pvContext);
+    if (!ctx) return 0;
+    if (ctx->cancelFlag && ctx->cancelFlag->load()) return IDCANCEL;
+
+    const UINT kind = iMessageType & 0xFF000000u;
+    if (kind == INSTALLMESSAGE_ACTIONSTART && hRecord) {
+        wchar_t descBuf[512]{};
+        DWORD cch = static_cast<DWORD>(std::size(descBuf));
+        if (::MsiRecordGetStringW(hRecord, 2, descBuf, &cch) == ERROR_SUCCESS && descBuf[0] != L'\0') {
+            ctx->curDesc = descBuf;
+            if (ctx->onProgress) ctx->onProgress(ctx->permille, ctx->permille, ctx->curDesc);
+        }
+        return IDOK;
+    }
+    if (kind == INSTALLMESSAGE_PROGRESS && hRecord && ::MsiRecordGetFieldCount(hRecord) >= 2) {
+        const int subType = ::MsiRecordGetInteger(hRecord, 1);
+        const int f2      = ::MsiRecordGetInteger(hRecord, 2);
+        const int f3      = ::MsiRecordGetInteger(hRecord, 3);
+        if (subType == 0) {
+            ctx->totalTicks = std::max<long long>(1, f2);
+            ctx->forward    = (f3 == 0);
+            ctx->curTicks   = ctx->forward ? 0 : ctx->totalTicks;
+        } else if (subType == 1) {
+            if (f3 != 0) ctx->stepTicks = std::max<int>(1, f2);
+        } else if (subType == 2) {
+            const long long delta = (f2 != MSI_NULL_INTEGER && f2 > 0) ? f2 : ctx->stepTicks;
+            if (ctx->forward) ctx->curTicks += delta;
+            else ctx->curTicks = std::max<long long>(0, ctx->curTicks - delta);
+        } else if (subType == 3) {
+            ctx->totalTicks += std::max<int>(0, f2);
+        }
+        ctx->permille = static_cast<int>(
+            std::clamp<long long>((ctx->curTicks * 1000LL) / std::max<long long>(1, ctx->totalTicks), 0, 1000));
+        if (ctx->onProgress) {
+            ctx->onProgress(ctx->permille, ctx->permille, ctx->curDesc.empty() ? L"Applying Windows Installer package..." : ctx->curDesc);
+        }
+        return IDOK;
+    }
+    return 0;
+}
+
 } // namespace host_detail
 
 // ================================================================================
@@ -1043,6 +1125,8 @@ struct VmExecutionOptions {
     bool                                                  silentMode        = false;
     bool                                                  passiveMode       = false;
     bool                                                  maintenanceMode   = false;
+    bool                                                  enableDeferredUacBroker = false; // Spawns `--elevated-rssc-worker` right after `wizard`!
+    bool                                                  isElevatedWorker  = false;       // True inside `--elevated-rssc-worker` child process
     std::string                                           maintenanceAction = "install"; // `"install"` | `"repair"` | `"uninstall"`
     std::string                                           repairModeArg     = "QuickRepair";
     bool                                                  purgeUserDataArg  = false;
@@ -1091,8 +1175,140 @@ public:
         PopulateBuiltInGlobals();
     }
 
+    ~RaggieScriptVm() {
+        if (hasRmSession_) {
+            ::RmEndSession(rmSessionHandle_);
+            hasRmSession_ = false;
+        }
+    }
+
     Scope& GlobalScope() noexcept { return globalScope_; }
     const Scope& GlobalScope() const noexcept { return globalScope_; }
+
+    /// Serializes all wizard-chosen variables (`globalScope_`) + `featureStates_` into UTF-8 JSON
+    /// so an un-elevated `asInvoker` wizard process can hand off exact user choices to an elevated
+    /// `--elevated-rssc-worker` child right at Commit time!
+    std::string ExportWizardStateJson() const {
+        std::map<std::string, Value> varsMap;
+        static const std::set<std::string> kSkipBuiltIns = {
+            "EXIT_OK", "EXIT_ELEVATION_REQUIRED", "EXIT_REBOOT_NEEDED", "EXIT_UNSUPPORTED_OS",
+            "EXIT_PREREQ_MISSING", "EXIT_DOWNLOAD_FAILED", "Scope", "Uac", "Token", "RegView",
+            "Icon", "Hive", "SetupMode", "WizardStyle", "Delivery", "product"
+        };
+        for (const auto& [k, slot] : globalScope_.vars) {
+            if (kSkipBuiltIns.count(k)) continue;
+            varsMap[k] = slot.value;
+        }
+        std::map<std::string, Value> featsMap;
+        for (const auto& [fid, sel] : featureStates_) {
+            featsMap[fid] = Value::FromBool(sel);
+        }
+        Value root = Value::FromMap({
+            {"vars",              Value::FromMap(std::move(varsMap))},
+            {"features",          Value::FromMap(std::move(featsMap))},
+            {"maintenanceAction", Value::FromStr(opts_.maintenanceAction)},
+            {"repairModeArg",     Value::FromStr(opts_.repairModeArg)},
+            {"purgeUserDataArg",  Value::FromBool(opts_.purgeUserDataArg)},
+            {"supportDir",        Value::FromStr(WideToUtf8(opts_.supportDirPath.wstring()))},
+            {"logFile",           Value::FromStr(WideToUtf8(opts_.logFilePath.wstring()))},
+            {"silentMode",        Value::FromBool(opts_.silentMode)},
+            {"passiveMode",       Value::FromBool(opts_.passiveMode)}
+        });
+        std::ostringstream oss;
+        json_detail::StringifyJsonRec(oss, root, 2, 0);
+        return oss.str();
+    }
+
+    /// Hydrates wizard-chosen variables & feature states inside `--elevated-rssc-worker` before Commit!
+    bool ImportWizardStateJson(std::string_view jsonText) {
+        json_detail::JsonReader jr{jsonText, 0};
+        Value root = jr.ParseValue();
+        if (root.kind != ValKind::Map || !root.mapVal) return false;
+
+        if (root.mapVal->count("maintenanceAction")) opts_.maintenanceAction = (*root.mapVal)["maintenanceAction"].AsString();
+        if (root.mapVal->count("repairModeArg"))     opts_.repairModeArg     = (*root.mapVal)["repairModeArg"].AsString();
+        if (root.mapVal->count("purgeUserDataArg"))  opts_.purgeUserDataArg  = (*root.mapVal)["purgeUserDataArg"].AsBool();
+        if (root.mapVal->count("silentMode"))        opts_.silentMode        = (*root.mapVal)["silentMode"].AsBool();
+        if (root.mapVal->count("passiveMode"))       opts_.passiveMode       = (*root.mapVal)["passiveMode"].AsBool();
+        if (root.mapVal->count("supportDir") && !(*root.mapVal)["supportDir"].AsString().empty()) {
+            opts_.supportDirPath = std::filesystem::path(Utf8ToWide((*root.mapVal)["supportDir"].AsString()));
+        }
+        if (root.mapVal->count("logFile") && !(*root.mapVal)["logFile"].AsString().empty()) {
+            opts_.logFilePath = std::filesystem::path(Utf8ToWide((*root.mapVal)["logFile"].AsString()));
+        }
+        if (root.mapVal->count("features") && (*root.mapVal)["features"].kind == ValKind::Map && (*root.mapVal)["features"].mapVal) {
+            for (const auto& [fid, fv] : *(*root.mapVal)["features"].mapVal) {
+                featureStates_[fid] = fv.AsBool();
+            }
+        }
+        if (root.mapVal->count("vars") && (*root.mapVal)["vars"].kind == ValKind::Map && (*root.mapVal)["vars"].mapVal) {
+            for (const auto& [vk, vv] : *(*root.mapVal)["vars"].mapVal) {
+                Value coerced = vv;
+                for (const auto& p : prog_.params) {
+                    if (EqualsIgnoreCase(p.name, vk)) {
+                        if (EqualsIgnoreCase(p.typeName, "path") && vv.kind == ValKind::Str) coerced = Value::FromPathUtf8(vv.strVal);
+                        else if (EqualsIgnoreCase(p.typeName, "version") && vv.kind == ValKind::Str) coerced = Value::FromVer(SemVer::Parse(vv.strVal));
+                        break;
+                    }
+                }
+                if (EqualsIgnoreCase(vk, "installDir") && coerced.kind == ValKind::Str) {
+                    coerced = Value::FromPathUtf8(coerced.strVal);
+                }
+                globalScope_.Declare(vk, std::move(coerced), false);
+            }
+        }
+        return true;
+    }
+
+    /// Executes ONLY the privileged Commit phase (`install`, `repair`, or `uninstall`) inside `--elevated-rssc-worker`,
+    /// preserving 100% of `ScriptRollbackLedger` LIFO rollback and `Uninstall.rswm` emission!
+    VmExecutionResult ExecuteCommitPhaseOnly() {
+        VmExecutionResult res{};
+        if (EqualsIgnoreCase(opts_.maintenanceAction, "repair") && prog_.repairBlock) {
+            Scope repScope(&globalScope_);
+            repScope.Declare(prog_.repairParamName, Value::FromStr(opts_.repairModeArg), false);
+            ExecStmt(prog_.repairBlock, repScope);
+            return Failed() ? BuildFailureResult(res) : FinalizeNormalResult(res);
+        }
+        if (EqualsIgnoreCase(opts_.maintenanceAction, "uninstall") && prog_.uninstallBlock) {
+            Scope unScope(&globalScope_);
+            unScope.Declare(prog_.uninstallParamName, Value::FromBool(opts_.purgeUserDataArg), false);
+            ExecStmt(prog_.uninstallBlock, unScope);
+            return Failed() ? BuildFailureResult(res) : FinalizeNormalResult(res);
+        }
+        if (prog_.installBlock) {
+            std::filesystem::path targetInstallDir;
+            Value dirVal;
+            if (globalScope_.TryGet("installDir", dirVal)) targetInstallDir = dirVal.AsPath();
+            ledger_.Begin(targetInstallDir, opts_.simulateFaultAfterOps);
+            Scope instScope(&globalScope_);
+            ExecStmt(prog_.installBlock, instScope);
+            if (opts_.cancelFlag && opts_.cancelFlag->load() && !Failed()) {
+                RaiseError(prog_.installBlock->line, "Installation canceled by user.");
+            }
+            if (Failed()) {
+                ledger_.RollbackLifo();
+                res.rolledBack = true;
+                return BuildFailureResult(res);
+            }
+            if (prog_.hasPackageHeader && EqualsIgnoreCase(prog_.package.kind, "package") &&
+                !arpRegisteredDuringInstall_ && !targetInstallDir.empty()) {
+                std::string arpErr;
+                if (!RegisterArpAndUninstallMeta(
+                        prog_.package.id, prog_.package.name, prog_.package.version,
+                        prog_.package.publisher, targetInstallDir, prog_.package.mainExe,
+                        prog_.package.websiteUrl, EqualsIgnoreCase(prog_.package.scope, "machine"),
+                        prog_.package.hideFromArp, arpErr)) {
+                    RaiseError(prog_.installBlock->line, arpErr);
+                    ledger_.RollbackLifo();
+                    res.rolledBack = true;
+                    return BuildFailureResult(res);
+                }
+            }
+            ledger_.Commit();
+        }
+        return FinalizeNormalResult(res);
+    }
 
     /// Runs a standalone `.rssc` micro-app or full installer lifecycle (`topStatements` -> `wizard` -> `install` / `repair` / `uninstall`).
     VmExecutionResult ExecuteFullLifecycle() {
@@ -1162,6 +1378,100 @@ public:
             inWizardPhase_ = false;
             if (flow_ == FlowKind::ExitSetup) return FinalizeNormalResult(res);
             if (Failed()) return BuildFailureResult(res);
+        }
+
+        // 3B. DEFERRED UAC COMMIT BROKER (`Uac.Deferred` / `Scope.Machine` with `asInvoker` Wizard UI!):
+        //     Because `RSW701` guarantees `wizard { ... }` never mutates the machine, the user completes
+        //     all wizard pages un-elevated (`asInvoker`). Right before entering `install { ... }`, if this
+        //     is a per-machine (or `Uac.Deferred`) package and we are not yet elevated, we serialize the
+        //     wizard's resolved variables to `%TEMP%` and spawn `--elevated-rssc-worker` via `runas`!
+        const bool needsCommitElevation =
+            opts_.enableDeferredUacBroker &&
+            !opts_.isElevatedWorker &&
+            native_detail::GetVirtualRegistryStoreRoot().empty() &&
+            (EqualsIgnoreCase(prog_.package.uac, "deferred") ||
+             (EqualsIgnoreCase(prog_.package.scope, "machine") && EqualsIgnoreCase(prog_.package.uac, "asInvoker")));
+        if (needsCommitElevation && prog_.installBlock) {
+            const auto priv = QueryProcessPrivilegeState();
+            if (!priv.HasEffectiveAdminRights()) {
+                if (!priv.CanPromptForUacElevation()) {
+                    exitCode_ = ERROR_ELEVATION_REQUIRED;
+                    RaiseError(prog_.installBlock->line, "Administrator privileges are required and UAC elevation is disabled.");
+                    return BuildFailureResult(res);
+                }
+                std::error_code ec;
+                const auto jobDir = std::filesystem::temp_directory_path(ec) /
+                                    (L"rsw-rssc-uac-" + std::to_wstring(::GetCurrentProcessId()));
+                std::filesystem::create_directories(jobDir, ec);
+                const auto stateFile  = jobDir / L"wizard-state.json";
+                const auto resultFile = jobDir / L"worker-result.json";
+                {
+                    const std::string stateJson = ExportWizardStateJson();
+                    std::ofstream sf(stateFile, std::ios::binary | std::ios::trunc);
+                    sf.write(stateJson.data(), static_cast<std::streamsize>(stateJson.size()));
+                }
+
+                const std::wstring params = L"--elevated-rssc-worker \"" + stateFile.wstring() + L"\" \"" + resultFile.wstring() + L"\"";
+                SHELLEXECUTEINFOW sei{};
+                sei.cbSize       = sizeof(sei);
+                sei.fMask        = SEE_MASK_NOCLOSEPROCESS;
+                sei.hwnd         = opts_.parentHwnd;
+                sei.lpVerb       = L"runas";
+                sei.lpFile       = opts_.runningExePath.wstring().c_str();
+                sei.lpParameters = params.c_str();
+                sei.nShow        = SW_SHOWNORMAL;
+
+                if (!::ShellExecuteExW(&sei)) {
+                    const DWORD gle = ::GetLastError();
+                    std::filesystem::remove_all(jobDir, ec);
+                    if (gle == ERROR_CANCELLED) {
+                        res.ok       = true;
+                        res.exitCode = ERROR_INSTALL_USEREXIT;
+                        return res;
+                    }
+                    exitCode_ = static_cast<int>(gle);
+                    RaiseError(prog_.installBlock->line, "Failed launching elevated RaggieScript install worker.");
+                    return BuildFailureResult(res);
+                }
+
+                if (sei.hProcess) {
+                    // Pump Win32 UI messages cleanly while waiting for the elevated Commit worker!
+                    for (;;) {
+                        const DWORD wr = ::MsgWaitForMultipleObjects(1, &sei.hProcess, FALSE, 50, QS_ALLINPUT);
+                        if (wr == WAIT_OBJECT_0) break;
+                        MSG msg{};
+                        while (::PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                            ::TranslateMessage(&msg);
+                            ::DispatchMessageW(&msg);
+                        }
+                    }
+                    DWORD childRc = 0;
+                    ::GetExitCodeProcess(sei.hProcess, &childRc);
+                    ::CloseHandle(sei.hProcess);
+                    res.exitCode = static_cast<int>(childRc);
+                }
+
+                // Read structured result summary written by `--elevated-rssc-worker`
+                std::ifstream rf(resultFile, std::ios::binary);
+                if (rf) {
+                    std::ostringstream rss;
+                    rss << rf.rdbuf();
+                    const std::string rtxt = rss.str();
+                    json_detail::JsonReader rjr{rtxt, 0};
+                    Value rv = rjr.ParseValue();
+                    if (rv.kind == ValKind::Map && rv.mapVal) {
+                        res.ok           = (*rv.mapVal)["ok"].AsBool();
+                        res.exitCode     = static_cast<int>((*rv.mapVal)["exitCode"].AsInt());
+                        res.rebootNeeded = (*rv.mapVal)["rebootNeeded"].AsBool();
+                        res.rolledBack   = (*rv.mapVal)["rolledBack"].AsBool();
+                        res.errorMessage = (*rv.mapVal)["errorMessage"].AsString();
+                    }
+                } else {
+                    res.ok = (res.exitCode == 0 || res.exitCode == 9001);
+                }
+                std::filesystem::remove_all(jobDir, ec);
+                return res;
+            }
         }
 
         // 4. Execute transactional, rollback-journaled `install { ... }` phase!
@@ -1255,6 +1565,9 @@ private:
     int                       errorLine_                  = 0;
     std::vector<std::string>  consoleLines_;
     std::map<std::string, Value> showcaseState_;
+    std::map<std::string, bool>  featureStates_;
+    DWORD                        rmSessionHandle_ = 0;
+    bool                         hasRmSession_    = false;
 
     bool Failed() const noexcept { return flow_ == FlowKind::Error; }
 
@@ -1307,6 +1620,7 @@ private:
         }), true);
         globalScope_.Declare("Uac", Value::FromMap({
             {"AsInvoker",            Value::FromStr("asInvoker")},
+            {"Deferred",             Value::FromStr("deferred")},
             {"HighestAvailable",     Value::FromStr("highestAvailable")},
             {"RequireAdministrator", Value::FromStr("requireAdministrator")}
         }), true);
@@ -1326,6 +1640,66 @@ private:
             {"Error",   Value::FromStr("error")},
             {"Shield",  Value::FromStr("shield")}
         }), true);
+        globalScope_.Declare("Hive", Value::FromMap({
+            {"HKLM", Value::FromStr("HKLM")},
+            {"HKCU", Value::FromStr("HKCU")},
+            {"HKCR", Value::FromStr("HKCR")},
+            {"HKU",  Value::FromStr("HKU")}
+        }), true);
+        globalScope_.Declare("SetupMode", Value::FromMap({
+            {"Express",  Value::FromStr("express")},
+            {"Compact",  Value::FromStr("compact")},
+            {"Complete", Value::FromStr("complete")},
+            {"Custom",   Value::FromStr("custom")}
+        }), true);
+        globalScope_.Declare("WizardStyle", Value::FromMap({
+            {"Standard",       Value::FromStr("standard")},
+            {"FluentMica",     Value::FromStr("fluentmica")},
+            {"AeroWizard",     Value::FromStr("aerowizard")},
+            {"Autorun16x9",    Value::FromStr("autorun16x9")},
+            {"CompactSfx",     Value::FromStr("compactsfx")},
+            {"Wizard95",       Value::FromStr("wizard95")},
+            {"FullScreenBlue", Value::FromStr("fullscreenblue")},
+            {"FullScreenTeal", Value::FromStr("fullscreenteal")}
+        }), true);
+        globalScope_.Declare("Delivery", Value::FromMap({
+            {"Embedded", Value::FromStr("embedded")},
+            {"OnDemand", Value::FromStr("ondemand")}
+        }), true);
+        globalScope_.Declare("product", Value::FromMap({
+            {"id",        Value::FromStr(prog_.package.id.empty() ? prog_.package.name : prog_.package.id)},
+            {"name",      Value::FromStr(prog_.package.name)},
+            {"version",   Value::FromVer(SemVer::Parse(prog_.package.version))},
+            {"publisher", Value::FromStr(prog_.package.publisher)},
+            {"website",   Value::FromStr(prog_.package.websiteUrl)},
+            {"scope",     Value::FromStr(prog_.package.scope)}
+        }), true);
+
+        for (const auto& ft : prog_.features) {
+            featureStates_[ft.id] = ft.required ? true : ft.defaultSelected;
+        }
+        // Apply optional `ADDLOCAL=feat1,feat2` or `ALL` CLI feature selection!
+        for (const auto& [ck, cv] : opts_.cliProperties) {
+            if (EqualsIgnoreCase(ck, "ADDLOCAL") || EqualsIgnoreCase(ck, "FEATURES")) {
+                if (EqualsIgnoreCase(cv, "ALL")) {
+                    for (auto& [fid, sel] : featureStates_) sel = true;
+                } else {
+                    for (const auto& ft : prog_.features) {
+                        if (!ft.required) featureStates_[ft.id] = false;
+                    }
+                    std::size_t pos = 0;
+                    while (pos <= cv.size()) {
+                        const auto cm = cv.find(',', pos);
+                        const std::string item = TrimAscii(cm == std::string::npos ? cv.substr(pos) : cv.substr(pos, cm - pos));
+                        for (const auto& ft : prog_.features) {
+                            if (EqualsIgnoreCase(ft.id, item)) featureStates_[ft.id] = true;
+                        }
+                        if (cm == std::string::npos) break;
+                        pos = cm + 1;
+                    }
+                }
+            }
+        }
 
         showcaseState_["currentPage"] = Value::FromStr("Main");
         showcaseState_["audioMuted"]  = Value::FromBool(!prog_.package.autoPlayAudio);
@@ -1672,6 +2046,14 @@ private:
                     const Value r = DerefIfNeeded(EvalExpr(e->rhs, scope));
                     return Value::FromBool(!Failed() && r.AsBool());
                 }
+                if (e->strVal == "??") {
+                    const Value l = DerefIfNeeded(EvalExpr(e->lhs, scope));
+                    if (Failed()) return Value::Null();
+                    if (l.kind != ValKind::Null && !((l.kind == ValKind::Str || l.kind == ValKind::Path) && l.strVal.empty())) {
+                        return l;
+                    }
+                    return DerefIfNeeded(EvalExpr(e->rhs, scope));
+                }
                 const Value l = DerefIfNeeded(EvalExpr(e->lhs, scope));
                 const Value r = DerefIfNeeded(EvalExpr(e->rhs, scope));
                 if (Failed()) return Value::Null();
@@ -2000,13 +2382,23 @@ private:
     static bool IsBuiltInNamespace(std::string_view ns) noexcept {
         return ns == "sys" || ns == "fs" || ns == "reg" || ns == "ini" || ns == "xml" ||
                ns == "json" || ns == "str" || ns == "regex" || ns == "archive" || ns == "crypto" ||
-               ns == "net" || ns == "proc" || ns == "msi" || ns == "prereq" || ns == "shortcut" ||
-               ns == "shell" || ns == "env" || ns == "arp" || ns == "svc" || ns == "task" ||
-               ns == "firewall" || ns == "acl" || ns == "ui" || ns == "wizard" || ns == "showcase" ||
-               ns == "log";
+               ns == "net" || ns == "proc" || ns == "ffi" || ns == "msi" || ns == "prereq" ||
+               ns == "shortcut" || ns == "shell" || ns == "env" || ns == "arp" || ns == "svc" ||
+               ns == "task" || ns == "firewall" || ns == "acl" || ns == "ui" || ns == "wizard" ||
+               ns == "feature" || ns == "compile" || ns == "payload" || ns == "showcase" || ns == "log";
     }
 
     bool TryInvokeGlobalBuiltIn(const std::string& name, const EvaluatedArgs& args, int line, Value& out) {
+        if (name == "def") {
+            const std::string key = args.At(0).AsString();
+            auto it = prog_.compileDefines.find(key);
+            if (it != prog_.compileDefines.end()) {
+                out = Value::FromStr(it->second);
+            } else {
+                out = args.At(1, Value::FromStr(""));
+            }
+            return true;
+        }
         if (name == "str")    { out = Value::FromStr(args.At(0).AsString()); return true; }
         if (name == "int")    { out = Value::FromInt(args.At(0).AsInt()); return true; }
         if (name == "float")  { out = Value::FromFloat(args.At(0).AsFloat()); return true; }
@@ -2108,6 +2500,7 @@ private:
         if (ns == "crypto")   return CallCrypto(m, args);
         if (ns == "net")      return CallNet(m, args, line);
         if (ns == "proc")     return CallProc(m, args, line);
+        if (ns == "ffi")      return CallFfi(m, args, line);
         if (ns == "msi")      return CallMsi(m, args, line);
         if (ns == "prereq")   return CallPrereq(m, args, line);
         if (ns == "shortcut") return CallShortcut(m, args, line);
@@ -2119,6 +2512,9 @@ private:
         if (ns == "firewall") return CallFirewall(m, args, line);
         if (ns == "acl")      return CallAcl(m, args, line);
         if (ns == "ui")       return CallUi(m, args);
+        if (ns == "feature")  return CallFeature(m, args, line);
+        if (ns == "compile")  return CallCompile(m, args, line);
+        if (ns == "payload")  return CallPayloadNs(m, args);
         if (ns == "showcase") return CallShowcase(m, args);
         if (ns == "log") {
             std::string lvl = "INFO";
@@ -2300,6 +2696,84 @@ private:
             regArgs.pos = {Value::FromStr("HKCU"), Value::FromStr("Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce"),
                            Value::FromStr(keyName), Value::FromStr(cmd)};
             return CallReg("writeString", regArgs, line);
+        }
+        if (m == "folder") {
+            const std::string fname = AsciiLower(args.At(0).AsString());
+            Value fv;
+            if (fname == "programfiles" && TryReadSysProperty("programFiles", fv)) return fv;
+            if (fname == "programfilesx86" && TryReadSysProperty("programFilesX86", fv)) return fv;
+            if (fname == "commonfiles" && TryReadSysProperty("commonFiles", fv)) return fv;
+            if (fname == "commonfilesx86" && TryReadSysProperty("commonFilesX86", fv)) return fv;
+            if (fname == "localappdata" && TryReadSysProperty("localAppData", fv)) return fv;
+            if (fname == "roamingappdata" && TryReadSysProperty("roamingAppData", fv)) return fv;
+            if (fname == "programdata" && TryReadSysProperty("programData", fv)) return fv;
+            if (fname == "desktop" && TryReadSysProperty("desktopDir", fv)) return fv;
+            if (fname == "commondesktop" && TryReadSysProperty("commonDesktopDir", fv)) return fv;
+            if (fname == "startmenu" && TryReadSysProperty("startMenuPrograms", fv)) return fv;
+            if (fname == "commonstartmenu" && TryReadSysProperty("commonStartMenuPrograms", fv)) return fv;
+            if (fname == "windows" && TryReadSysProperty("windowsDir", fv)) return fv;
+            if (fname == "system32" && TryReadSysProperty("system32Dir", fv)) return fv;
+            if (fname == "syswow64" && TryReadSysProperty("sysWow64Dir", fv)) return fv;
+            if (fname == "documents" && TryReadSysProperty("documentsDir", fv)) return fv;
+            if (fname == "publicdocuments" && TryReadSysProperty("publicDocumentsDir", fv)) return fv;
+            if (fname == "fonts" && TryReadSysProperty("fontsDir", fv)) return fv;
+            if (fname == "temp" && TryReadSysProperty("tempDir", fv)) return fv;
+            if (fname == "support" && TryReadSysProperty("supportDir", fv)) return fv;
+            if (TryReadSysProperty(args.At(0).AsString(), fv)) return fv;
+            return Value::FromPath({});
+        }
+        if (m == "rebootAndResume" || m == "getResumeState" || m == "clearResumeState") {
+            const std::string defaultKey = prog_.package.id.empty() ? "RaggieSoftSetupResume" : prog_.package.id;
+            const std::string keyName = (m == "rebootAndResume")
+                ? args.NamedOrPos("key", 1, Value::FromStr(defaultKey)).AsString()
+                : args.NamedOrPos("key", 0, Value::FromStr(defaultKey)).AsString();
+            std::string safeStem;
+            for (char ch : keyName) {
+                if (std::isalnum(static_cast<unsigned char>(ch)) || ch == '-' || ch == '_') safeStem.push_back(ch);
+            }
+            if (safeStem.empty()) safeStem = "RaggieSoftSetupResume";
+            const auto resumeDir  = host_detail::GetKnownFolderOrEnv(FOLDERID_LocalAppData, L"LOCALAPPDATA") /
+                                    L"RaggieSoft" / L"InstallerResume";
+            const auto resumeFile = resumeDir / Utf8ToWide(safeStem + ".json");
+            std::error_code ec;
+
+            if (m == "getResumeState") {
+                std::ifstream rf(resumeFile, std::ios::binary);
+                if (!rf) return Value::Null();
+                std::ostringstream ss;
+                ss << rf.rdbuf();
+                const std::string jtxt = ss.str();
+                json_detail::JsonReader jr{jtxt, 0};
+                return jr.ParseValue();
+            }
+            if (m == "clearResumeState") {
+                std::filesystem::remove(resumeFile, ec);
+                EvaluatedArgs delArgs;
+                delArgs.pos = {Value::FromStr("HKCU"), Value::FromStr("Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce"),
+                               Value::FromStr(safeStem)};
+                CallReg("deleteValue", delArgs, line);
+                return Value::FromBool(true);
+            }
+            // `sys.rebootAndResume(stateMap, key: "...")`:
+            std::filesystem::create_directories(resumeDir, ec);
+            std::ostringstream jss;
+            json_detail::StringifyJsonRec(jss, args.At(0, Value::FromMap({})), 2, 0);
+            {
+                std::ofstream out(resumeFile, std::ios::binary | std::ios::trunc);
+                const std::string jstr = jss.str();
+                out.write(jstr.data(), static_cast<std::streamsize>(jstr.size()));
+            }
+            const std::string resumeCmd = "\"" + WideToUtf8(opts_.runningExePath.wstring()) + "\" --resume";
+            EvaluatedArgs regArgs;
+            regArgs.pos = {Value::FromStr("HKCU"), Value::FromStr("Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce"),
+                           Value::FromStr(safeStem), Value::FromStr(resumeCmd)};
+            CallReg("writeString", regArgs, line);
+            rebootNeeded_ = true;
+            if (opts_.silentMode) {
+                exitCode_ = 9001;
+                flow_     = FlowKind::ExitSetup;
+            }
+            return Value::FromPath(resumeFile);
         }
 
         RaiseError(line, "Unknown sys.* method 'sys." + m + "()'.");
@@ -2519,7 +2993,7 @@ private:
             }
             return Value::FromBool(true);
         }
-        if (m == "removeTree" || m == "removeTreeIfExists") {
+        if (m == "removeDir" || m == "removeTree" || m == "removeTreeIfExists") {
             const auto p = args.At(0).AsPath();
             if (std::filesystem::exists(p, ec)) {
                 std::filesystem::remove_all(p, ec);
@@ -2716,11 +3190,12 @@ private:
             return Value::FromBool(false);
         }
 
-        if (m == "readString" || m == "readDword") {
+        if (m == "read" || m == "readString" || m == "readDword") {
             const std::wstring valName = Utf8ToWide(args.At(2, Value::FromStr("")).AsString());
             const Value defVal         = (m == "readDword")
                 ? args.NamedOrPos("default", 3, Value::FromInt(0))
-                : args.NamedOrPos("default", 3, Value::FromStr(""));
+                : ((m == "read") ? args.NamedOrPos("default", 3, Value::Null())
+                                 : args.NamedOrPos("default", 3, Value::FromStr("")));
             const std::string viewStr  = args.NamedOrPos("view", 4, Value::FromStr("native64")).AsString();
 
             if (!virtReg.empty()) {
@@ -2788,6 +3263,14 @@ private:
                 ::RegCloseKey(hk);
             }
             return Value::FromArray(std::move(out));
+        }
+
+        if (m == "write") {
+            const Value v = args.At(3);
+            if (v.kind == ValKind::Int || v.kind == ValKind::Bool) {
+                return CallReg("writeDword", args, line);
+            }
+            return CallReg("writeString", args, line);
         }
 
         if (m == "writeString" || m == "writeExpandString" || m == "writeDword") {
@@ -3220,6 +3703,35 @@ private:
             }
             return Value::FromInt(static_cast<std::int64_t>(metas.size()));
         }
+        if (m == "downloadPak") {
+            // Streams an on-demand `.rswpak` content archive over HTTPS (`WinHTTP`), verifies optional
+            // `SHA-256`, and unpacks straight into `dstDir` with full transactional rollback tracking!
+            const std::string url    = args.At(0).AsString();
+            const auto dstDir        = args.At(1).AsPath();
+            const std::string expSha = args.NamedOrPos("sha256", 2, Value::FromStr("")).AsString();
+            const auto tmpPak = std::filesystem::temp_directory_path(ec) /
+                                Utf8ToWide("rsw-dlpak-" + std::to_string(::GetCurrentProcessId()) + "-" +
+                                           std::to_string(::GetTickCount64() & 0xFFFFFFu) + ".rswpak");
+            if (!DownloadFileViaWinHttp(url, tmpPak, opts_.cancelFlag, nullptr, err)) {
+                exitCode_ = 9010;
+                RaiseError(line, err);
+                return Value::FromInt(0);
+            }
+            if (!expSha.empty()) {
+                std::string actual;
+                if (!ComputeFileSha256Hex(tmpPak, actual) || !EqualsIgnoreCase(actual, expSha)) {
+                    std::filesystem::remove(tmpPak, ec);
+                    exitCode_ = 9010;
+                    RaiseError(line, "SHA-256 verification failed for downloaded .rswpak content pack.");
+                    return Value::FromInt(0);
+                }
+            }
+            EvaluatedArgs exArgs;
+            exArgs.pos = {Value::FromPath(tmpPak), Value::FromPath(dstDir)};
+            const Value count = CallArchive("extractPak", exArgs, line);
+            std::filesystem::remove(tmpPak, ec);
+            return count;
+        }
         RaiseError(line, "Unknown archive.* method 'archive." + m + "()'.");
         return Value::Null();
     }
@@ -3368,8 +3880,309 @@ private:
             return Value::FromInt(ret);
         }
 
+        // Windows Restart Manager (`Rstrtmgr.dll`) — File-Lock Inspection & Graceful App Restart!
+        if (m == "getLockingProcesses" || m == "restartManagerShutdown") {
+            std::vector<std::wstring> wPaths;
+            const Value pArg = args.At(0);
+            if (pArg.kind == ValKind::Array && pArg.arrVal) {
+                for (const auto& item : *pArg.arrVal) wPaths.push_back(item.AsPath().wstring());
+            } else if (!pArg.AsString().empty()) {
+                wPaths.push_back(pArg.AsPath().wstring());
+            }
+            std::vector<LPCWSTR> ptrs;
+            ptrs.reserve(wPaths.size());
+            for (const auto& wp : wPaths) ptrs.push_back(wp.c_str());
+
+            if (m == "getLockingProcesses") {
+                std::vector<Value> procs;
+                if (ptrs.empty()) return Value::FromArray(std::move(procs));
+                DWORD hSess = 0;
+                wchar_t sessKey[CCH_RM_SESSION_KEY + 1]{};
+                if (::RmStartSession(&hSess, 0, sessKey) == ERROR_SUCCESS) {
+                    if (::RmRegisterResources(hSess, static_cast<UINT>(ptrs.size()), ptrs.data(), 0, nullptr, 0, nullptr) == ERROR_SUCCESS) {
+                        UINT needed = 0, count = 0;
+                        DWORD rebootReasons = RmRebootReasonNone;
+                        const DWORD rc1 = ::RmGetList(hSess, &needed, &count, nullptr, &rebootReasons);
+                        if ((rc1 == ERROR_MORE_DATA || rc1 == ERROR_SUCCESS) && needed > 0) {
+                            std::vector<RM_PROCESS_INFO> infos(needed);
+                            count = needed;
+                            if (::RmGetList(hSess, &needed, &count, infos.data(), &rebootReasons) == ERROR_SUCCESS) {
+                                for (UINT k = 0; k < count; ++k) {
+                                    procs.push_back(Value::FromMap({
+                                        {"pid",         Value::FromInt(infos[k].Process.dwProcessId)},
+                                        {"name",        Value::FromStr(WideToUtf8(infos[k].strAppName))},
+                                        {"serviceName", Value::FromStr(WideToUtf8(infos[k].strServiceShortName))},
+                                        {"appType",     Value::FromInt(static_cast<std::int64_t>(infos[k].ApplicationType))},
+                                        {"restartable", Value::FromBool(infos[k].bRestartable != FALSE)}
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                    ::RmEndSession(hSess);
+                }
+                return Value::FromArray(std::move(procs));
+            }
+
+            // `proc.restartManagerShutdown(pathsArray, force: false)`
+            if (!hasRmSession_) {
+                wchar_t sessKey[CCH_RM_SESSION_KEY + 1]{};
+                if (::RmStartSession(&rmSessionHandle_, 0, sessKey) != ERROR_SUCCESS) {
+                    return Value::FromBool(false);
+                }
+                hasRmSession_ = true;
+            }
+            if (!ptrs.empty()) {
+                ::RmRegisterResources(rmSessionHandle_, static_cast<UINT>(ptrs.size()), ptrs.data(), 0, nullptr, 0, nullptr);
+            }
+            const bool force = args.NamedOrPos("force", 1, Value::FromBool(false)).AsBool();
+            const DWORD flags = force ? RmForceShutdown : RmShutdownOnlyRegistered;
+            return Value::FromBool(::RmShutdown(rmSessionHandle_, flags, nullptr) == ERROR_SUCCESS);
+        }
+
+        if (m == "restartManagerRestart") {
+            if (!hasRmSession_) return Value::FromBool(true);
+            const bool ok = (::RmRestart(rmSessionHandle_, 0, nullptr) == ERROR_SUCCESS);
+            ::RmEndSession(rmSessionHandle_);
+            hasRmSession_ = false;
+            return Value::FromBool(ok);
+        }
+
         RaiseError(line, "Unknown proc.* method 'proc." + m + "()'.");
         return Value::Null();
+    }
+
+    // ----------------------------------------------------------------------------
+    // Namespace 8B: `ffi.*` (64-Bit Native Win32 DLL Foreign Function Interface!)
+    //   Supports calling any exported C / `WINAPI` function across `x64` & `ARM64`
+    //   with up to 6 scalar, pointer, UTF-16 (`LPCWSTR`), or UTF-8 (`LPCSTR`) args!
+    // ----------------------------------------------------------------------------
+    Value CallFfi(const std::string& m, const EvaluatedArgs& args, int line) {
+        if (m != "call") {
+            RaiseError(line, "Unknown ffi.* method 'ffi." + m + "()'. Expected 'ffi.call(dll, symbol, returnType, [args])'.");
+            return Value::Null();
+        }
+        const std::wstring dllName = Utf8ToWide(args.At(0).AsString());
+        const std::string  symName = args.At(1).AsString();
+        const std::string  retType = AsciiLower(args.At(2, Value::FromStr("int")).AsString());
+        const Value        argList = args.At(3, Value::FromArray({}));
+
+        HMODULE hDll = ::LoadLibraryW(dllName.c_str());
+        if (!hDll) {
+            RaiseError(line, "ffi.call could not load native library: " + args.At(0).AsString());
+            return Value::Null();
+        }
+        FARPROC rawProc = ::GetProcAddress(hDll, symName.c_str());
+        if (!rawProc) {
+            ::FreeLibrary(hDll);
+            RaiseError(line, "ffi.call could not find exported symbol '" + symName + "' in " + args.At(0).AsString());
+            return Value::Null();
+        }
+
+        // Pin string / output buffers in memory for the duration of the native call!
+        std::vector<std::wstring> pinnedWide;
+        std::vector<std::string>  pinnedUtf8;
+        std::vector<wchar_t>      outWideBuf;
+        pinnedWide.reserve(8);
+        pinnedUtf8.reserve(8);
+
+        std::intptr_t slots[6]{0, 0, 0, 0, 0, 0};
+        std::size_t   arity = 0;
+        if (argList.kind == ValKind::Array && argList.arrVal) {
+            arity = std::min<std::size_t>(6, argList.arrVal->size());
+            for (std::size_t i = 0; i < arity; ++i) {
+                const Value& av = (*argList.arrVal)[i];
+                if (av.kind == ValKind::Null) {
+                    slots[i] = 0;
+                } else if (av.kind == ValKind::Bool) {
+                    slots[i] = av.boolVal ? 1 : 0;
+                } else if (av.kind == ValKind::Int) {
+                    slots[i] = static_cast<std::intptr_t>(av.intVal);
+                } else if (av.kind == ValKind::Map && av.mapVal) {
+                    if (av.mapVal->count("utf8")) {
+                        pinnedUtf8.push_back((*av.mapVal)["utf8"].AsString());
+                        slots[i] = reinterpret_cast<std::intptr_t>(pinnedUtf8.back().c_str());
+                    } else if (av.mapVal->count("outUtf16")) {
+                        const auto cap = static_cast<std::size_t>(std::clamp<std::int64_t>((*av.mapVal)["outUtf16"].AsInt(), 16, 65536));
+                        outWideBuf.assign(cap, L'\0');
+                        slots[i] = reinterpret_cast<std::intptr_t>(outWideBuf.data());
+                    } else if (av.mapVal->count("utf16")) {
+                        pinnedWide.push_back(Utf8ToWide((*av.mapVal)["utf16"].AsString()));
+                        slots[i] = reinterpret_cast<std::intptr_t>(pinnedWide.back().c_str());
+                    } else if (av.mapVal->count("ptr")) {
+                        slots[i] = static_cast<std::intptr_t>((*av.mapVal)["ptr"].AsInt());
+                    }
+                } else {
+                    pinnedWide.push_back(Utf8ToWide(av.AsString()));
+                    slots[i] = reinterpret_cast<std::intptr_t>(pinnedWide.back().c_str());
+                }
+            }
+        }
+
+        std::intptr_t rawRet = 0;
+        switch (arity) {
+            case 0: rawRet = reinterpret_cast<std::intptr_t(WINAPI*)()>(rawProc)(); break;
+            case 1: rawRet = reinterpret_cast<std::intptr_t(WINAPI*)(std::intptr_t)>(rawProc)(slots[0]); break;
+            case 2: rawRet = reinterpret_cast<std::intptr_t(WINAPI*)(std::intptr_t, std::intptr_t)>(rawProc)(slots[0], slots[1]); break;
+            case 3: rawRet = reinterpret_cast<std::intptr_t(WINAPI*)(std::intptr_t, std::intptr_t, std::intptr_t)>(rawProc)(slots[0], slots[1], slots[2]); break;
+            case 4: rawRet = reinterpret_cast<std::intptr_t(WINAPI*)(std::intptr_t, std::intptr_t, std::intptr_t, std::intptr_t)>(rawProc)(slots[0], slots[1], slots[2], slots[3]); break;
+            case 5: rawRet = reinterpret_cast<std::intptr_t(WINAPI*)(std::intptr_t, std::intptr_t, std::intptr_t, std::intptr_t, std::intptr_t)>(rawProc)(slots[0], slots[1], slots[2], slots[3], slots[4]); break;
+            default: rawRet = reinterpret_cast<std::intptr_t(WINAPI*)(std::intptr_t, std::intptr_t, std::intptr_t, std::intptr_t, std::intptr_t, std::intptr_t)>(rawProc)(slots[0], slots[1], slots[2], slots[3], slots[4], slots[5]); break;
+        }
+
+        Value result = Value::Null();
+        if (retType == "void") {
+            result = Value::Null();
+        } else if (retType == "bool") {
+            result = Value::FromBool(rawRet != 0);
+        } else if (retType == "uint" || retType == "dword") {
+            result = Value::FromInt(static_cast<std::int64_t>(static_cast<std::uint32_t>(rawRet)));
+        } else if (retType == "int32") {
+            result = Value::FromInt(static_cast<std::int64_t>(static_cast<std::int32_t>(rawRet)));
+        } else if (retType == "utf16" || retType == "wstring") {
+            result = rawRet ? Value::FromStr(WideToUtf8(reinterpret_cast<const wchar_t*>(rawRet))) : Value::FromStr("");
+        } else if (retType == "utf8" || retType == "cstring") {
+            result = rawRet ? Value::FromStr(std::string(reinterpret_cast<const char*>(rawRet))) : Value::FromStr("");
+        } else if (retType == "outbuffer" || retType == "oututf16") {
+            result = outWideBuf.empty() ? Value::FromStr("") : Value::FromStr(WideToUtf8(outWideBuf.data()));
+        } else {
+            result = Value::FromInt(static_cast<std::int64_t>(rawRet));
+        }
+
+        ::FreeLibrary(hDll);
+        return result;
+    }
+
+    // ----------------------------------------------------------------------------
+    // Helper Namespaces: `feature.*`, `compile.*`, & `payload.*`
+    // ----------------------------------------------------------------------------
+    Value CallFeature(const std::string& m, const EvaluatedArgs& args, int line) {
+        if (m == "list") {
+            std::vector<Value> arr;
+            for (const auto& ft : prog_.features) {
+                const bool sel = featureStates_.count(ft.id) ? featureStates_.at(ft.id) : ft.defaultSelected;
+                arr.push_back(Value::FromMap({
+                    {"id",          Value::FromStr(ft.id)},
+                    {"title",       Value::FromStr(ft.title)},
+                    {"description", Value::FromStr(ft.description)},
+                    {"parent",      Value::FromStr(ft.parentId)},
+                    {"inCompact",   Value::FromBool(ft.inCompact)},
+                    {"required",    Value::FromBool(ft.required)},
+                    {"selected",    Value::FromBool(sel)},
+                    {"delivery",    Value::FromStr(ft.delivery)},
+                    {"url",         Value::FromStr(ft.packUrl)},
+                    {"sha256",      Value::FromStr(ft.packSha256)}
+                }));
+            }
+            return Value::FromArray(std::move(arr));
+        }
+        if (m == "isSelected") {
+            const std::string id = args.At(0).AsString();
+            for (const auto& [k, v] : featureStates_) {
+                if (EqualsIgnoreCase(k, id)) return Value::FromBool(v);
+            }
+            return Value::FromBool(false);
+        }
+        if (m == "setSelected" || m == "setState") {
+            const std::string id  = args.At(0).AsString();
+            const bool        sel = args.At(1, Value::FromBool(true)).AsBool();
+            for (const auto& ft : prog_.features) {
+                if (EqualsIgnoreCase(ft.id, id)) {
+                    featureStates_[ft.id] = ft.required ? true : sel;
+                    return Value::FromBool(featureStates_[ft.id]);
+                }
+            }
+            featureStates_[id] = sel;
+            return Value::FromBool(sel);
+        }
+        if (m == "selectPreset") {
+            const std::string mode = AsciiLower(args.At(0, Value::FromStr("express")).AsString());
+            for (const auto& ft : prog_.features) {
+                if (ft.required) {
+                    featureStates_[ft.id] = true;
+                } else if (mode == "compact" || mode == "minimum") {
+                    featureStates_[ft.id] = ft.inCompact;
+                } else {
+                    featureStates_[ft.id] = true;
+                }
+            }
+            return Value::FromBool(true);
+        }
+        if (m == "info") {
+            const std::string id = args.At(0).AsString();
+            for (const auto& ft : prog_.features) {
+                if (EqualsIgnoreCase(ft.id, id)) {
+                    const bool sel = featureStates_.count(ft.id) ? featureStates_.at(ft.id) : ft.defaultSelected;
+                    return Value::FromMap({
+                        {"id",          Value::FromStr(ft.id)},
+                        {"title",       Value::FromStr(ft.title)},
+                        {"description", Value::FromStr(ft.description)},
+                        {"inCompact",   Value::FromBool(ft.inCompact)},
+                        {"required",    Value::FromBool(ft.required)},
+                        {"selected",    Value::FromBool(sel)},
+                        {"delivery",    Value::FromStr(ft.delivery)},
+                        {"url",         Value::FromStr(ft.packUrl)},
+                        {"sha256",      Value::FromStr(ft.packSha256)}
+                    });
+                }
+            }
+            return Value::Null();
+        }
+        RaiseError(line, "Unknown feature.* method 'feature." + m + "()'.");
+        return Value::Null();
+    }
+
+    Value CallCompile(const std::string& m, const EvaluatedArgs& args, int line) {
+        if (m == "def") {
+            const std::string k = args.At(0).AsString();
+            auto it = prog_.compileDefines.find(k);
+            return (it != prog_.compileDefines.end()) ? Value::FromStr(it->second) : args.At(1, Value::FromStr(""));
+        }
+        if (m == "text" || m == "json") {
+            const std::string k = args.At(0).AsString();
+            auto it = prog_.embeddedCompileFiles.find(k);
+            std::string raw;
+            if (it != prog_.embeddedCompileFiles.end()) {
+                raw = it->second;
+            } else {
+                // Fallback when running uncompiled via `raggiescript.exe run` with a computed path!
+                std::filesystem::path p(Utf8ToWide(k));
+                if (!p.is_absolute() && !prog_.sourcePath.empty()) {
+                    p = (std::filesystem::path(Utf8ToWide(prog_.sourcePath)).parent_path() / p).lexically_normal();
+                }
+                std::ifstream in(p, std::ios::binary);
+                if (in) {
+                    std::ostringstream ss;
+                    ss << in.rdbuf();
+                    raw = ss.str();
+                }
+            }
+            if (m == "text") return Value::FromStr(raw);
+            json_detail::JsonReader jr{raw, 0};
+            return jr.ParseValue();
+        }
+        RaiseError(line, "Unknown compile.* method 'compile." + m + "()'.");
+        return Value::Null();
+    }
+
+    Value CallPayloadNs(const std::string& m, const EvaluatedArgs& args) {
+        if (m == "dir" || m == "path") {
+            const std::string id = args.At(0).AsString();
+            for (const auto& pl : prog_.payloads) {
+                if (EqualsIgnoreCase(pl.id, id)) {
+                    std::filesystem::path p(Utf8ToWide(pl.sourceGlob));
+                    if (!p.is_absolute() && !prog_.sourcePath.empty()) {
+                        p = (std::filesystem::path(Utf8ToWide(prog_.sourcePath)).parent_path() / p).lexically_normal();
+                    }
+                    return Value::FromPath(p);
+                }
+            }
+            Value sup;
+            if (TryReadSysProperty("supportDir", sup)) {
+                return Value::FromPath(sup.AsPath() / Utf8ToWide(id));
+            }
+        }
+        return Value::FromPath({});
     }
 
     // ----------------------------------------------------------------------------
@@ -3426,31 +4239,398 @@ private:
             if (stageTemp) std::filesystem::remove(runExe, ec);
             return Value::FromInt(code);
         }
-        if (m == "install" || m == "uninstall" || m == "applyPatch") {
+        if (m == "install" || m == "repair" || m == "uninstall" || m == "configureFeature" || m == "applyPatch") {
             while (IsSystemMsiExecuteMutexBusy()) {
                 if (opts_.cancelFlag && opts_.cancelFlag->load()) return Value::FromInt(ERROR_INSTALL_USEREXIT);
                 ::Sleep(250);
             }
             const bool silent = args.NamedOrPos("silent", 2, Value::FromBool(true)).AsBool();
             ::MsiSetInternalUI(silent ? INSTALLUILEVEL_NONE : INSTALLUILEVEL_BASIC, nullptr);
+
+            host_detail::RsscMsiExternalUiContext extCtx{};
+            extCtx.cancelFlag = opts_.cancelFlag;
+            extCtx.onProgress = opts_.onProgress;
+            INSTALLUI_HANDLER_RECORD prevHandler = nullptr;
+            if (silent && opts_.onProgress) {
+                constexpr DWORD kExtFilter =
+                    INSTALLLOGMODE_ACTIONSTART | INSTALLLOGMODE_PROGRESS |
+                    INSTALLLOGMODE_ERROR | INSTALLLOGMODE_FATALEXIT;
+                ::MsiSetExternalUIRecord(&host_detail::OnRsscMsiExternalUiRecord, kExtFilter, &extCtx, &prevHandler);
+            }
+
             UINT rc = 0;
             if (m == "install") {
                 rc = ::MsiInstallProductW(
                     args.At(0).AsPath().wstring().c_str(),
                     Utf8ToWide(args.NamedOrPos("properties", 1, Value::FromStr("")).AsString()).c_str());
+            } else if (m == "repair") {
+                const std::wstring target = Utf8ToWide(args.At(0).AsString());
+                const std::string modeStr = AsciiLower(args.NamedOrPos("mode", 1, Value::FromStr("quick")).AsString());
+                const DWORD flags = (modeStr == "full" || modeStr == "fullreinstall")
+                    ? (REINSTALLMODE_FILEREPLACE | REINSTALLMODE_SHORTCUT | REINSTALLMODE_MACHINEDATA | REINSTALLMODE_USERDATA)
+                    : (REINSTALLMODE_FILEMISSING | REINSTALLMODE_FILEOLDERVERSION | REINSTALLMODE_FILEVERIFY |
+                       REINSTALLMODE_MACHINEDATA | REINSTALLMODE_USERDATA | REINSTALLMODE_SHORTCUT);
+                rc = ::MsiReinstallProductW(target.c_str(), flags);
+            } else if (m == "configureFeature") {
+                const std::wstring prodCode = Utf8ToWide(args.At(0).AsString());
+                const std::wstring featId   = Utf8ToWide(args.At(1).AsString());
+                const bool enable           = args.At(2, Value::FromBool(true)).AsBool();
+                rc = ::MsiConfigureFeatureW(prodCode.c_str(), featId.c_str(),
+                                            enable ? INSTALLSTATE_LOCAL : INSTALLSTATE_ABSENT);
             } else if (m == "uninstall") {
                 rc = ::MsiConfigureProductExW(
-                    Utf8ToWide(args.At(0).AsString()).c_str(), 0, INSTALLSTATE_ABSENT, L"");
+                    Utf8ToWide(args.At(0).AsString()).c_str(), 0, INSTALLSTATE_ABSENT,
+                    Utf8ToWide(args.NamedOrPos("properties", 1, Value::FromStr("")).AsString()).c_str());
             } else {
                 rc = ::MsiApplyPatchW(
                     args.At(0).AsPath().wstring().c_str(), nullptr, INSTALLTYPE_DEFAULT,
                     Utf8ToWide(args.NamedOrPos("properties", 1, Value::FromStr("")).AsString()).c_str());
+            }
+
+            if (silent && opts_.onProgress) {
+                ::MsiSetExternalUIRecord(prevHandler, 0, nullptr, nullptr);
             }
             if (rc == ERROR_SUCCESS_REBOOT_REQUIRED) {
                 rebootNeeded_ = true;
                 rc = ERROR_SUCCESS;
             }
             return Value::FromInt(rc);
+        }
+
+        // ========================================================================
+        // DIRECT WINDOWS INSTALLER (`.MSI` / `.MSM`) SQL TABLE ENGINE IN RAGGIESCRIPT!
+        //   Gives `.rssc` authors full programmatic read/write control over every
+        //   relational SQL table, `Property`, `SummaryInformation`, Binary stream,
+        //   and `.MST` transform inside `.msi` and `.msm` databases!
+        // ========================================================================
+        if (m == "createDatabase") {
+            const auto dbPath = args.At(0).AsPath();
+            std::error_code ec;
+            if (!dbPath.parent_path().empty()) std::filesystem::create_directories(dbPath.parent_path(), ec);
+            std::filesystem::remove(dbPath, ec);
+            host_detail::VmMsiHandle hDb;
+            if (::MsiOpenDatabaseW(dbPath.wstring().c_str(), MSIDBOPEN_CREATEDIRECT, hDb.Put()) != ERROR_SUCCESS) {
+                RaiseError(line, "msi.createDatabase failed creating: " + WideToUtf8(dbPath.wstring()));
+                return Value::FromBool(false);
+            }
+            // Seed standard `Property` table so `msi.setProperty` works immediately on fresh databases!
+            host_detail::VmMsiHandle hView;
+            if (::MsiDatabaseOpenViewW(hDb.Get(),
+                    L"CREATE TABLE `Property` (`Property` CHAR(72) NOT NULL, `Value` CHAR(0) NOT NULL PRIMARY KEY `Property`)",
+                    hView.Put()) == ERROR_SUCCESS) {
+                ::MsiViewExecute(hView.Get(), 0);
+            }
+            const bool ok = (::MsiDatabaseCommit(hDb.Get()) == ERROR_SUCCESS);
+            return Value::FromBool(ok);
+        }
+
+        if (m == "listTables") {
+            const auto dbPath = args.At(0).AsPath();
+            host_detail::VmMsiHandle hDb, hView;
+            std::vector<Value> tables;
+            if (::MsiOpenDatabaseW(dbPath.wstring().c_str(), MSIDBOPEN_READONLY, hDb.Put()) != ERROR_SUCCESS) {
+                RaiseError(line, "msi.listTables could not open database: " + WideToUtf8(dbPath.wstring()));
+                return Value::FromArray(std::move(tables));
+            }
+            if (::MsiDatabaseOpenViewW(hDb.Get(), L"SELECT `Name` FROM `_Tables`", hView.Put()) == ERROR_SUCCESS &&
+                ::MsiViewExecute(hView.Get(), 0) == ERROR_SUCCESS) {
+                std::vector<std::string> names;
+                host_detail::VmMsiHandle hRec;
+                while (::MsiViewFetch(hView.Get(), hRec.Put()) == ERROR_SUCCESS) {
+                    wchar_t buf[128]{};
+                    DWORD cch = static_cast<DWORD>(std::size(buf));
+                    if (::MsiRecordGetStringW(hRec.Get(), 1, buf, &cch) == ERROR_SUCCESS) {
+                        names.push_back(WideToUtf8(buf));
+                    }
+                }
+                std::sort(names.begin(), names.end());
+                for (auto& n : names) tables.push_back(Value::FromStr(std::move(n)));
+            }
+            return Value::FromArray(std::move(tables));
+        }
+
+        if (m == "query") {
+            const auto dbPath = args.At(0).AsPath();
+            const std::wstring sql = Utf8ToWide(args.At(1).AsString());
+            host_detail::VmMsiHandle hDb, hView;
+            std::vector<Value> rows;
+            if (::MsiOpenDatabaseW(dbPath.wstring().c_str(), MSIDBOPEN_READONLY, hDb.Put()) != ERROR_SUCCESS) {
+                RaiseError(line, "msi.query could not open database: " + WideToUtf8(dbPath.wstring()));
+                return Value::FromArray(std::move(rows));
+            }
+            if (::MsiDatabaseOpenViewW(hDb.Get(), sql.c_str(), hView.Put()) != ERROR_SUCCESS ||
+                ::MsiViewExecute(hView.Get(), 0) != ERROR_SUCCESS) {
+                RaiseError(line, "msi.query SQL error executing: " + args.At(1).AsString());
+                return Value::FromArray(std::move(rows));
+            }
+            host_detail::VmMsiHandle hNames, hTypes;
+            ::MsiViewGetColumnInfo(hView.Get(), MSICOLINFO_NAMES, hNames.Put());
+            ::MsiViewGetColumnInfo(hView.Get(), MSICOLINFO_TYPES, hTypes.Put());
+            const UINT colCount = ::MsiRecordGetFieldCount(hNames.Get());
+            std::vector<std::string> colNames(colCount + 1);
+            std::vector<wchar_t>     colKind(colCount + 1, L's');
+            for (UINT c = 1; c <= colCount; ++c) {
+                wchar_t nb[128]{}, tb[32]{};
+                DWORD cn = 128, ct = 32;
+                ::MsiRecordGetStringW(hNames.Get(), c, nb, &cn);
+                ::MsiRecordGetStringW(hTypes.Get(), c, tb, &ct);
+                colNames[c] = WideToUtf8(nb);
+                if (tb[0] != L'\0') colKind[c] = tb[0];
+            }
+            host_detail::VmMsiHandle hRec;
+            while (::MsiViewFetch(hView.Get(), hRec.Put()) == ERROR_SUCCESS) {
+                std::map<std::string, Value> rowMap;
+                for (UINT c = 1; c <= colCount; ++c) {
+                    if (::MsiRecordIsNull(hRec.Get(), c)) {
+                        rowMap[colNames[c]] = Value::Null();
+                    } else if (colKind[c] == L'i' || colKind[c] == L'I' || colKind[c] == L'j' || colKind[c] == L'J') {
+                        rowMap[colNames[c]] = Value::FromInt(::MsiRecordGetInteger(hRec.Get(), c));
+                    } else if (colKind[c] == L'v' || colKind[c] == L'V') {
+                        rowMap[colNames[c]] = Value::FromInt(static_cast<std::int64_t>(::MsiRecordDataSize(hRec.Get(), c)));
+                    } else {
+                        wchar_t sb[512]{};
+                        DWORD cch = static_cast<DWORD>(std::size(sb));
+                        const UINT grc = ::MsiRecordGetStringW(hRec.Get(), c, sb, &cch);
+                        if (grc == ERROR_MORE_DATA) {
+                            std::wstring big(cch + 1, L'\0');
+                            ++cch;
+                            ::MsiRecordGetStringW(hRec.Get(), c, big.data(), &cch);
+                            big.resize(cch);
+                            rowMap[colNames[c]] = Value::FromStr(WideToUtf8(big));
+                        } else {
+                            rowMap[colNames[c]] = Value::FromStr(WideToUtf8(sb));
+                        }
+                    }
+                }
+                rows.push_back(Value::FromMap(std::move(rowMap)));
+            }
+            return Value::FromArray(std::move(rows));
+        }
+
+        if (m == "execSql") {
+            const auto dbPath = args.At(0).AsPath();
+            const Value sqlVal = args.At(1);
+            std::vector<std::wstring> stmts;
+            if (sqlVal.kind == ValKind::Array && sqlVal.arrVal) {
+                for (const auto& it : *sqlVal.arrVal) stmts.push_back(Utf8ToWide(it.AsString()));
+            } else {
+                stmts.push_back(Utf8ToWide(sqlVal.AsString()));
+            }
+
+            host_detail::VmMsiHandle hDb;
+            if (::MsiOpenDatabaseW(dbPath.wstring().c_str(), MSIDBOPEN_TRANSACT, hDb.Put()) != ERROR_SUCCESS) {
+                RaiseError(line, "msi.execSql could not open database for writing: " + WideToUtf8(dbPath.wstring()));
+                return Value::FromBool(false);
+            }
+            for (const auto& q : stmts) {
+                if (q.empty()) continue;
+                host_detail::VmMsiHandle hView;
+                if (::MsiDatabaseOpenViewW(hDb.Get(), q.c_str(), hView.Put()) != ERROR_SUCCESS ||
+                    ::MsiViewExecute(hView.Get(), 0) != ERROR_SUCCESS) {
+                    RaiseError(line, "msi.execSql failed executing SQL: " + WideToUtf8(q));
+                    return Value::FromBool(false);
+                }
+            }
+            if (::MsiDatabaseCommit(hDb.Get()) != ERROR_SUCCESS) {
+                RaiseError(line, "msi.execSql failed committing transaction to: " + WideToUtf8(dbPath.wstring()));
+                return Value::FromBool(false);
+            }
+            return Value::FromBool(true);
+        }
+
+        if (m == "getProperty" || m == "setProperty") {
+            const auto dbPath = args.At(0).AsPath();
+            const std::wstring propName = Utf8ToWide(args.At(1).AsString());
+            if (m == "getProperty") {
+                const Value defVal = args.At(2, Value::FromStr(""));
+                host_detail::VmMsiHandle hDb, hView, hParam(::MsiCreateRecord(1)), hRec;
+                if (::MsiOpenDatabaseW(dbPath.wstring().c_str(), MSIDBOPEN_READONLY, hDb.Put()) != ERROR_SUCCESS) {
+                    return defVal;
+                }
+                ::MsiRecordSetStringW(hParam.Get(), 1, propName.c_str());
+                if (::MsiDatabaseOpenViewW(hDb.Get(), L"SELECT `Value` FROM `Property` WHERE `Property`=?", hView.Put()) == ERROR_SUCCESS &&
+                    ::MsiViewExecute(hView.Get(), hParam.Get()) == ERROR_SUCCESS &&
+                    ::MsiViewFetch(hView.Get(), hRec.Put()) == ERROR_SUCCESS) {
+                    wchar_t vb[1024]{};
+                    DWORD cch = static_cast<DWORD>(std::size(vb));
+                    ::MsiRecordGetStringW(hRec.Get(), 1, vb, &cch);
+                    return Value::FromStr(WideToUtf8(vb));
+                }
+                return defVal;
+            }
+
+            // `msi.setProperty(dbPath, name, value)` — parameterized upsert safe against single quotes!
+            const std::wstring propVal = Utf8ToWide(args.At(2).AsString());
+            host_detail::VmMsiHandle hDb;
+            if (::MsiOpenDatabaseW(dbPath.wstring().c_str(), MSIDBOPEN_TRANSACT, hDb.Put()) != ERROR_SUCCESS) {
+                RaiseError(line, "msi.setProperty could not open database for writing: " + WideToUtf8(dbPath.wstring()));
+                return Value::FromBool(false);
+            }
+            // Delete existing row (if present) then insert fresh row via parameterized `MSIHANDLE` record
+            {
+                host_detail::VmMsiHandle hDelView, hDelRec(::MsiCreateRecord(1));
+                ::MsiRecordSetStringW(hDelRec.Get(), 1, propName.c_str());
+                if (::MsiDatabaseOpenViewW(hDb.Get(), L"DELETE FROM `Property` WHERE `Property`=?", hDelView.Put()) == ERROR_SUCCESS) {
+                    ::MsiViewExecute(hDelView.Get(), hDelRec.Get());
+                }
+            }
+            if (!propVal.empty()) {
+                host_detail::VmMsiHandle hInsView, hInsRec(::MsiCreateRecord(2));
+                ::MsiRecordSetStringW(hInsRec.Get(), 1, propName.c_str());
+                ::MsiRecordSetStringW(hInsRec.Get(), 2, propVal.c_str());
+                if (::MsiDatabaseOpenViewW(hDb.Get(), L"INSERT INTO `Property` (`Property`, `Value`) VALUES (?, ?)", hInsView.Put()) != ERROR_SUCCESS ||
+                    ::MsiViewExecute(hInsView.Get(), hInsRec.Get()) != ERROR_SUCCESS) {
+                    RaiseError(line, "msi.setProperty failed inserting Property '" + WideToUtf8(propName) + "'.");
+                    return Value::FromBool(false);
+                }
+            }
+            return Value::FromBool(::MsiDatabaseCommit(hDb.Get()) == ERROR_SUCCESS);
+        }
+
+        if (m == "getSummary" || m == "setSummary") {
+            const auto dbPath = args.At(0).AsPath();
+            if (m == "getSummary") {
+                host_detail::VmMsiHandle hDb, hSum;
+                if (::MsiOpenDatabaseW(dbPath.wstring().c_str(), MSIDBOPEN_READONLY, hDb.Put()) != ERROR_SUCCESS ||
+                    ::MsiGetSummaryInformationW(hDb.Get(), nullptr, 0, hSum.Put()) != ERROR_SUCCESS) {
+                    return Value::FromMap({});
+                }
+                auto rdStr = [&](UINT pid) {
+                    UINT dt = 0; INT iv = 0; FILETIME ft{}; wchar_t sb[1024]{}; DWORD cch = 1024;
+                    if (::MsiSummaryInfoGetPropertyW(hSum.Get(), pid, &dt, &iv, &ft, sb, &cch) != ERROR_SUCCESS) return std::string{};
+                    if (dt == VT_LPSTR) return WideToUtf8(sb);
+                    if (dt == VT_I2 || dt == VT_I4) return std::to_string(iv);
+                    return std::string{};
+                };
+                auto rdInt = [&](UINT pid) -> std::int64_t {
+                    UINT dt = 0; INT iv = 0; FILETIME ft{}; wchar_t sb[64]{}; DWORD cch = 64;
+                    if (::MsiSummaryInfoGetPropertyW(hSum.Get(), pid, &dt, &iv, &ft, sb, &cch) == ERROR_SUCCESS && (dt == VT_I2 || dt == VT_I4)) return iv;
+                    return 0;
+                };
+                return Value::FromMap({
+                    {"title",       Value::FromStr(rdStr(2))},
+                    {"subject",     Value::FromStr(rdStr(3))},
+                    {"author",      Value::FromStr(rdStr(4))},
+                    {"keywords",    Value::FromStr(rdStr(5))},
+                    {"comments",    Value::FromStr(rdStr(6))},
+                    {"template",    Value::FromStr(rdStr(7))},
+                    {"packageCode", Value::FromStr(rdStr(9))},
+                    {"schema",      Value::FromInt(rdInt(14))},
+                    {"wordCount",   Value::FromInt(rdInt(15))},
+                    {"appName",     Value::FromStr(rdStr(18))},
+                    {"security",    Value::FromInt(rdInt(19))}
+                });
+            }
+
+            // `msi.setSummary(dbPath, { title: "...", author: "...", template: "Arm64;1033", ... })`
+            const Value mp = args.At(1);
+            if (mp.kind != ValKind::Map || !mp.mapVal) return Value::FromBool(false);
+            host_detail::VmMsiHandle hDb, hSum;
+            if (::MsiOpenDatabaseW(dbPath.wstring().c_str(), MSIDBOPEN_TRANSACT, hDb.Put()) != ERROR_SUCCESS ||
+                ::MsiGetSummaryInformationW(hDb.Get(), nullptr, 20, hSum.Put()) != ERROR_SUCCESS) {
+                RaiseError(line, "msi.setSummary could not open SummaryInformation stream for writing.");
+                return Value::FromBool(false);
+            }
+            for (const auto& [k, v] : *mp.mapVal) {
+                const std::string kl = AsciiLower(k);
+                const std::wstring ws = Utf8ToWide(v.AsString());
+                if (kl == "codepage")               ::MsiSummaryInfoSetPropertyW(hSum.Get(), 1,  VT_I2,    static_cast<INT>(v.AsInt()), nullptr, nullptr);
+                else if (kl == "title")             ::MsiSummaryInfoSetPropertyW(hSum.Get(), 2,  VT_LPSTR, 0, nullptr, ws.c_str());
+                else if (kl == "subject")           ::MsiSummaryInfoSetPropertyW(hSum.Get(), 3,  VT_LPSTR, 0, nullptr, ws.c_str());
+                else if (kl == "author")            ::MsiSummaryInfoSetPropertyW(hSum.Get(), 4,  VT_LPSTR, 0, nullptr, ws.c_str());
+                else if (kl == "keywords")          ::MsiSummaryInfoSetPropertyW(hSum.Get(), 5,  VT_LPSTR, 0, nullptr, ws.c_str());
+                else if (kl == "comments")          ::MsiSummaryInfoSetPropertyW(hSum.Get(), 6,  VT_LPSTR, 0, nullptr, ws.c_str());
+                else if (kl == "template")          ::MsiSummaryInfoSetPropertyW(hSum.Get(), 7,  VT_LPSTR, 0, nullptr, ws.c_str());
+                else if (kl == "packagecode")       ::MsiSummaryInfoSetPropertyW(hSum.Get(), 9,  VT_LPSTR, 0, nullptr, ws.c_str());
+                else if (kl == "schema" || kl == "pagecount") ::MsiSummaryInfoSetPropertyW(hSum.Get(), 14, VT_I4, static_cast<INT>(v.AsInt()), nullptr, nullptr);
+                else if (kl == "wordcount")         ::MsiSummaryInfoSetPropertyW(hSum.Get(), 15, VT_I4,    static_cast<INT>(v.AsInt()), nullptr, nullptr);
+                else if (kl == "appname")           ::MsiSummaryInfoSetPropertyW(hSum.Get(), 18, VT_LPSTR, 0, nullptr, ws.c_str());
+                else if (kl == "security")          ::MsiSummaryInfoSetPropertyW(hSum.Get(), 19, VT_I4,    static_cast<INT>(v.AsInt()), nullptr, nullptr);
+            }
+            const bool ok = (::MsiSummaryInfoPersist(hSum.Get()) == ERROR_SUCCESS) &&
+                            (::MsiDatabaseCommit(hDb.Get()) == ERROR_SUCCESS);
+            return Value::FromBool(ok);
+        }
+
+        if (m == "importStream" || m == "exportStream") {
+            const auto dbPath       = args.At(0).AsPath();
+            const std::wstring tbl  = Utf8ToWide(args.At(1).AsString());
+            const std::wstring key  = Utf8ToWide(args.At(2).AsString());
+            const auto filePath     = args.At(3).AsPath();
+
+            if (m == "importStream") {
+                host_detail::VmMsiHandle hDb, hView, hRec(::MsiCreateRecord(2));
+                if (::MsiOpenDatabaseW(dbPath.wstring().c_str(), MSIDBOPEN_TRANSACT, hDb.Put()) != ERROR_SUCCESS) {
+                    RaiseError(line, "msi.importStream could not open database: " + WideToUtf8(dbPath.wstring()));
+                    return Value::FromBool(false);
+                }
+                const std::wstring delSql = L"DELETE FROM `" + tbl + L"` WHERE `Name`='" + key + L"'";
+                {
+                    host_detail::VmMsiHandle hDel;
+                    if (::MsiDatabaseOpenViewW(hDb.Get(), delSql.c_str(), hDel.Put()) == ERROR_SUCCESS) {
+                        ::MsiViewExecute(hDel.Get(), 0);
+                    }
+                }
+                ::MsiRecordSetStringW(hRec.Get(), 1, key.c_str());
+                if (::MsiRecordSetStreamW(hRec.Get(), 2, filePath.wstring().c_str()) != ERROR_SUCCESS) {
+                    RaiseError(line, "msi.importStream could not read stream file: " + WideToUtf8(filePath.wstring()));
+                    return Value::FromBool(false);
+                }
+                const std::wstring insSql = L"INSERT INTO `" + tbl + L"` (`Name`, `Data`) VALUES (?, ?)";
+                if (::MsiDatabaseOpenViewW(hDb.Get(), insSql.c_str(), hView.Put()) != ERROR_SUCCESS ||
+                    ::MsiViewExecute(hView.Get(), hRec.Get()) != ERROR_SUCCESS ||
+                    ::MsiDatabaseCommit(hDb.Get()) != ERROR_SUCCESS) {
+                    RaiseError(line, "msi.importStream failed writing stream into table '" + WideToUtf8(tbl) + "'.");
+                    return Value::FromBool(false);
+                }
+                return Value::FromBool(true);
+            }
+
+            // `msi.exportStream(dbPath, table, nameKey, outFilePath)`
+            host_detail::VmMsiHandle hDb, hView, hParam(::MsiCreateRecord(1)), hRec;
+            if (::MsiOpenDatabaseW(dbPath.wstring().c_str(), MSIDBOPEN_READONLY, hDb.Put()) != ERROR_SUCCESS) {
+                return Value::FromBool(false);
+            }
+            ::MsiRecordSetStringW(hParam.Get(), 1, key.c_str());
+            const std::wstring selSql = L"SELECT `Data` FROM `" + tbl + L"` WHERE `Name`=?";
+            if (::MsiDatabaseOpenViewW(hDb.Get(), selSql.c_str(), hView.Put()) != ERROR_SUCCESS ||
+                ::MsiViewExecute(hView.Get(), hParam.Get()) != ERROR_SUCCESS ||
+                ::MsiViewFetch(hView.Get(), hRec.Put()) != ERROR_SUCCESS) {
+                return Value::FromBool(false);
+            }
+            std::error_code ec;
+            if (!filePath.parent_path().empty()) std::filesystem::create_directories(filePath.parent_path(), ec);
+            std::ofstream out(filePath, std::ios::binary | std::ios::trunc);
+            if (!out) return Value::FromBool(false);
+            char chunk[8192];
+            for (;;) {
+                DWORD cb = sizeof(chunk);
+                if (::MsiRecordReadStream(hRec.Get(), 1, chunk, &cb) != ERROR_SUCCESS || cb == 0) break;
+                out.write(chunk, static_cast<std::streamsize>(cb));
+            }
+            return Value::FromBool(out.good());
+        }
+
+        if (m == "generateTransform") {
+            const auto baseMsi   = args.At(0).AsPath();
+            const auto targetMsi = args.At(1).AsPath();
+            const auto outMst    = args.At(2).AsPath();
+            std::error_code ec;
+            if (!outMst.parent_path().empty()) std::filesystem::create_directories(outMst.parent_path(), ec);
+            std::filesystem::remove(outMst, ec);
+            host_detail::VmMsiHandle hBase, hTarg;
+            if (::MsiOpenDatabaseW(baseMsi.wstring().c_str(), MSIDBOPEN_READONLY, hBase.Put()) != ERROR_SUCCESS ||
+                ::MsiOpenDatabaseW(targetMsi.wstring().c_str(), MSIDBOPEN_READONLY, hTarg.Put()) != ERROR_SUCCESS) {
+                RaiseError(line, "msi.generateTransform could not open baseline/target MSI files.");
+                return Value::FromBool(false);
+            }
+            const UINT genRc = ::MsiDatabaseGenerateTransformW(hTarg.Get(), hBase.Get(), outMst.wstring().c_str(), 0, 0);
+            if (genRc != ERROR_SUCCESS) {
+                RaiseError(line, "MsiDatabaseGenerateTransformW returned error " + std::to_string(genRc));
+                return Value::FromBool(false);
+            }
+            ::MsiCreateTransformSummaryInfoW(hTarg.Get(), hBase.Get(), outMst.wstring().c_str(), 0, 0);
+            return Value::FromBool(true);
         }
         RaiseError(line, "Unknown msi.* method 'msi." + m + "()'.");
         return Value::Null();

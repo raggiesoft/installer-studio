@@ -1,0 +1,132 @@
+// ================================================================================
+// FILE: examples/raggiescript/album-pack-autorun.rssc
+// PROJECT: RaggieSoft The Listening Room — High-Quality Offline Album Template
+// WEBSITE: https://music.raggiesoft.com  |  STUDIO: https://raggiesoftstudio.com
+// LICENSE: Code: MIT | Lyrics & Notes: CC BY-SA 4.0 (Michael P. Ragsdale)
+//
+// PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+//   What does this RaggieScript (`.rssc`) template do?
+//     Packages any Engine Room Records high-quality offline album edition from a
+//     single readable script (`instbuild.exe album-pack-autorun.rssc -D ARTIST_SLUG=...`):
+//       1. Politely asks any open `ListeningRoom.exe` window (`--release-album`) to
+//          close open audio file handles before updating or removing the album!
+//       2. Saves studio-master offline audio + synchronized `.vtt` lyrics into
+//          `%LOCALAPPDATA%\RaggieSoft\Music\<artist>\<album>` (`Scope.User`, zero UAC!).
+//       3. Cleans up any redundant `128 kbps` `web-mp3` streaming cache for this
+//          album so the listener never pays double disk space!
+//       4. Hides individual albums from Windows *Installed apps* (`SystemComponent = 1`)
+//          while registering them under `HKCU\Software\RaggieSoft\The Listening Room\Albums`!
+// ================================================================================
+
+use installer;
+
+#ifndef ARTIST_SLUG
+#define ARTIST_SLUG "the-stardust-engine"
+#endif
+
+#ifndef ALBUM_SLUG
+#define ALBUM_SLUG "1997-hard-reset"
+#endif
+
+#ifndef ALBUM_TITLE
+#define ALBUM_TITLE "Hard Reset - The Stardust Engine"
+#endif
+
+package "RaggieSoft High-Quality Album Edition" {
+    id: "{9B18A4C2-5E19-4D83-A104-5241474D5553}";
+    version: v"1.0.0";
+    publisher: "RaggieSoft";
+    website: "https://music.raggiesoft.com";
+    scope: Scope.User;
+    uac: Uac.AsInvoker;
+    style: WizardStyle.Autorun16x9;
+    hideFromInstalledApps: true;
+}
+
+param artistSlug: string = def("ARTIST_SLUG", "the-stardust-engine");
+param albumSlug: string  = def("ALBUM_SLUG",  "1997-hard-reset");
+param albumTitle: string = def("ALBUM_TITLE", "Hard Reset - The Stardust Engine");
+param listenNow: bool    = true;
+
+fn resolveListeningRoomExe() {
+    let dir = reg.read(Hive.HKCU, r"Software\RaggieSoft\The Listening Room", "Install Path")
+           ?? reg.read(Hive.HKLM, r"SOFTWARE\RaggieSoft\The Listening Room", "Install Path", view: RegView.Native64)
+           ?? (sys.folder("ProgramFiles") / "RaggieSoft" / "The Listening Room");
+    return dir / "ListeningRoom.exe";
+}
+
+wizard {
+    step Welcome {
+        let choice = 100;
+        ui.taskDialog(
+            title: albumTitle,
+            heading: "Install High-Quality Offline Album",
+            body: "Save ${albumTitle} (studio audio, cover artwork, and synchronized lyrics) for offline playback in The Listening Room.",
+            buttons: [
+                { id: 100, text: "&Install High-Quality Album", subtitle: "Save studio audio and synced lyrics offline" },
+                { id: 101, text: "E&xit",                       subtitle: "Close without making changes" }
+            ],
+            verifyText: "&Listen to this album in The Listening Room when finished",
+            choice: ref choice,
+            verifiedOut: ref listenNow
+        );
+        if (choice != 100) {
+            wizard.cancel();
+        }
+    }
+}
+
+install {
+    let hostExe   = resolveListeningRoomExe();
+    let targetDir = sys.folder("LocalAppData") / "RaggieSoft" / "Music" / artistSlug / albumSlug;
+    let packKey   = "${artistSlug}--${albumSlug}";
+
+    // Politely release any active playback handle on this album before writing files
+    if (proc.isRunning("ListeningRoom.exe") && fs.exists(hostExe)) {
+        proc.run(hostExe, args: "--release-album ${artistSlug}/${albumSlug}", wait: true, token: Token.Desktop);
+    }
+
+    ui.progress(25, "Saving ${albumTitle} to your personal offline library...");
+    fs.mkdir(targetDir / "hq-mp3");
+    if (fs.isDir(payload.dir("albumFiles"))) {
+        fs.copyTree(payload.dir("albumFiles"), targetDir);
+    }
+    fs.writeJson(targetDir / "offline-album.json", {
+        artistSlug: artistSlug,
+        albumSlug:  albumSlug,
+        title:      albumTitle,
+        edition:    "HighQuality"
+    });
+
+    // Automatic 128 kbps -> High-Quality upgrade cache cleanup (prevents double disk usage!)
+    let freeCache = sys.folder("LocalAppData") / "RaggieSoft" / "Cache" / "engine-room-records" / "artists" / artistSlug / albumSlug;
+    fs.removeDir(targetDir / "web-mp3");
+    fs.removeDir(freeCache / "web-mp3");
+
+    // Register in Per-User Listening Room catalog
+    let detailKey = r"Software\RaggieSoft\The Listening Room\Albums\" + packKey;
+    reg.write(Hive.HKCU, r"Software\RaggieSoft\The Listening Room\Albums\List", packKey, packKey);
+    reg.write(Hive.HKCU, detailKey, "Album Name",   albumTitle);
+    reg.write(Hive.HKCU, detailKey, "Artist Slug",  artistSlug);
+    reg.write(Hive.HKCU, detailKey, "Album Slug",   albumSlug);
+    reg.write(Hive.HKCU, detailKey, "Install Path", str(targetDir));
+    reg.write(Hive.HKCU, detailKey, "Edition",      "HighQuality");
+
+    ui.progress(100, "${albumTitle} is ready for offline playback.");
+    shell.refresh();
+
+    if (!sys.isSilent() && listenNow && fs.exists(hostExe)) {
+        proc.run(hostExe, args: "\"raggiesoft-music://${artistSlug}/${albumSlug}\"", wait: false, token: Token.Desktop);
+    } elif (proc.isRunning("ListeningRoom.exe") && fs.exists(hostExe)) {
+        proc.run(hostExe, args: "--refresh-library", wait: false, token: Token.Desktop);
+    }
+}
+
+uninstall {
+    let packKey   = "${artistSlug}--${albumSlug}";
+    let targetDir = sys.folder("LocalAppData") / "RaggieSoft" / "Music" / artistSlug / albumSlug;
+    reg.deleteValue(Hive.HKCU, r"Software\RaggieSoft\The Listening Room\Albums\List", packKey);
+    reg.deleteKeyTree(Hive.HKCU, r"Software\RaggieSoft\The Listening Room\Albums\" + packKey);
+    fs.removeDir(targetDir);
+    shell.refresh();
+}

@@ -1,0 +1,127 @@
+// ================================================================================
+// FILE: examples/raggiescript/book-pack-autorun.rssc
+// PROJECT: RaggieSoft Book Reader — Per-User Offline Book Pack Template (`.rssc`)
+// WEBSITE: https://books.raggiesoft.com  |  STUDIO: https://raggiesoftstudio.com
+// LICENSE: Code: MIT | Creative Narrative Content: CC BY-SA 4.0 (Michael P. Ragsdale)
+//
+// PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+//   How does a single ~85-line RaggieScript replace thousands of lines of legacy
+//   codegen for all 34 RaggieSoft offline book micro-installers?
+//     1. Compile-Time Defines (`-D BOOK_SLUG=cedar-run -D BOOK_TITLE="Cedar Run"`):
+//        - `#ifndef` / `#define` provide clean defaults while allowing CI/CD to
+//          compile any book in `catalog.json` from this ONE `.rssc` source file!
+//     2. Strictly Per-User (`Scope.User`, `Uac.AsInvoker`) & Tidily Hidden (`hideFromInstalledApps: true`):
+//        - Installs directly into `%LOCALAPPDATA%\RaggieSoft\Books\<slug>` with
+//          zero Administrator prompts, and sets `SystemComponent = 1` so installing
+//          30+ books never clutters Windows *Installed apps*!
+//     3. Single-Instance Host Discovery & Live Library Handoff:
+//        - Locates `BookReader.exe` across `HKCU`, `HKLM`, and `Program Files`.
+//        - Launches `raggiesoft-books://<slug>` under the user's desktop token (or
+//          sends `--refresh-library` if `BookReader.exe` is already open!).
+//
+//   Fictitious Persons & Entities Disclaimer:
+//     All characters, universities (CPI, VDU), corporations, and events depicted in
+//     Ocean View Archives and RaggieSoft Story Crossroads works are fictitious.
+// ================================================================================
+
+use installer;
+
+#ifndef BOOK_SLUG
+#define BOOK_SLUG "cedar-run"
+#endif
+
+#ifndef BOOK_TITLE
+#define BOOK_TITLE "Cedar Run - Interactive Edition"
+#endif
+
+#ifndef BOOK_IMPRINT
+#define BOOK_IMPRINT "RaggieSoft Story Crossroads"
+#endif
+
+package "RaggieSoft Offline Book Edition" {
+    id: "{7C42D8E1-6F34-4B99-8C12-524147424F4F}";
+    version: v"1.0.0";
+    publisher: "RaggieSoft";
+    website: "https://books.raggiesoft.com";
+    scope: Scope.User;
+    uac: Uac.AsInvoker;
+    style: WizardStyle.Autorun16x9;
+    hideFromInstalledApps: true;
+}
+
+param bookSlug: string  = def("BOOK_SLUG", "cedar-run");
+param bookTitle: string = def("BOOK_TITLE", "Cedar Run - Interactive Edition");
+param runNow: bool      = true;
+
+// Resolve host `RaggieSoft Book Reader` path safely without mutating the machine (`RSW701` safe!)
+fn resolveBookReaderExe() {
+    let dir = reg.read(Hive.HKCU, r"Software\RaggieSoft\Book Reader", "Install Path")
+           ?? reg.read(Hive.HKLM, r"SOFTWARE\RaggieSoft\Book Reader", "Install Path", view: RegView.Native64)
+           ?? (sys.folder("ProgramFiles") / "RaggieSoft" / "Book Reader");
+    return dir / "BookReader.exe";
+}
+
+wizard {
+    step Welcome {
+        let choice = 100;
+        ui.taskDialog(
+            title: bookTitle,
+            heading: "Save ${bookTitle} for Offline Reading",
+            body: "Published by " + def("BOOK_IMPRINT", "Ocean View Archives") +
+                  ".\n\nThis offline edition saves all chapters, illustrations, and reading themes to your personal library.",
+            buttons: [
+                { id: 100, text: "&Install Book", subtitle: "Save complete illustrated book for offline reading" },
+                { id: 101, text: "E&xit",         subtitle: "Close without making changes" }
+            ],
+            verifyText: "&Read this book in RaggieSoft Book Reader when finished",
+            choice: ref choice,
+            verifiedOut: ref runNow
+        );
+        if (choice != 100) {
+            wizard.cancel();
+        }
+    }
+}
+
+install {
+    let targetDir = sys.folder("LocalAppData") / "RaggieSoft" / "Books" / bookSlug;
+    ui.progress(20, "Saving ${bookTitle} to your personal offline library...");
+    fs.mkdir(targetDir);
+
+    // Extract bundled book payload if packaged, and write edition manifest
+    if (fs.isDir(payload.dir("bookContent"))) {
+        fs.copyTree(payload.dir("bookContent"), targetDir);
+    }
+    fs.writeJson(targetDir / "offline-edition.json", {
+        slug:    bookSlug,
+        title:   bookTitle,
+        imprint: def("BOOK_IMPRINT", "Ocean View Archives"),
+        license: "CC BY-SA 4.0"
+    });
+
+    // Register in Per-User RaggieSoft Book Reader catalog (`HKCU\Software\RaggieSoft\Book Reader\Books`)
+    let detailKey = r"Software\RaggieSoft\Book Reader\Books\" + bookSlug;
+    reg.write(Hive.HKCU, r"Software\RaggieSoft\Book Reader\Books\List", bookSlug, bookSlug);
+    reg.write(Hive.HKCU, detailKey, "Book Name",    bookTitle);
+    reg.write(Hive.HKCU, detailKey, "Slug",         bookSlug);
+    reg.write(Hive.HKCU, detailKey, "Install Path", str(targetDir));
+    reg.write(Hive.HKCU, detailKey, "Edition",      "OfflineBook");
+
+    ui.progress(100, "${bookTitle} is ready for offline reading.");
+    shell.refresh();
+
+    let hostExe = resolveBookReaderExe();
+    if (!sys.isSilent() && runNow && fs.exists(hostExe)) {
+        proc.run(hostExe, args: "\"raggiesoft-books://${bookSlug}\"", wait: false, token: Token.Desktop);
+    } elif (proc.isRunning("BookReader.exe") && fs.exists(hostExe)) {
+        proc.run(hostExe, args: "--refresh-library", wait: false, token: Token.Desktop);
+    }
+}
+
+uninstall {
+    let targetDir = sys.folder("LocalAppData") / "RaggieSoft" / "Books" / bookSlug;
+    reg.deleteValue(Hive.HKCU, r"Software\RaggieSoft\Book Reader\Books\List", bookSlug);
+    reg.deleteKeyTree(Hive.HKCU, r"Software\RaggieSoft\Book Reader\Books\" + bookSlug);
+    fs.removeDir(targetDir);
+    shell.refresh();
+}

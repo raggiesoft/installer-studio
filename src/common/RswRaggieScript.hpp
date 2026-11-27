@@ -143,6 +143,7 @@ enum class TokKind : std::uint8_t {
     Comma,      // `,`
     Dot,        // `.`
     Question,   // `?`
+    NullCoal,   // `??`
     Arrow,      // `->`
     FatArrow,   // `=>`
     Plus,       // `+`
@@ -265,6 +266,21 @@ struct PayloadDecl {
     int         line = 1;
 };
 
+/// Declarative selectable feature (`feature "cli" { title: ...; inCompact: false; ... }`)
+struct FeatureDecl {
+    std::string id;
+    std::string title;
+    std::string description;
+    std::string parentId;
+    bool        inCompact       = true;
+    bool        defaultSelected = true;
+    bool        required        = false;
+    std::string delivery        = "embedded"; // `"embedded"` | `"ondemand"`
+    std::string packUrl;
+    std::string packSha256;
+    int         line = 1;
+};
+
 struct FunctionDecl {
     std::string              name;
     std::vector<std::string> params;
@@ -296,6 +312,9 @@ struct PackageHeaderDecl {
     std::string mainExe;
     std::string iconFile;
     std::string licenseFile;
+    std::string bannerImage;                // Optional `16:9` OG banner or wizard sidebar PNG/JPG
+    std::string readmeFile;                 // Optional scrollable ReadMe / Liner Notes TXT/MD
+    std::string msiFile;                    // Optional embedded `.msi` database orchestrated by `msi.*`
     std::string accentPrimary  = "#1D4ED8";
     std::string accentSecondary= "#FBBF24";
     bool        hideFromArp    = false;
@@ -304,21 +323,24 @@ struct PackageHeaderDecl {
 };
 
 struct ScriptProgram {
-    std::string                   sourcePath;
-    std::set<std::string>         capabilities; // `"std"`, `"installer"`, `"showcase"`, `"ui"`, `"net"`, `"svc"`, etc.
-    PackageHeaderDecl             package{};
-    bool                          hasPackageHeader = false;
-    std::vector<ParamDecl>        params;
-    std::vector<PayloadDecl>      payloads;
-    std::vector<FunctionDecl>     functions;
-    std::vector<StmtPtr>          topStatements; // Global `let`/`const` & top-level micro-app logic
-    StmtPtr                       wizardBlock;
-    StmtPtr                       installBlock;
-    StmtPtr                       repairBlock;
-    std::string                   repairParamName = "mode";
-    StmtPtr                       uninstallBlock;
-    std::string                   uninstallParamName = "options";
-    std::vector<EventHandlerDecl> eventHandlers;
+    std::string                        sourcePath;
+    std::set<std::string>              capabilities; // `"std"`, `"installer"`, `"showcase"`, `"ui"`, `"net"`, `"svc"`, etc.
+    PackageHeaderDecl                  package{};
+    bool                               hasPackageHeader = false;
+    std::vector<ParamDecl>             params;
+    std::vector<PayloadDecl>           payloads;
+    std::vector<FeatureDecl>           features;
+    std::map<std::string, std::string> compileDefines;       // `-D KEY=VALUE` & `#define KEY VALUE` baked into bytecode
+    std::map<std::string, std::string> embeddedCompileFiles; // `compile.json("...")` & `compile.text("...")` baked at build time
+    std::vector<FunctionDecl>          functions;
+    std::vector<StmtPtr>               topStatements; // Global `let`/`const` & top-level micro-app logic
+    StmtPtr                            wizardBlock;
+    StmtPtr                            installBlock;
+    StmtPtr                            repairBlock;
+    std::string                        repairParamName = "mode";
+    StmtPtr                            uninstallBlock;
+    std::string                        uninstallParamName = "options";
+    std::vector<EventHandlerDecl>      eventHandlers;
 };
 
 // ================================================================================
@@ -329,7 +351,7 @@ namespace detail {
 inline bool PreprocessSourceRecursive(
     const std::string& rawText,
     const std::filesystem::path& currentFile,
-    const std::map<std::string, std::string>& buildDefines,
+    std::map<std::string, std::string>& buildDefines,
     std::set<std::wstring>& visitedCanonPaths,
     std::string& outExpanded,
     std::vector<ScriptDiagnostic>& diags)
@@ -385,7 +407,10 @@ inline bool PreprocessSourceRecursive(
             bool condVal = false;
             if (parentActive && !alreadyTaken) {
                 std::string expr = TrimAscii(trimmed.substr(isElif ? 5 : 3));
-                if (!isElif && expr.rfind("def ", 0) == 0) {
+                if (!isElif && expr.rfind("ndef ", 0) == 0) {
+                    const std::string key = TrimAscii(expr.substr(5));
+                    condVal = !(buildDefines.count(key) > 0 && !buildDefines.at(key).empty() && buildDefines.at(key) != "0" && buildDefines.at(key) != "false");
+                } else if (!isElif && expr.rfind("def ", 0) == 0) {
                     const std::string key = TrimAscii(expr.substr(4));
                     condVal = buildDefines.count(key) > 0 && !buildDefines.at(key).empty() && buildDefines.at(key) != "0" && buildDefines.at(key) != "false";
                 } else {
@@ -445,6 +470,21 @@ inline bool PreprocessSourceRecursive(
         }
 
         if (!isCurrentlyActive()) {
+            outExpanded += "\n";
+            continue;
+        }
+
+        // Handle `#define KEY VALUE` (so `.rssc` templates can set fallback constants overridden via `-D KEY=VALUE`)
+        if (trimmed.rfind("#define ", 0) == 0) {
+            std::string rest = TrimAscii(trimmed.substr(8));
+            std::size_t sp = 0;
+            while (sp < rest.size() && rest[sp] != ' ' && rest[sp] != '\t') ++sp;
+            const std::string dKey = rest.substr(0, sp);
+            std::string dVal = (sp < rest.size()) ? TrimAscii(rest.substr(sp + 1)) : "1";
+            if (dVal.size() >= 2 && dVal.front() == '"' && dVal.back() == '"') {
+                dVal = dVal.substr(1, dVal.size() - 2);
+            }
+            if (!dKey.empty()) buildDefines[dKey] = dVal;
             outExpanded += "\n";
             continue;
         }
@@ -702,6 +742,7 @@ inline bool TokenizeRaggieScript(
         if (c == '>' && next == '=') { adv(2); outTokens.push_back({TokKind::Gte, ">=", tokLine, tokCol}); continue; }
         if (c == '&' && next == '&') { adv(2); outTokens.push_back({TokKind::And, "&&", tokLine, tokCol}); continue; }
         if (c == '|' && next == '|') { adv(2); outTokens.push_back({TokKind::Or, "||", tokLine, tokCol}); continue; }
+        if (c == '?' && next == '?') { adv(2); outTokens.push_back({TokKind::NullCoal, "??", tokLine, tokCol}); continue; }
 
         // Single-character punctuation & operators
         adv();
@@ -763,6 +804,8 @@ public:
                 if (!ParseParamDecl(prog)) return false;
             } else if (MatchIdent("payload")) {
                 if (!ParsePayloadDecl(prog)) return false;
+            } else if (MatchIdent("feature")) {
+                if (!ParseFeatureDecl(prog)) return false;
             } else if (MatchIdent("fn") || MatchIdent("function")) {
                 if (!ParseFunctionDecl(prog)) return false;
             } else if (MatchIdent("wizard")) {
@@ -851,6 +894,7 @@ private:
             // e.g., `Scope.Machine` -> `"machine"`, `Uac.RequireAdministrator` -> `"requireAdministrator"`
             const std::string leaf = e->strVal;
             if (EqualsIgnoreCase(leaf, "AsInvoker")) return "asInvoker";
+            if (EqualsIgnoreCase(leaf, "Deferred")) return "deferred";
             if (EqualsIgnoreCase(leaf, "HighestAvailable")) return "highestAvailable";
             if (EqualsIgnoreCase(leaf, "RequireAdministrator")) return "requireAdministrator";
             return AsciiLower(leaf);
@@ -886,6 +930,9 @@ private:
             else if (kl == "mainexe" || kl == "mainexecutable") prog.package.mainExe = v;
             else if (kl == "icon" || kl == "iconfile") prog.package.iconFile = v;
             else if (kl == "license" || kl == "licensefile") prog.package.licenseFile = v;
+            else if (kl == "banner" || kl == "bannerimage" || kl == "ogimage") prog.package.bannerImage = v;
+            else if (kl == "readme" || kl == "readmefile") prog.package.readmeFile = v;
+            else if (kl == "msi" || kl == "msifile" || kl == "embeddedmsi") prog.package.msiFile = v;
             else if (kl == "accentprimary") prog.package.accentPrimary = v;
             else if (kl == "accentsecondary") prog.package.accentSecondary = v;
             else if (kl == "hidefrominstalledapps" || kl == "systemcomponent") prog.package.hideFromArp = EqualsIgnoreCase(v, "true") || v == "1";
@@ -937,6 +984,39 @@ private:
         }
         Expect(TokKind::RBrace, "Expected '}' after payload declaration.");
         prog.payloads.push_back(std::move(pl));
+        return !hadError_;
+    }
+
+    bool ParseFeatureDecl(ScriptProgram& prog) {
+        FeatureDecl ft{};
+        ft.line = Cur().line;
+        if (At(TokKind::StrLit) || At(TokKind::Ident)) {
+            ft.id = Advance().text;
+        } else {
+            ErrorHere("Expected feature ID string or identifier after 'feature'.");
+        }
+        ft.title = ft.id;
+        Expect(TokKind::LBrace, "Expected '{' in feature declaration.");
+        while (!At(TokKind::RBrace) && !At(TokKind::Eof) && !hadError_) {
+            const std::string k = ExpectIdent("Expected feature property name.");
+            if (!Match(TokKind::Colon)) Expect(TokKind::Assign, "Expected ':' or '=' in feature property.");
+            ExprPtr v = ParseExpr();
+            Match(TokKind::Semi);
+            Match(TokKind::Comma);
+            const std::string sv = FlattenEnumOrLitValue(v);
+            const std::string kl = AsciiLower(k);
+            if (kl == "title" || kl == "name") ft.title = sv;
+            else if (kl == "description" || kl == "desc") ft.description = sv;
+            else if (kl == "parent") ft.parentId = sv;
+            else if (kl == "incompact" || kl == "compact") ft.inCompact = EqualsIgnoreCase(sv, "true") || sv == "1";
+            else if (kl == "selected" || kl == "defaultselected") ft.defaultSelected = EqualsIgnoreCase(sv, "true") || sv == "1";
+            else if (kl == "required" || kl == "disallowabsent") ft.required = EqualsIgnoreCase(sv, "true") || sv == "1";
+            else if (kl == "delivery") ft.delivery = AsciiLower(sv);
+            else if (kl == "url" || kl == "packurl") ft.packUrl = sv;
+            else if (kl == "sha256" || kl == "packsha256") ft.packSha256 = AsciiLower(sv);
+        }
+        Expect(TokKind::RBrace, "Expected '}' after feature declaration.");
+        prog.features.push_back(std::move(ft));
         return !hadError_;
     }
 
@@ -1037,16 +1117,18 @@ private:
             return s;
         }
 
-        // `if (cond) { ... } else ...`
-        if (MatchIdent("if")) {
+        // `if (cond) { ... } elif (cond) { ... } else ...`
+        if (MatchIdent("if") || MatchIdent("elif")) {
             auto s = std::make_shared<Stmt>();
             s->kind = StmtKind::If;
             s->line = ln;
-            Expect(TokKind::LParen, "Expected '(' after 'if'.");
+            Expect(TokKind::LParen, "Expected '(' after 'if'/'elif'.");
             s->expr = ParseExpr();
-            Expect(TokKind::RParen, "Expected ')' after 'if' condition.");
+            Expect(TokKind::RParen, "Expected ')' after condition.");
             s->body = At(TokKind::LBrace) ? ParseBlock() : ParseStmt();
-            if (MatchIdent("else")) {
+            if (PeekIdent("elif")) {
+                s->elseBody = ParseStmt();
+            } else if (MatchIdent("else")) {
                 s->elseBody = At(TokKind::LBrace) ? ParseBlock() : ParseStmt();
             }
             return s;
@@ -1184,7 +1266,7 @@ private:
     ExprPtr ParseExpr() { return ParseTernary(); }
 
     ExprPtr ParseTernary() {
-        auto c = ParseOr();
+        auto c = ParseCoalesce();
         if (Match(TokKind::Question)) {
             auto e = std::make_shared<Expr>();
             e->kind = ExprKind::Ternary;
@@ -1196,6 +1278,17 @@ private:
             return e;
         }
         return c;
+    }
+
+    ExprPtr ParseCoalesce() {
+        auto left = ParseOr();
+        while (Match(TokKind::NullCoal)) {
+            auto b = std::make_shared<Expr>();
+            b->kind = ExprKind::Binary; b->strVal = "??"; b->line = Cur().line;
+            b->lhs = std::move(left); b->rhs = ParseOr();
+            left = std::move(b);
+        }
+        return left;
     }
 
     ExprPtr ParseOr() {
@@ -1405,12 +1498,13 @@ private:
 inline bool IsMutatingHostCall(std::string_view ns, std::string_view method) noexcept {
     if (ns == "fs") {
         return method == "extract" || method == "mkdir" || method == "copy" || method == "copyTree" ||
-               method == "move" || method == "remove" || method == "removeTree" || method == "removeTreeIfExists" ||
-               method == "writeText" || method == "appendText" || method == "writeJson" ||
-               method == "writeBytesHex" || method == "setAttributes" || method == "setNtfsCompression";
+               method == "move" || method == "remove" || method == "removeDir" || method == "removeTree" ||
+               method == "removeTreeIfExists" || method == "writeText" || method == "appendText" ||
+               method == "writeJson" || method == "writeBytesHex" || method == "setAttributes" ||
+               method == "setNtfsCompression";
     }
     if (ns == "reg") {
-        return method == "writeString" || method == "writeExpandString" || method == "writeDword" ||
+        return method == "write" || method == "writeString" || method == "writeExpandString" || method == "writeDword" ||
                method == "appendMultiString" || method == "deleteValue" || method == "deleteKeyTree";
     }
     if (ns == "ini") return method == "write" || method == "deleteKey";
@@ -1423,10 +1517,16 @@ inline bool IsMutatingHostCall(std::string_view ns, std::string_view method) noe
         return method != "exists" && method != "status";
     }
     if (ns == "msi") {
-        return method == "install" || method == "uninstall" || method == "applyPatch" || method == "runLegacyUninstaller";
+        return method == "install" || method == "repair" || method == "uninstall" || method == "configureFeature" ||
+               method == "applyPatch" || method == "runLegacyUninstaller" || method == "createDatabase" ||
+               method == "execSql" || method == "setProperty" || method == "setSummary" ||
+               method == "importStream" || method == "generateTransform" || method == "generatePatch";
     }
     if (ns == "archive") {
-        return method == "extractZip" || method == "extractPak" || method == "createPak";
+        return method == "extractZip" || method == "extractPak" || method == "createPak" || method == "downloadPak";
+    }
+    if (ns == "proc") {
+        return method == "terminate" || method == "restartManagerShutdown" || method == "restartManagerRestart";
     }
     return false;
 }
@@ -1482,7 +1582,7 @@ inline void AnalyzeExprCapabilitiesAndPhase(
                                          prog.capabilities.count("installer") == 0 &&
                                          prog.capabilities.count("showcase") == 0;
         if (isSandboxedTraining &&
-            (ns == "fs" || ns == "reg" || ns == "proc" || ns == "svc" || ns == "net" ||
+            (ns == "fs" || ns == "reg" || ns == "proc" || ns == "ffi" || ns == "svc" || ns == "net" ||
              ns == "msi" || ns == "firewall" || ns == "acl" || ns == "task" || ns == "env")) {
             diags.push_back({
                 true, "RSW702", e->line, 1, prog.sourcePath,
@@ -1552,6 +1652,75 @@ inline bool CompileRaggieScriptText(
     detail::Parser parser(tokens, fileLabel, outDiagnostics);
     if (!parser.ParseProgram(outProgram)) {
         return false;
+    }
+
+    // Harvest compile-time `compile.json("...")` & `compile.text("...")` intrinsics right into `outProgram`!
+    auto harvestCompileFilesExpr = [&](auto& self, const ExprPtr& e) -> bool {
+        if (!e) return true;
+        if (!self(self, e->lhs) || !self(self, e->rhs) || !self(self, e->cond)) return false;
+        for (const auto& it : e->items) if (!self(self, it)) return false;
+        for (const auto& kv : e->mapEntries) if (!self(self, kv.second)) return false;
+        for (const auto& ca : e->callArgs) if (!self(self, ca.value)) return false;
+
+        if (e->kind == ExprKind::Call && e->lhs && e->lhs->kind == ExprKind::Member &&
+            e->lhs->lhs && e->lhs->lhs->kind == ExprKind::Ident && e->lhs->lhs->strVal == "compile" &&
+            (e->lhs->strVal == "json" || e->lhs->strVal == "text") &&
+            !e->callArgs.empty() && e->callArgs[0].value) {
+            std::string relKey;
+            const auto& arg0 = e->callArgs[0].value;
+            if (arg0->kind == ExprKind::StrLit) {
+                relKey = arg0->strVal;
+            }
+            if (!relKey.empty() && !outProgram.embeddedCompileFiles.count(relKey)) {
+                // Expand `${DEF}` or `$(ARCH)` tokens inside compile-time paths
+                std::string resolvedRel = ExpandArchToken(relKey, defs["ARCH"]);
+                for (const auto& [dk, dv] : defs) {
+                    resolvedRel = ExpandNamedToken(resolvedRel, dk, dv);
+                }
+                const std::filesystem::path baseDir = sourceFilePath.has_parent_path()
+                    ? sourceFilePath.parent_path()
+                    : std::filesystem::current_path();
+                std::filesystem::path p(Utf8ToWide(resolvedRel));
+                if (!p.is_absolute()) p = (baseDir / p).lexically_normal();
+                std::ifstream cfs(p, std::ios::binary);
+                if (!cfs) {
+                    outDiagnostics.push_back({
+                        true, "RSW700", e->line, 1, fileLabel,
+                        "compile." + e->lhs->strVal + "() could not open build-time file: " + WideToUtf8(p.wstring())
+                    });
+                    return false;
+                }
+                std::ostringstream css;
+                css << cfs.rdbuf();
+                outProgram.embeddedCompileFiles[relKey] = css.str();
+            }
+        }
+        return true;
+    };
+    auto harvestCompileFilesStmt = [&](auto& self, const StmtPtr& s) -> bool {
+        if (!s) return true;
+        if (!harvestCompileFilesExpr(harvestCompileFilesExpr, s->target) ||
+            !harvestCompileFilesExpr(harvestCompileFilesExpr, s->expr) ||
+            !self(self, s->body) || !self(self, s->elseBody)) return false;
+        for (const auto& ch : s->children) if (!self(self, ch)) return false;
+        return true;
+    };
+
+    outProgram.compileDefines = defs;
+    for (const auto& p : outProgram.params) {
+        if (!harvestCompileFilesExpr(harvestCompileFilesExpr, p.defaultExpr)) return false;
+    }
+    for (const auto& st : outProgram.topStatements) {
+        if (!harvestCompileFilesStmt(harvestCompileFilesStmt, st)) return false;
+    }
+    if (!harvestCompileFilesStmt(harvestCompileFilesStmt, outProgram.wizardBlock) ||
+        !harvestCompileFilesStmt(harvestCompileFilesStmt, outProgram.installBlock) ||
+        !harvestCompileFilesStmt(harvestCompileFilesStmt, outProgram.repairBlock) ||
+        !harvestCompileFilesStmt(harvestCompileFilesStmt, outProgram.uninstallBlock)) {
+        return false;
+    }
+    for (const auto& fn : outProgram.functions) {
+        if (!harvestCompileFilesStmt(harvestCompileFilesStmt, fn.body)) return false;
     }
 
     // Run static `RSW701` (Wizard Phase Isolation) & `RSW702` (Capability Sandbox) passes!
@@ -1811,11 +1980,41 @@ inline bool EmitRaggieScriptBytecode(
     PutStr(body, prog.package.mainExe);
     PutStr(body, prog.package.iconFile);
     PutStr(body, prog.package.licenseFile);
+    PutStr(body, prog.package.bannerImage);
+    PutStr(body, prog.package.readmeFile);
+    PutStr(body, prog.package.msiFile);
     PutStr(body, prog.package.accentPrimary);
     PutStr(body, prog.package.accentSecondary);
     PutU8(body, prog.package.hideFromArp ? 1 : 0);
     PutU8(body, prog.package.autoPlayAudio ? 1 : 0);
     PutU32(body, static_cast<std::uint32_t>(prog.package.minWinBuild));
+
+    PutU32(body, static_cast<std::uint32_t>(prog.features.size()));
+    for (const auto& ft : prog.features) {
+        PutStr(body, ft.id);
+        PutStr(body, ft.title);
+        PutStr(body, ft.description);
+        PutStr(body, ft.parentId);
+        PutU8(body, ft.inCompact ? 1 : 0);
+        PutU8(body, ft.defaultSelected ? 1 : 0);
+        PutU8(body, ft.required ? 1 : 0);
+        PutStr(body, ft.delivery);
+        PutStr(body, ft.packUrl);
+        PutStr(body, ft.packSha256);
+        PutU32(body, static_cast<std::uint32_t>(ft.line));
+    }
+
+    PutU32(body, static_cast<std::uint32_t>(prog.compileDefines.size()));
+    for (const auto& [dk, dv] : prog.compileDefines) {
+        PutStr(body, dk);
+        PutStr(body, dv);
+    }
+
+    PutU32(body, static_cast<std::uint32_t>(prog.embeddedCompileFiles.size()));
+    for (const auto& [fk, fv] : prog.embeddedCompileFiles) {
+        PutStr(body, fk);
+        PutStr(body, fv);
+    }
 
     PutU32(body, static_cast<std::uint32_t>(prog.params.size()));
     for (const auto& p : prog.params) {
@@ -1942,11 +2141,43 @@ inline bool LoadRaggieScriptBytecode(
     outProg.package.mainExe           = r.GetStr();
     outProg.package.iconFile          = r.GetStr();
     outProg.package.licenseFile       = r.GetStr();
+    outProg.package.bannerImage       = r.GetStr();
+    outProg.package.readmeFile        = r.GetStr();
+    outProg.package.msiFile           = r.GetStr();
     outProg.package.accentPrimary     = r.GetStr();
     outProg.package.accentSecondary   = r.GetStr();
     outProg.package.hideFromArp       = (r.GetU8() != 0);
     outProg.package.autoPlayAudio     = (r.GetU8() != 0);
     outProg.package.minWinBuild       = static_cast<int>(r.GetU32());
+
+    const std::uint32_t nFeats = r.GetU32();
+    for (std::uint32_t i = 0; i < nFeats && r.ok; ++i) {
+        FeatureDecl ft{};
+        ft.id              = r.GetStr();
+        ft.title           = r.GetStr();
+        ft.description     = r.GetStr();
+        ft.parentId        = r.GetStr();
+        ft.inCompact       = (r.GetU8() != 0);
+        ft.defaultSelected = (r.GetU8() != 0);
+        ft.required        = (r.GetU8() != 0);
+        ft.delivery        = r.GetStr();
+        ft.packUrl         = r.GetStr();
+        ft.packSha256      = r.GetStr();
+        ft.line            = static_cast<int>(r.GetU32());
+        outProg.features.push_back(std::move(ft));
+    }
+
+    const std::uint32_t nDefs = r.GetU32();
+    for (std::uint32_t i = 0; i < nDefs && r.ok; ++i) {
+        std::string dk = r.GetStr();
+        outProg.compileDefines[std::move(dk)] = r.GetStr();
+    }
+
+    const std::uint32_t nCompFiles = r.GetU32();
+    for (std::uint32_t i = 0; i < nCompFiles && r.ok; ++i) {
+        std::string fk = r.GetStr();
+        outProg.embeddedCompileFiles[std::move(fk)] = r.GetStr();
+    }
 
     const std::uint32_t nParams = r.GetU32();
     for (std::uint32_t i = 0; i < nParams && r.ok; ++i) {
@@ -2036,6 +2267,11 @@ inline std::string DisassembleRaggieScriptProgram(const ScriptProgram& prog) {
     oss << "\n[SECTION .payloads] count=" << prog.payloads.size() << "\n";
     for (const auto& pl : prog.payloads) {
         oss << "  PAYLOAD " << pl.id << " from=\"" << pl.sourceGlob << "\" feature=" << pl.featureId << "\n";
+    }
+    oss << "\n[SECTION .features] count=" << prog.features.size() << "\n";
+    for (const auto& ft : prog.features) {
+        oss << "  FEATURE " << ft.id << " (\"" << ft.title << "\") compact=" << (ft.inCompact ? "true" : "false")
+            << " delivery=" << ft.delivery << "\n";
     }
     oss << "\n[SECTION .functions] count=" << prog.functions.size() << "\n";
     for (const auto& fn : prog.functions) {

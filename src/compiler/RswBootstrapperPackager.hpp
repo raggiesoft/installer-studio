@@ -1901,6 +1901,14 @@ inline bool PackageRaggieScriptExecutable(
             }
         }
     }
+    if (!prog.package.msiFile.empty()) {
+        const auto msiSrc = resolveRel(prog.package.msiFile);
+        if (!std::filesystem::is_regular_file(msiSrc, ec)) {
+            outError = "Package msiFile does not exist: " + WideToUtf8(msiSrc.wstring());
+            return false;
+        }
+        pakItems.push_back({msiSrc, WideToUtf8(msiSrc.filename().wstring()), "__support__"});
+    }
     for (const auto& pl : prog.payloads) {
         const auto absSrc = resolveRel(pl.sourceGlob);
         if (std::filesystem::is_regular_file(absSrc, ec)) {
@@ -1984,7 +1992,11 @@ inline bool PackageRaggieScriptExecutable(
     ok = ok && StampIconAndVersionOnExeResource(
         hRes, outSummary.iconFilePath, prog.package.publisher, desc,
         prog.package.version, outStem, origFile, prog.package.name, outError);
-    ok = ok && StampExecutionLevelManifestOnResource(hRes, existingLangs, prog.package.uac);
+    // Note: `"deferred"` stamps `"asInvoker"` in the Win32 PE SxS XML manifest so the wizard UI
+    // opens immediately without a UAC prompt, then elevates via `--elevated-rssc-worker` at Commit!
+    const std::string peManifestExecLevel =
+        EqualsIgnoreCase(prog.package.uac, "deferred") ? "asInvoker" : prog.package.uac;
+    ok = ok && StampExecutionLevelManifestOnResource(hRes, existingLangs, peManifestExecLevel);
 
     if (!::EndUpdateResourceW(hRes, !ok) || !ok) {
         std::filesystem::remove(scratchStage, ec);

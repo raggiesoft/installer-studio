@@ -1,0 +1,87 @@
+// ================================================================================
+// FILE: examples/raggiescript/msi-table-surgeon.rssc
+// PROJECT: RaggieSoft Installer Studio — RaggieScript Direct MSI SQL Showcase
+// WEBSITE: https://raggiesoftstudio.com/raggiescript  |  DEV HUB: https://raggiesoft.dev
+// LICENSE: MIT License (Copyright (c) 2026 Michael P. Ragsdale / RaggieSoft)
+//
+// PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+//   What does this RaggieScript (`.rssc`) program demonstrate?
+//     RaggieScript gives developers full, unrestricted control over Windows
+//     Installer (`.msi` & `.msm`) relational SQL databases—both at build time
+//     and at setup runtime:
+//       1. Creates or opens an `.msi` database and stamps OLE `SummaryInformation`
+//          metadata (`title`, `subject`, `author`, `template`, `schema`, `wordCount`).
+//       2. Creates custom & standard relational SQL tables (`Property`, `Registry`,
+//          `CustomMetadata`) and executes `INSERT`, `UPDATE`, and `SELECT` queries
+//          with zero 32-bit limits.
+//       3. Generates a differential `.mst` Windows Installer Transform between a
+//          baseline `.msi` and a customized enterprise `.msi`!
+// ================================================================================
+
+use installer;
+
+app "RaggieSoft MSI SQL Surgeon" {
+    version: v"0.6.0";
+    publisher: "RaggieSoft";
+    uac: Uac.AsInvoker;
+}
+
+param workDir: path = fs.tempDir("rssc-msi-surgeon");
+
+// Step 1: Create a clean baseline `.msi` database from scratch and populate its tables!
+let baseMsi = workDir / "BaselineProduct.msi";
+let corpMsi = workDir / "EnterpriseCustomized.msi";
+let outMst  = workDir / "EnterprisePolicy.mst";
+
+assert(msi.createDatabase(baseMsi), "Failed to create baseline .msi database.");
+
+// Stamp OLE SummaryInformation properties (64-bit native schema 500)
+let prodCode = sys.newGuid();
+let pkgCode  = sys.newGuid();
+assert(msi.setSummary(baseMsi, {
+    title:       "Installation Database",
+    subject:     "RaggieSoft Sample Enterprise Package",
+    author:      "RaggieSoft",
+    comments:    "Generated programmatically via RaggieScript msi.* SQL APIs",
+    template:    sys.isArm64() ? "Arm64;1033" : "x64;1033",
+    packageCode: pkgCode,
+    schema:      500,
+    wordCount:   2
+}), "Failed setting SummaryInformation stream.");
+
+// Upsert standard MSI properties safely via parameterized records
+msi.setProperty(baseMsi, "ProductName",    "RaggieSoft Sample Enterprise Package");
+msi.setProperty(baseMsi, "ProductVersion", "2.4.0");
+msi.setProperty(baseMsi, "Manufacturer",   "RaggieSoft");
+msi.setProperty(baseMsi, "ProductCode",    prodCode);
+msi.setProperty(baseMsi, "ALLUSERS",       "1");
+
+// Create a custom relational table & insert rows inside a single atomic transaction
+assert(msi.execSql(baseMsi, [
+    "CREATE TABLE `RaggieCustomConfig` (`Key` CHAR(64) NOT NULL, `Channel` CHAR(32) NOT NULL, `Enabled` SHORT NOT NULL PRIMARY KEY `Key`)",
+    "INSERT INTO `RaggieCustomConfig` (`Key`, `Channel`, `Enabled`) VALUES ('Telemetry', 'DisabledByDesign', 0)",
+    "INSERT INTO `RaggieCustomConfig` (`Key`, `Channel`, `Enabled`) VALUES ('OfflineHelp', 'BundledHtml5', 1)"
+]), "Failed executing batch MSI SQL statements.");
+
+// Query the SQL table back as typed RaggieScript maps!
+let rows = msi.query(baseMsi, "SELECT `Key`, `Channel`, `Enabled` FROM `RaggieCustomConfig` ORDER BY `Key`");
+assert(len(rows) == 2, "Expected 2 rows in RaggieCustomConfig.");
+
+// Step 2: Clone baseline MSI, apply enterprise IT policy overrides, and emit an `.mst` Transform!
+fs.copy(baseMsi, corpMsi);
+msi.setProperty(corpMsi, "COMPANYNAME", "Commonwealth Polytechnic Engineering Lab");
+msi.execSql(corpMsi, "UPDATE `RaggieCustomConfig` SET `Channel`='AirGappedLab' WHERE `Key`='OfflineHelp'");
+assert(msi.generateTransform(baseMsi, corpMsi, outMst), "Failed generating .mst transform.");
+
+// Write a verification report for automated CI inspection
+let tables = msi.listTables(corpMsi);
+fs.writeJson(workDir / "surgeon-report.json", {
+    ok:           true,
+    arch:         sys.arch(),
+    productName:  msi.getProperty(corpMsi, "ProductName"),
+    companyName:  msi.getProperty(corpMsi, "COMPANYNAME"),
+    tableCount:   len(tables),
+    mstGenerated: fs.exists(outMst)
+});
+
+log("MSI SQL Surgeon completed cleanly -> " + str(outMst));
