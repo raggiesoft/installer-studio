@@ -234,6 +234,9 @@ int wmain() {
         if (std::filesystem::exists(repoRoot / L"README.md")) {
             combinedAi += "\n" + readLower(repoRoot / L"README.md");
         }
+        if (std::filesystem::exists(repoRoot / L"EDITIONS_AND_RAGGIESCRIPT.md")) {
+            combinedAi += "\n" + readLower(repoRoot / L"EDITIONS_AND_RAGGIESCRIPT.md");
+        }
         const char* bannedCompetitors[] = {
             "installaware", "installshield", "revenera", "inno setup", ".iss",
             "advanced installer", "wix", "nsis", "orca.exe", "msicode",
@@ -463,9 +466,16 @@ int wmain() {
     // 5B. Verify `v0.3.0` Editions, `LZMS` Solid Compression, `[Prerequisite.*]`, `SelectionTree`,
     //     `ActionText` `[1]` Template Hygiene, & Native 64-Bit `[MergeModule.*]` (`.msm`) Consumption!
     {
-        Check(rsw::EditionHasFullPremierParity(rsw::RswIdeEdition::Community) &&
-              rsw::EditionHasFullPremierParity(rsw::RswIdeEdition::Premier),
-              "IDE Community Edition enforces 100% feature parity with Premier Edition");
+        Check(rsw::EditionHasFullArchitectParity(rsw::RswIdeEdition::Community) &&
+              rsw::EditionHasFullArchitectParity(rsw::RswIdeEdition::Architect) &&
+              !rsw::EditionCanCompileMergeModules(rsw::RswIdeEdition::Essentials) &&
+              rsw::EditionCanCompileMergeModules(rsw::RswIdeEdition::Developer) &&
+              !rsw::EditionIncludesRaggieScript(rsw::RswIdeEdition::Essentials) &&
+              rsw::EditionIncludesRaggieScript(rsw::RswIdeEdition::Developer) &&
+              !rsw::EditionIncludesMspAndSuites(rsw::RswIdeEdition::Essentials) &&
+              !rsw::EditionIncludesMspAndSuites(rsw::RswIdeEdition::Developer) &&
+              rsw::EditionIncludesMspAndSuites(rsw::RswIdeEdition::Architect),
+              "Official 4-Edition rules (Community == Architect parity, Essentials/Developer/Architect tiers) verified");
 
         // Verify `v0.4.2` 32-bit ARGB `StudioTreeIcon` vector `HIMAGELIST` (`20` icons, `ILC_COLOR32`)!
         {

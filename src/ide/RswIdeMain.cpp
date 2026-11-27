@@ -116,11 +116,11 @@ enum IdeId : int {
     IDM_LAUNCH_MSIPRISM      = 2015,
     IDM_OPEN_OUTDIR          = 2016,
 
-    // Editions & Help Menu (`Community == 100% Premier Feature Parity`!)
+    // Editions & Help Menu (`Community == 100% Architect Feature Parity`!)
     IDM_EDITION_COMMUNITY    = 2020,
-    IDM_EDITION_EXPRESS      = 2021,
-    IDM_EDITION_PROFESSIONAL = 2022,
-    IDM_EDITION_PREMIER      = 2023,
+    IDM_EDITION_ESSENTIALS   = 2021,
+    IDM_EDITION_DEVELOPER    = 2022,
+    IDM_EDITION_ARCHITECT    = 2023,
     IDM_HELP_ABOUT           = 2024,
     IDM_HELP_TOPICS          = 2025,
 
@@ -808,10 +808,10 @@ public:
         HMENU hEd = ::CreatePopupMenu();
         ::AppendMenuW(hEd, MF_STRING,              IDM_HELP_TOPICS,          L"&Help Topics (Offline C++ Help Viewer)\tF1");
         ::AppendMenuW(hEd, MF_SEPARATOR, 0, nullptr);
-        ::AppendMenuW(hEd, MF_STRING | MF_CHECKED, IDM_EDITION_COMMUNITY,    L"&Community Edition (100% Premier Feature Parity)");
-        ::AppendMenuW(hEd, MF_STRING,              IDM_EDITION_EXPRESS,      L"&Express Edition (Placeholder Tier)");
-        ::AppendMenuW(hEd, MF_STRING,              IDM_EDITION_PROFESSIONAL, L"&Professional Edition (Placeholder Tier)");
-        ::AppendMenuW(hEd, MF_STRING,              IDM_EDITION_PREMIER,      L"P&remier Edition (Placeholder Tier)");
+        ::AppendMenuW(hEd, MF_STRING | MF_CHECKED, IDM_EDITION_COMMUNITY,    L"&Community Edition (100% Architect Parity — Free)");
+        ::AppendMenuW(hEd, MF_STRING,              IDM_EDITION_ESSENTIALS,   L"&Essentials Edition (Commercial Tier 1 — Guided MSI & SFX)");
+        ::AppendMenuW(hEd, MF_STRING,              IDM_EDITION_DEVELOPER,    L"&Developer Edition (Commercial Tier 2 — RaggieScript & .MSM)");
+        ::AppendMenuW(hEd, MF_STRING,              IDM_EDITION_ARCHITECT,    L"&Architect Edition (Commercial Tier 3 — Suites, .MSP & VPAT)");
         ::AppendMenuW(hEd, MF_SEPARATOR, 0, nullptr);
         ::AppendMenuW(hEd, MF_STRING,              IDM_HELP_ABOUT,           L"&About RaggieSoft Installer Studio...");
 
@@ -3285,7 +3285,7 @@ public:
         ::DrawTextW(hdc, L"RaggieSoft Installer Studio  •  Install Without Limits (Tree-First IDE • Features & Registry • AeroWizards • Dual Designer)",
                     -1, &tRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
-        const int pillW = S(214);
+        const int pillW = S(228);
         RECT pillRc{W - pillW - S(14), S(11), W - S(14), S(39)};
         Gdiplus::SolidBrush pillBr(rsw::ui::ToGpColor(theme.accentPrimary, 215));
         Gdiplus::Pen pillPen(Gdiplus::Color(180, 255, 255, 255), 1.0f);
@@ -3295,7 +3295,7 @@ public:
         ::SelectObject(hdc, hFontBold);
         ::SetTextColor(hdc, RGB(255, 255, 255));
         const std::wstring edBadge = (activeEdition == rsw::RswIdeEdition::Community)
-            ? L"COMMUNITY • PREMIER PARITY"
+            ? L"COMMUNITY • ARCHITECT PARITY"
             : rsw::ui::UpperWide(std::wstring(rsw::EditionDisplayName(activeEdition)));
         ::DrawTextW(hdc, edBadge.c_str(), -1, &pillRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
@@ -3615,15 +3615,15 @@ public:
                         self->LaunchContextHelp();
                         return 0;
 
-                    // --- Editions & About Menu (`Community == 100% Premier Parity`) ---
+                    // --- Editions & About Menu (`Community == 100% Architect Parity`) ---
                     case IDM_EDITION_COMMUNITY:
-                    case IDM_EDITION_EXPRESS:
-                    case IDM_EDITION_PROFESSIONAL:
-                    case IDM_EDITION_PREMIER: {
+                    case IDM_EDITION_ESSENTIALS:
+                    case IDM_EDITION_DEVELOPER:
+                    case IDM_EDITION_ARCHITECT: {
                         self->activeEdition = static_cast<rsw::RswIdeEdition>(id - IDM_EDITION_COMMUNITY);
                         HMENU hMenu = ::GetMenu(hWnd);
                         if (hMenu) {
-                            ::CheckMenuRadioItem(hMenu, IDM_EDITION_COMMUNITY, IDM_EDITION_PREMIER, id, MF_BYCOMMAND);
+                            ::CheckMenuRadioItem(hMenu, IDM_EDITION_COMMUNITY, IDM_EDITION_ARCHITECT, id, MF_BYCOMMAND);
                         }
                         self->UpdateWindowCaptionWithEdition();
                         ::InvalidateRect(hWnd, nullptr, FALSE);

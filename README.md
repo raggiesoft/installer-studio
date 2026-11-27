@@ -1,12 +1,13 @@
 # RaggieSoft Installer Studio — *Install Without Limits*
 
-**Official Product Portal:** [https://raggiesoftstudio.com](https://raggiesoftstudio.com) *(301 target of `installwithoutlimits.com`)*  
-**Visual Tour & Screenshots:** [https://raggiesoftstudio.com/screenshots](https://raggiesoftstudio.com/screenshots)  
-**Public Engineering Roadmap:** [ROADMAP.md](ROADMAP.md) • [https://raggiesoftstudio.com/roadmap](https://raggiesoftstudio.com/roadmap)  
-**Version History & Changelog:** [https://raggiesoftstudio.com/changelog](https://raggiesoftstudio.com/changelog)  
+**Official Product Portal:** [https://raggiesoftstudio.com/installer-studio](https://raggiesoftstudio.com/installer-studio) *(301 target of `installwithoutlimits.com`)*  
+**Editions & Product Matrix:** [EDITIONS_AND_RAGGIESCRIPT.md](EDITIONS_AND_RAGGIESCRIPT.md) • [https://raggiesoftstudio.com/installer-studio/editions](https://raggiesoftstudio.com/installer-studio/editions)  
+**Visual Tour & Screenshots:** [https://raggiesoftstudio.com/installer-studio/screenshots](https://raggiesoftstudio.com/installer-studio/screenshots)  
+**Public Engineering Roadmap:** [ROADMAP.md](ROADMAP.md) • [https://raggiesoftstudio.com/installer-studio/roadmap](https://raggiesoftstudio.com/installer-studio/roadmap)  
+**Version History & Changelog:** [https://raggiesoftstudio.com/installer-studio/changelog](https://raggiesoftstudio.com/installer-studio/changelog)  
 **Developer & AI Spec Hub:** [https://raggiesoft.dev](https://raggiesoft.dev)  
-**Frequently Asked Questions:** [https://raggiesoftstudio.com/faq](https://raggiesoftstudio.com/faq)  
-**Current Milestone:** `v0.5.0` Open Technical Preview (`x64` & `ARM64` Universal Single-Download • 10 Wizard Styles incl. `#008080` ACME Teal & `#000080` Cobalt • Signed via Microsoft Azure Artifact Signing)  
+**Frequently Asked Questions:** [https://raggiesoftstudio.com/installer-studio/faq](https://raggiesoftstudio.com/installer-studio/faq)  
+**Current Milestone:** `v0.5.0` Public Technical Preview (`v0.6.0` Staged • `x64` & `ARM64` Universal Single-Download • 11 Wizard Styles incl. `#008080` ACME Teal & `#000080` Cobalt • Signed via Microsoft Azure Artifact Signing)  
 **License:** MIT License (Core Toolchain Source)
 
 <p align="center">
@@ -66,22 +67,25 @@ Just like `.NET` pairs single-project `.csproj` files with optional `.slnx` solu
 
 ---
 
-## Product Editions (`Community == 100% Premier Parity`)
+## Official Four Product Editions (`Community == 100% Architect Parity`)
 
-Commercial pricing is intentionally omitted while **RaggieSoft Installer Studio** is in active Technical Preview. The IDE models four edition badges (`Community`, `Express`, `Professional`, and `Premier`) with a permanent architectural rule:
+Read the full product matrix and **`RaggieScript` (`.rssc`)** language specification in **[EDITIONS_AND_RAGGIESCRIPT.md](EDITIONS_AND_RAGGIESCRIPT.md)** or on the web at **[raggiesoftstudio.com/installer-studio/editions](https://raggiesoftstudio.com/installer-studio/editions)**:
 
-- **Community Edition**: Permanently maintains **100% technical feature parity with Premier Edition**—every MSI table, Pre-MSI Runtime Prerequisite, `.MSM` Merge Module, AeroWizard, VPAT 2.5 generator, and CLI command is unlocked with zero UI watermarks (`VERSIONINFO` and wizard footers belong 100% to `[Package] Manufacturer`).
-- **Express / Professional / Premier**: Placeholder organizational tiers reserved for future commercial licensing once dogfood validation completes.
+- **Community Edition *(Free for Hobbyists, Solo Creators, EDU & Open Source)***: Permanently maintains **100% technical feature parity with Architect Edition (`Community == Architect`)**—unlocking every `.MSI`, `.MSM`, `.MSP`, `.rsis` Suite, `RaggieScript` (`.rssc`), Custom Dialog Designer, VPAT 2.5 generator, and CLI command with **zero UI watermarks** (`VERSIONINFO` and wizard footers belong 100% to `[Package] Manufacturer`).
+- **Essentials Edition *(Commercial Tier 1)***: Guided no-code `.MSI` + Universal `Setup.exe` (`x64` & `ARM64`), Basic Folder/`.ZIP` Self-Extractor (`PackageKind = sfx` + `%TEMP%` Software Installation wrapper & `_ISDEL.EXE` process watcher), 100% WCAG 2.2 AA runtime accessibility & Authenticode/Azure Artifact Signing (never paywalled), 6 AeroWizards, 11 Wizard Styles, Pre-MSI Runtime Prerequisites, **`.MSM` Merge Module consumption** (`[MergeModule.*]`), and **Major Upgrades** (`1.0.0 -> 1.0.1` mints a fresh `ProductCode`; does not create `.MSP` patches).
+- **Developer Edition *(Commercial Tier 2)***: Everything in **Essentials** plus **`.MSM` Merge Module compilation** (`PackageKind = msm`), **`RaggieScript` (`.rssc`)** zero-MSI native scripting & full `Engine = native`, From-Scratch C++ & `370×270` `MSI.DLL` Dialog Designers, `.slnx`/VB6 `.vbp` Reg-Free COM importers, `msiprism.exe`, `RsUpdate.exe`, `--emit-winget`, and commercial CI/CD build agent rights.
+- **Architect Edition *(Commercial Tier 3)***: Everything in **Developer** plus **Multi-Product Unified `.rsis` Suites** (`Showcase Studio` front-door + dynamic `ARPSYSTEMCOMPONENT` adoption), **`.MSP` binary-delta patches (`RsPatch.exe`, `--plan-update`) & `.MST` GPO transforms**, Multi-Volume Disk Spanning & `msiexec /a` Admin Images, `.rswpak` CDN feature packs, **Automated HTML5 VPAT 2.5 conformance reports (`--emit-vpat`)**, and Windows 11 Pro Sandbox `.wsb` Setup Capture (`v1.1`).
+- **Standalone Self-Extractor Tool**: The Folder / `.ZIP` Self-Extractor (`PackageKind = sfx` + `%TEMP%` Software Installation wrapper) will also be available as a lightweight, standalone desktop utility (`rswsfx.exe`).
 
 ---
 
 ## Public Engineering Roadmap (`v0.5.0` → `v1.0.0 GA`)
 
-Read the full phase-by-phase engineering plan in **[ROADMAP.md](ROADMAP.md)** or browse the interactive web edition at **[raggiesoftstudio.com/roadmap](https://raggiesoftstudio.com/roadmap)** (anchored to our **`v1.0.0 GA` North Star**: packaging and distributing 100% of RaggieSoft's own Windows software exclusively with Installer Studio):
+Read the full phase-by-phase engineering plan in **[ROADMAP.md](ROADMAP.md)** or browse the interactive web edition at **[raggiesoftstudio.com/installer-studio/roadmap](https://raggiesoftstudio.com/installer-studio/roadmap)** (anchored to our **`v1.0.0 GA` North Star**: packaging and distributing 100% of RaggieSoft's own Windows software exclusively with Installer Studio):
 
-- **`v0.5.0`**: 8 Wizard Layout Variations (`Wizard95`, `Wizard97`, `AeroWizard`, `FluentMica`, `OneClickSplash`, `PassiveToast`, `FullScreenBlue` with rotating billboards & docked 3D progress gauge, & `Autorun16x9`), classic Windows 95-style & custom author-defined Setup Types (`Typical`, `Compact`, `Complete`, `Custom`, & `[SetupType.*]`), automatic `SPI_GETHIGHCONTRAST` contrast-theme override, complete `[Branding]` / `.rswskin` imagery, and live WCAG 2.2 AA contrast enforcement.
-- **`v0.6.0`**: Lightweight **Self-Extracting Archive `.EXE` Builder** (`PackageKind = sfx` — folder/`.zip` to Dark-Mode `LZMS` `.exe` that unpacks to a chosen folder and optionally runs a bundled `.exe` or opens a document in the user's default system viewer), granular `.rswpak` On-Demand Feature Packs, curated `.NET 11` + `.NET 10 LTS` runtime presets, and `Engine = native`.
-- **`v0.7.0`**: From-scratch Dual C++ & Raw `370x270` `MSI.DLL` Dialog Builders + `.rssc` event hooks & `RsDialog` (`Rs*()`) procedural dialog scripting.
+- **`v0.5.0` – `v0.5.1`**: 10 Wizard Styles (`Wizard95`, `Wizard97`, `AeroWizard`, `FluentMica`, `OneClickSplash`, `PassiveToast`, `FullScreenBlue`, `FullScreenTeal` `#008080` ACME callback, & `Autorun16x9`), classic & custom Setup Types (`Typical`, `Compact`, `Complete`, `Custom`, & `[SetupType.*]`), configurable outer `Setup.exe` `RequestedExecutionLevel` (`asInvoker` | `highestAvailable` | `requireAdministrator`), polite `Global\_MSIExecute` cross-product queuing, and live WCAG 2.2 AA contrast enforcement.
+- **`v0.6.0` *(Built & Privately Staged)***: Lightweight **Self-Extracting Archive `.EXE` Builder** (`PackageKind = sfx` + `%TEMP%` Software Installation wrapper with `_ISDEL.EXE` / child-tree completion watcher & auto-cleanup), Multi-Volume Disk Spanning (`CAB1..N.cab`), Loose Source Media (`msiexec /a`), `.rswpak` On-Demand Feature Packs, `.NET 11` runtime presets, `Engine = native`, and Unified `.rsis` Suites.
+- **`v0.7.0`**: **`RaggieScript` (`.rssc` — Style A)** zero-MSI native scripting language & C++20 `RSWBC1` bytecode VM (standalone `.rssc` projects & hybrid `.rsip` + `.rssc` hooks with *Fin#*-inspired `wizard` vs. `install` phase isolation and `/DELAYLOAD:msi.dll`) + From-Scratch Dual C++ & Raw `370x270` `MSI.DLL` Visual Dialog Builders.
 - **`v0.8.0`**: Visual Studio `.slnx`/`.csproj`, Visual Basic 6.0 `.vbp` (Windows 11 WRP + Reg-Free COM for *StoreTrainer*), and `.msi` importers + Windows Restart Manager (`Rstrtmgr.dll`).
 - **`v0.9.0`**: Authenticode & Azure Artifact Signing Studio, white-label `RsUpdate.exe` auto-updater, and guided Microsoft-compliant `.MSP` servicing (`--plan-update`).
 - **`v1.0.0 GA`**: GitHub Actions / Azure DevOps tasks, `--emit-winget`, and 100% RaggieSoft production cutover across all apps, interactive books, and supporter audio archives *(followed by `v1.1+` Windows Sandbox `.wsb` Setup Capture, `.vsix`, Services/Firewall/Config Patchers, `.MSIXBUNDLE`, `I18N` + RTL, and `--emit-sbom`)*.
