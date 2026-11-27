@@ -5601,6 +5601,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
             if (i + 1 >= args.size()) return ERROR_BAD_ARGUMENTS;
             return rsw::compact_suite::RunElevatedNativeWorkerJob(std::filesystem::path(args[i + 1]));
         }
+        if (args[i] == L"--elevated-suite-worker") {
+            if (i + 1 >= args.size()) return ERROR_BAD_ARGUMENTS;
+            return rsw::compact_suite::RunElevatedSuiteWorkerJob(std::filesystem::path(args[i + 1]));
+        }
         if (args[i] == L"--native-uninstall") {
             bool quietUninst = false;
             for (const auto& ua : args) {

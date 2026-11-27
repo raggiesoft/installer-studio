@@ -1174,6 +1174,8 @@ struct SuiteChildSpec {
     std::string   id;
     std::string   name;
     std::string   description;
+    std::string   category          = "Suite";
+    std::string   version;
     std::string   fileName;
     std::string   upgradeCode;
     std::string   engine            = "msi"; // `"msi"` | `"native"` | `"exe"`
@@ -1187,22 +1189,90 @@ struct SuiteChildSpec {
 };
 
 struct SuiteChainerManifest {
-    std::string   suiteName          = "Application Suite";
+    std::string   suiteName                = "Application Suite";
     std::string   tagline;
     std::string   websiteLabel;
-    std::string   version            = "1.0.0";
-    std::string   manufacturer       = "RaggieSoft";
+    std::string   version                  = "1.0.0";
+    std::string   manufacturer             = "RaggieSoft";
     std::string   upgradeCode;
-    std::string   architecture       = "arm64";
-    bool          perMachine         = true;
-    std::string   requestedExecLevel = "asInvoker";
-    int           minWindowsBuild    = 22000;
-    std::string   osLaunchMessage    = "This suite requires Windows 11 (Build 22000) or later.";
-    std::string   defaultSubdir      = "RaggieSoft\\Suite";
-    std::string   accentPrimaryHex   = "#2563EB";
-    std::string   accentSecondaryHex = "#FBBF24";
+    std::string   architecture             = "arm64";
+    bool          perMachine               = true;
+    std::string   requestedExecLevel       = "asInvoker";
+    int           minWindowsBuild          = 22000;
+    std::string   osLaunchMessage          = "This suite requires Windows 11 (Build 22000) or later.";
+    std::string   defaultSubdir            = "RaggieSoft\\Suite";
+    std::string   accentPrimaryHex         = "#2563EB";
+    std::string   accentSecondaryHex       = "#FBBF24";
+    std::string   installBtnText           = "&Install Selected";
+    bool          showComponentProgressBar = true;
     std::vector<SuiteChildSpec> children;
 };
+
+/// Live dual-bar telemetry snapshot emitted during Unified Suite Setup (`PackageKind = suite`).
+/// Architectural UX Rule:
+///   - `overallPermille` (`0..1000`) is byte-weighted across all active Suite steps and
+///     strictly monotonic—it NEVER resets to `0` between child components, and drives both
+///     the top `Overall Suite Progress` bar AND Windows Taskbar `ITaskbarList3`!
+///   - `componentPermille` (`0..1000`) tracks the active child package (`0%` -> `100%`)
+///     on the dedicated secondary `Current Component` bar!
+struct SuiteProgressSnapshot {
+    int          overallPermille   = 0;     // Monotonic `0..1000` across the entire Suite operation
+    int          componentPermille = 0;     // Current component `0..1000` (`0%..100%`)
+    std::size_t  stepIndex         = 0;     // `0`-based index into active execution plan
+    std::size_t  stepCount         = 1;     // Total active packages in execution plan
+    bool         queuePaused       = false; // `true` when politely waiting on `Global\_MSIExecute` (`TBPF_PAUSED`)
+    std::wstring componentName;             // e.g. `L"RaggieSoft Showcase Studio"`
+    std::wstring detailStatus;              // e.g. `L"Copying new files..."`
+};
+
+/// Computes byte-weighted, strictly monotonic Overall Suite Progress (`0..1000` permille)
+/// across heterogeneous child packages so a large IDE naturally receives proportional bar
+/// travel relative to a small utility AND `overallPermille` never drops backward!
+inline int ComputeSuiteWeightedOverallPermille(
+    const std::vector<std::uint64_t>& stepByteWeights,
+    std::size_t stepIndex,
+    int componentPermille,
+    int& inOutHighWaterPermille,
+    int minSpanPermille = 40,
+    int maxSpanPermille = 960) noexcept
+{
+    constexpr std::uint64_t kMinWeightBytes = 256ull * 1024ull; // 256 KB minimum visual weight per step
+    if (stepByteWeights.empty()) {
+        inOutHighWaterPermille = std::max(inOutHighWaterPermille, maxSpanPermille);
+        return inOutHighWaterPermille;
+    }
+
+    std::uint64_t totalWeight     = 0;
+    std::uint64_t completedWeight = 0;
+    std::uint64_t activeWeight    = kMinWeightBytes;
+    for (std::size_t j = 0; j < stepByteWeights.size(); ++j) {
+        const std::uint64_t w = std::max<std::uint64_t>(kMinWeightBytes, stepByteWeights[j]);
+        totalWeight += w;
+        if (j < stepIndex) {
+            completedWeight += w;
+        } else if (j == stepIndex) {
+            activeWeight = w;
+        }
+    }
+    if (stepIndex >= stepByteWeights.size()) {
+        completedWeight = totalWeight;
+        activeWeight    = 0;
+    }
+
+    const std::uint64_t clampedComp = static_cast<std::uint64_t>(std::clamp(componentPermille, 0, 1000));
+    // Divide in KB units to prevent any 64-bit overflow even on multi-terabyte suites!
+    const std::uint64_t totalKb     = std::max<std::uint64_t>(1ull, totalWeight / 1024ull);
+    const std::uint64_t completedKb = completedWeight / 1024ull;
+    const std::uint64_t activeKb    = activeWeight / 1024ull;
+
+    const std::uint64_t numerPerm   = (completedKb * 1000ull) + (activeKb * clampedComp);
+    const std::uint64_t denomPerm   = totalKb * 1000ull;
+    const int spanRange             = std::max(1, maxSpanPermille - minSpanPermille);
+    const int mapped = minSpanPermille + static_cast<int>((numerPerm * static_cast<std::uint64_t>(spanRange)) / denomPerm);
+
+    inOutHighWaterPermille = std::max(inOutHighWaterPermille, std::clamp(mapped, 0, maxSpanPermille));
+    return inOutHighWaterPermille;
+}
 
 inline std::string SerializeSuiteChainerManifestIni(const SuiteChainerManifest& s) {
     using native_detail::EscapeSingleLine;
@@ -1222,6 +1292,8 @@ inline std::string SerializeSuiteChainerManifestIni(const SuiteChainerManifest& 
         << "DefaultSubdir="         << EscapeSingleLine(s.defaultSubdir) << "\n"
         << "AccentPrimaryHex="      << EscapeSingleLine(s.accentPrimaryHex) << "\n"
         << "AccentSecondaryHex="    << EscapeSingleLine(s.accentSecondaryHex) << "\n"
+        << "InstallButtonText="     << EscapeSingleLine(s.installBtnText) << "\n"
+        << "ShowComponentProgressBar=" << (s.showComponentProgressBar ? "true" : "false") << "\n"
         << "ChildCount="            << s.children.size() << "\n";
 
     for (std::size_t i = 0; i < s.children.size(); ++i) {
@@ -1230,6 +1302,8 @@ inline std::string SerializeSuiteChainerManifestIni(const SuiteChainerManifest& 
         out << p << "Id="        << EscapeSingleLine(c.id) << "\n"
             << p << "Name="      << EscapeSingleLine(c.name) << "\n"
             << p << "Desc="      << EscapeSingleLine(c.description) << "\n"
+            << p << "Cat="       << EscapeSingleLine(c.category) << "\n"
+            << p << "Ver="       << EscapeSingleLine(c.version) << "\n"
             << p << "FileName="  << EscapeSingleLine(c.fileName) << "\n"
             << p << "Upgrade="   << EscapeSingleLine(c.upgradeCode) << "\n"
             << p << "Engine="    << EscapeSingleLine(c.engine) << "\n"
@@ -1252,20 +1326,22 @@ inline SuiteChainerManifest ParseSuiteChainerManifestIni(std::string_view text) 
         return (it != kv.end()) ? it->second : defV;
     };
 
-    s.suiteName          = getS("SuiteName", s.suiteName);
-    s.tagline            = getS("Tagline");
-    s.websiteLabel       = getS("WebsiteLabel");
-    s.version            = getS("Version", s.version);
-    s.manufacturer       = getS("Manufacturer", s.manufacturer);
-    s.upgradeCode        = getS("UpgradeCode");
-    s.architecture       = getS("Architecture", s.architecture);
-    s.perMachine         = !EqualsIgnoreCase(getS("PerMachine", "true"), "false");
-    s.requestedExecLevel = std::string(NormalizeRequestedExecutionLevel(getS("RequestedExecutionLevel", "asInvoker")));
+    s.suiteName                = getS("SuiteName", s.suiteName);
+    s.tagline                  = getS("Tagline");
+    s.websiteLabel             = getS("WebsiteLabel");
+    s.version                  = getS("Version", s.version);
+    s.manufacturer             = getS("Manufacturer", s.manufacturer);
+    s.upgradeCode              = getS("UpgradeCode");
+    s.architecture             = getS("Architecture", s.architecture);
+    s.perMachine               = !EqualsIgnoreCase(getS("PerMachine", "true"), "false");
+    s.requestedExecLevel       = std::string(NormalizeRequestedExecutionLevel(getS("RequestedExecutionLevel", "asInvoker")));
     if (!kv["MinWindowsBuild"].empty()) s.minWindowsBuild = std::atoi(kv["MinWindowsBuild"].c_str());
-    s.osLaunchMessage    = getS("OsLaunchMessage", s.osLaunchMessage);
-    s.defaultSubdir      = getS("DefaultSubdir", s.defaultSubdir);
-    s.accentPrimaryHex   = getS("AccentPrimaryHex", s.accentPrimaryHex);
-    s.accentSecondaryHex = getS("AccentSecondaryHex", s.accentSecondaryHex);
+    s.osLaunchMessage          = getS("OsLaunchMessage", s.osLaunchMessage);
+    s.defaultSubdir            = getS("DefaultSubdir", s.defaultSubdir);
+    s.accentPrimaryHex         = getS("AccentPrimaryHex", s.accentPrimaryHex);
+    s.accentSecondaryHex       = getS("AccentSecondaryHex", s.accentSecondaryHex);
+    s.installBtnText           = getS("InstallButtonText", s.installBtnText);
+    s.showComponentProgressBar = !EqualsIgnoreCase(getS("ShowComponentProgressBar", "true"), "false");
 
     const int count = std::clamp(std::atoi(kv["ChildCount"].c_str()), 0, 128);
     for (int i = 0; i < count; ++i) {
@@ -1274,6 +1350,8 @@ inline SuiteChainerManifest ParseSuiteChainerManifestIni(std::string_view text) 
         c.id                = getS(p + "Id");
         c.name              = getS(p + "Name");
         c.description       = getS(p + "Desc");
+        c.category          = getS(p + "Cat", "Suite");
+        c.version           = getS(p + "Ver");
         c.fileName          = getS(p + "FileName");
         c.upgradeCode       = getS(p + "Upgrade");
         c.engine            = AsciiLower(getS(p + "Engine", "msi"));

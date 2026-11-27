@@ -1454,7 +1454,43 @@ int wmain() {
                   "v0.6.0 Engine=native transactional rollback journal restores overwritten .rswbak files & cleans partial files on fault",
                   rbErr);
 
-            // (5B & 6) End-to-End `Engine = native` Simple Setup + Unified Suite (`PackageKind = suite`) Dynamic `ARPSYSTEMCOMPONENT` Adoption!
+            // (5B & 6) End-to-End `Engine = native` Simple Setup + Unified Suite (`PackageKind = suite`):
+            //   - Verifies Byte-Weighted Monotonic Dual-Bar Suite Progress (ZERO per-component sawtooth resets!)
+            //   - Verifies Dynamic `ARPSYSTEMCOMPONENT` (`SystemComponent=1`) Adoption, Standalone Detach, & Full Uninstall
+            //   - Verifies One-Command `.rsis` Workspace `BuildSuiteInstaller = true` compilation!
+            {
+                const std::vector<std::uint64_t> weights = {
+                    2ull * 1024ull * 1024ull,   // 2 MB small utility
+                    80ull * 1024ull * 1024ull,  // 80 MB flagship IDE
+                    18ull * 1024ull * 1024ull   // 18 MB companion viewer
+                };
+                int hw = 0;
+                bool monotonicOk = true;
+                int prevOvr = 0;
+                // Simulate Comp 0 (`0..1000`), boundary jump to Comp 1 (`0..500 -> transient MSI script reset 120 -> 1000`), and Comp 2 (`0..1000`)!
+                const std::pair<std::size_t, int> trace[] = {
+                    {0, 0}, {0, 500}, {0, 1000},
+                    {1, 0}, {1, 250}, {1, 500}, {1, 120 /* simulated inner MSI phase reset! */}, {1, 600}, {1, 1000},
+                    {2, 0}, {2, 500}, {2, 1000}
+                };
+                int afterSmallComp = 0;
+                int afterHugeComp  = 0;
+                for (const auto& [sIdx, cPerm] : trace) {
+                    const int curOvr = rsw::ComputeSuiteWeightedOverallPermille(weights, sIdx, cPerm, hw);
+                    if (curOvr < prevOvr) monotonicOk = false;
+                    prevOvr = curOvr;
+                    if (sIdx == 0 && cPerm == 1000) afterSmallComp = curOvr;
+                    if (sIdx == 1 && cPerm == 1000) afterHugeComp  = curOvr;
+                }
+                // 2 MB out of 100 MB (~2%) should land near ~58 permille, while +80 MB (82%) lands near ~794 permille!
+                const bool proportionalOk = (afterSmallComp >= 50 && afterSmallComp <= 80) &&
+                                            (afterHugeComp >= 760 && afterHugeComp <= 830) &&
+                                            (prevOvr == 960);
+                Check(monotonicOk && proportionalOk,
+                      "Suite Dual-Bar Progress math enforces byte-weighted proportions & strict 0..100% monotonicity without sawtooth resets",
+                      "afterSmall=" + std::to_string(afterSmallComp) + " afterHuge=" + std::to_string(afterHugeComp));
+            }
+
             // When running inside a restricted AppContainer / CI sandbox where `HKCU` writes return `ERROR_ACCESS_DENIED`,
             // inject a temporary virtual registry store inside `testWorkDir` so child processes test 100% of the state machine!
             bool usedVirtualRegStore = false;
@@ -1523,23 +1559,53 @@ int wmain() {
                   "v0.6.0 Engine=native Simple Setup installs cleanly, emits Uninstall.exe + Uninstall.rswm, & appears standalone in Installed Apps",
                   natErr + " rc=" + std::to_string(standaloneRc));
 
-            // Now build & run a `PackageKind = suite` setup adopting `SimpleNativeChild`!
+            const std::wstring child2UpgradeGuid = L"{6E556677-8899-4AAA-BBBB-CCDDEEFF0022}";
+            const auto nat2InstallDir = testWorkDir / L"native-live-installed-2";
+            std::ostringstream nat2Man;
+            nat2Man << "[Package]\nName = SimpleNativeCompanion\nVersion = 0.6.0\nManufacturer = RaggieSoft\n"
+                    << "Engine = native\nScope = user\nUpgradeCode = " << rsw::WideToUtf8(child2UpgradeGuid) << "\n"
+                    << "OutputName = simple-native-companion\nOutputDir = " << rsw::WideToUtf8(natOutDir.wstring()) << "\n"
+                    << "[Install]\nDefaultSubdir = RaggieSoft\\SelfTestSimpleCompanion\n"
+                    << "MainExecutable = " << rsw::WideToUtf8(payloadToUse.filename().wstring()) << "\n"
+                    << "[UI]\nWizardLayout = simple\nInstallButtonText = &Install\n"
+                    << "[Payload.App]\nSource = " << rsw::WideToUtf8(payloadToUse.wstring()) << "\n";
+            auto nat2Doc = rsw::ParseManifestText(nat2Man.str(), testWorkDir / L"simple-native-2.rsip");
+            rsw::CompiledMsiSummary nat2Sum{};
+            std::filesystem::path nat2SetupExe;
+            const bool nat2Built = rsw::ValidateManifestDocument(nat2Doc, hostArch).IsOk() &&
+                                   rsw::PackageNativeOrSfxExecutable(nat2Doc, hostArch, binDir, nat2Sum, nat2SetupExe, natErr);
+
+            // Now build & run a 2-component `PackageKind = suite` setup adopting `SimpleNativeChild` + installing `SimpleNativeCompanion`!
             std::ostringstream suiteMan;
             suiteMan << "[Package]\nName = SelfTest Studio Suite\nVersion = 0.6.0\nManufacturer = RaggieSoft\n"
                      << "PackageKind = suite\nScope = user\nUpgradeCode = " << rsw::WideToUtf8(suiteUpgradeGuid) << "\n"
                      << "OutputName = selftest-suite\nOutputDir = " << rsw::WideToUtf8(natOutDir.wstring()) << "\n"
                      << "[Install]\nDefaultSubdir = RaggieSoft\\SelfTestSuiteUmbrella\n"
+                     << "[UI]\nShowComponentProgressBar = true\n"
                      << "[SuitePackage.ChildApp]\nName = SimpleNativeChild\n"
                      << "Source = " << rsw::WideToUtf8(natSetupExe.wstring()) << "\n"
                      << "UpgradeCode = " << rsw::WideToUtf8(childUpgradeGuid) << "\n"
                      << "Engine = native\nInstallArgs = INSTALLDIR=\"" << rsw::WideToUtf8(natInstallDir.wstring()) << "\"\n"
+                     << "AdoptStandalone = true\n"
+                     << "[SuitePackage.CompanionApp]\nName = SimpleNativeCompanion\n"
+                     << "Source = " << rsw::WideToUtf8(nat2SetupExe.wstring()) << "\n"
+                     << "UpgradeCode = " << rsw::WideToUtf8(child2UpgradeGuid) << "\n"
+                     << "Engine = native\nInstallArgs = INSTALLDIR=\"" << rsw::WideToUtf8(nat2InstallDir.wstring()) << "\"\n"
                      << "AdoptStandalone = true\n";
             auto suiteDoc = rsw::ParseManifestText(suiteMan.str(), testWorkDir / L"selftest-suite.rsip");
             std::filesystem::path suiteSetupExe;
             std::string suiteErr;
-            const bool suiteBuilt = natBuilt &&
+            const bool suiteBuilt = natBuilt && nat2Built &&
                                     rsw::ValidateManifestDocument(suiteDoc, hostArch).IsOk() &&
                                     rsw::PackageUnifiedSuiteExecutable(suiteDoc, hostArch, binDir, suiteSetupExe, suiteErr);
+
+            // Also verify `--export-screenshots` on the compiled Suite EXE emits `setupwizard-suite-dual-progress.png`!
+            const auto suiteShotDir = testWorkDir / L"suite-shots";
+            std::filesystem::create_directories(suiteShotDir, ec);
+            const DWORD suiteShotRc = suiteBuilt ? runQuietExe(suiteSetupExe, L"--export-screenshots \"" + suiteShotDir.wstring() + L"\"") : 1u;
+            Check(suiteShotRc == 0 && std::filesystem::exists(suiteShotDir / L"setupwizard-suite-dual-progress.png", ec),
+                  "Unified Suite Setup renders Dual-Bar Progress UI & exports setupwizard-suite-dual-progress.png",
+                  "shotRc=" + std::to_string(suiteShotRc));
 
             const std::wstring suiteDirArg = L"INSTALLDIR=\"" + suiteUmbrellaDir.wstring() + L"\"";
             const DWORD suiteAdoptRc = suiteBuilt ? runQuietExe(suiteSetupExe, L"/s " + suiteDirArg) : 1u;

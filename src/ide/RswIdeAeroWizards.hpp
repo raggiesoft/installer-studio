@@ -1846,4 +1846,190 @@ inline bool RunSfxAndSimpleSetupAeroWizard(
     return true;
 }
 
+// ================================================================================
+// WIZARD 7: UNIFIED MULTI-PRODUCT SUITE PROJECT AEROWIZARD (`PackageKind = suite`)
+//   Generates a Dual-Progress (`Overall` + `Component`) Suite Setup `.rsip`!
+// ================================================================================
+struct SuiteWizardData {
+    std::string suiteName             = "Sample Studio Suite";
+    std::string tagline               = "Unified Multi-Product Suite • Single UAC & Clean Installed Apps";
+    std::string version               = "1.0.0";
+    std::string manufacturer          = "Sample Studio";
+    bool        perMachine            = true;
+    int         execLevelIdx          = 0; // 0 = asInvoker, 1 = highestAvailable, 2 = requireAdministrator
+    bool        buildUniversal        = true;
+    bool        showCompProgressBar   = true;
+    std::string child1Name            = "Core Desktop IDE";
+    std::string child1Source          = "..\\core-ide\\out\\core-ide-$(ARCH).msi";
+    std::string child2Name            = "Companion Help & Docs";
+    std::string child2Source          = "..\\companion-docs\\out\\companion-docs-$(ARCH)-setup.exe";
+    bool        autoValidate          = false; // Child paths may not be compiled yet on initial creation
+    bool        completed             = false;
+};
+
+struct SuiteWizPageCtx {
+    int              pageIndex = 0;
+    SuiteWizardData* data      = nullptr;
+};
+
+inline INT_PTR CALLBACK SuiteProjectAeroPageProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* ctx = reinterpret_cast<SuiteWizPageCtx*>(::GetWindowLongPtrW(hDlg, DWLP_USER));
+    if (msg == WM_INITDIALOG) {
+        const auto* psp = reinterpret_cast<const PROPSHEETPAGEW*>(lParam);
+        ctx = reinterpret_cast<SuiteWizPageCtx*>(psp->lParam);
+        ::SetWindowLongPtrW(hDlg, DWLP_USER, reinterpret_cast<LONG_PTR>(ctx));
+        AeroPageBuilder b(hDlg);
+        auto& d = *ctx->data;
+
+        if (ctx->pageIndex == 0) {
+            b.AddLabel(L"Create a single-UAC Unified Suite Installer bundling multiple .msi & native apps:", 6, 4, 296, 14);
+            b.AddLabel(L"&Suite Title:",       6, 26, 90); b.AddEdit(981, Utf8ToWide(d.suiteName),    98, 24, 204);
+            b.AddLabel(L"&Subtitle / Tagline:",6, 50, 90); b.AddEdit(982, Utf8ToWide(d.tagline),      98, 48, 204);
+            b.AddLabel(L"&Version (X.Y.Z):",   6, 74, 90); b.AddEdit(983, Utf8ToWide(d.version),      98, 72, 90);
+            b.AddLabel(L"&Publisher:",         6, 98, 90); b.AddEdit(984, Utf8ToWide(d.manufacturer), 98, 96, 204);
+        } else if (ctx->pageIndex == 1) {
+            b.AddLabel(L"Configure Suite UAC behavior, Universal x64+ARM64 output, & Dual Progress Bars:", 6, 4, 296, 14);
+            b.AddLabel(L"Install &Scope:", 6, 22, 296);
+            b.AddCombo(985, {
+                L"machine — All Users (Program Files, Single Unified UAC Prompt)",
+                L"user — Current User (%LOCALAPPDATA%, Zero UAC Required)"
+            }, d.perMachine ? 0 : 1, 6, 34, 296);
+            b.AddLabel(L"Outer &UAC Execution Level:", 6, 62, 296);
+            b.AddCombo(986, {
+                L"asInvoker — Open Suite checklist un-elevated; prompt UAC once on Install",
+                L"highestAvailable — Request elevation upfront for Admin accounts",
+                L"requireAdministrator — Require Administrator UAC immediately at launch"
+            }, d.execLevelIdx, 6, 74, 296);
+            b.AddCheck(987, L"Build &Universal Combined Installer (x64 + ARM64 in one EXE)", d.buildUniversal, 6, 104, 296);
+            b.AddCheck(988, L"Show &Component Progress Bar beneath monotonic Overall Suite Bar", d.showCompProgressBar, 6, 124, 296);
+        } else {
+            b.AddLabel(L"Add your first Suite member packages (.msi or Engine = native -setup.exe):", 6, 4, 296, 14);
+            b.AddLabel(L"Member &1 Title:", 6, 24, 86);  b.AddEdit(991, Utf8ToWide(d.child1Name),   94, 22, 208);
+            b.AddLabel(L"Member 1 &Path:",  6, 46, 86);  b.AddEdit(992, Utf8ToWide(d.child1Source), 94, 44, 156);
+            b.AddButton(993, L"&Browse...", 254, 43, 48);
+            b.AddLabel(L"Member &2 Title:", 6, 76, 86);  b.AddEdit(994, Utf8ToWide(d.child2Name),   94, 74, 208);
+            b.AddLabel(L"Member 2 P&ath:",  6, 98, 86);  b.AddEdit(995, Utf8ToWide(d.child2Source), 94, 96, 156);
+            b.AddButton(996, L"B&rowse...", 254, 95, 48);
+            b.AddLabel(L"Tip: Standalone installs are dynamically adopted (SystemComponent=1) so Installed Apps stays clutter-free!", 6, 124, 296, 26);
+        }
+        return TRUE;
+    }
+    if (!ctx || !ctx->data) return FALSE;
+    auto& d = *ctx->data;
+
+    if (msg == WM_COMMAND) {
+        const int id = LOWORD(wParam);
+        if (id == 993 || id == 996) {
+            std::wstring chosen;
+            if (BrowsePathModal(hDlg, false, L"Suite Child Packages (*.msi;*.exe)\0*.msi;*.exe\0All Files (*.*)\0*.*\0", chosen)) {
+                ::SetDlgItemTextW(hDlg, (id == 993) ? 992 : 995, chosen.c_str());
+            }
+            return TRUE;
+        }
+    }
+    if (msg == WM_NOTIFY) {
+        const auto* nm = reinterpret_cast<const NMHDR*>(lParam);
+        if (nm->code == PSN_SETACTIVE) {
+            DWORD btns = PSWIZB_BACK | PSWIZB_NEXT;
+            if (ctx->pageIndex == 0) btns = PSWIZB_NEXT;
+            if (ctx->pageIndex == 2) btns = PSWIZB_BACK | PSWIZB_FINISH;
+            PropSheet_SetWizButtons(::GetParent(hDlg), btns);
+            ::SetWindowLongPtrW(hDlg, DWLP_MSGRESULT, 0);
+            return TRUE;
+        }
+        if (nm->code == PSN_WIZNEXT || nm->code == PSN_WIZFINISH) {
+            if (ctx->pageIndex == 0) {
+                d.suiteName    = ReadDlgItemUtf8(hDlg, 981);
+                d.tagline      = ReadDlgItemUtf8(hDlg, 982);
+                d.version      = ReadDlgItemUtf8(hDlg, 983);
+                d.manufacturer = ReadDlgItemUtf8(hDlg, 984);
+            } else if (ctx->pageIndex == 1) {
+                d.perMachine          = (GetComboIndex(hDlg, 985) == 0);
+                d.execLevelIdx        = GetComboIndex(hDlg, 986);
+                d.buildUniversal      = IsDlgItemChecked(hDlg, 987);
+                d.showCompProgressBar = IsDlgItemChecked(hDlg, 988);
+            } else {
+                d.child1Name   = ReadDlgItemUtf8(hDlg, 991);
+                d.child1Source = ReadDlgItemUtf8(hDlg, 992);
+                d.child2Name   = ReadDlgItemUtf8(hDlg, 994);
+                d.child2Source = ReadDlgItemUtf8(hDlg, 995);
+                d.completed    = true;
+            }
+            ::SetWindowLongPtrW(hDlg, DWLP_MSGRESULT, 0);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+inline bool RunUnifiedSuiteAeroWizard(HWND hOwner, std::string& outGeneratedRsipUtf8) {
+    SuiteWizardData data{};
+    const wchar_t* headers[3] = {
+        L"Step 1 of 3 — Unified Suite Identity & Publisher",
+        L"Step 2 of 3 — Single-UAC Scope & Dual Progress Bars",
+        L"Step 3 of 3 — Initial Suite Member Applications"
+    };
+    SuiteWizPageCtx ctxs[3]{};
+    LPARAM lParams[3]{};
+    for (int i = 0; i < 3; ++i) {
+        ctxs[i]    = {i, &data};
+        lParams[i] = reinterpret_cast<LPARAM>(&ctxs[i]);
+    }
+    RunThemedAeroWizard(
+        hOwner, L"Unified Multi-Product Suite Project Wizard",
+        3, headers, &SuiteProjectAeroPageProc, lParams,
+        ui::GlassGlyph::Blocks, ui::brand::kRaggieBlue);
+    if (!data.completed) return false;
+
+    const char* execToks[] = {"asInvoker", "highestAvailable", "requireAdministrator"};
+    const char* execLvl = execToks[std::clamp(data.execLevelIdx, 0, 2)];
+
+    std::ostringstream s;
+    s << "; ==============================================================================\r\n"
+      << "; RaggieSoft Unified Multi-Product Suite Project (PackageKind = suite)\r\n"
+      << "; Features Byte-Weighted Monotonic Overall Progress (bound to Windows Taskbar),\r\n"
+      << "; Secondary Per-Component Progress, & Dynamic ARPSYSTEMCOMPONENT Adoption!\r\n"
+      << "; ==============================================================================\r\n\r\n"
+      << "[Package]\r\n"
+      << "Name                    = " << data.suiteName << "\r\n"
+      << "Tagline                 = " << data.tagline << "\r\n"
+      << "Version                 = " << data.version << "\r\n"
+      << "Manufacturer            = " << data.manufacturer << "\r\n"
+      << "PackageKind             = suite\r\n"
+      << "UpgradeCode             = " << GenerateRandomMsiGuid() << "\r\n"
+      << "Architecture            = $(ARCH)\r\n"
+      << "Scope                   = " << (data.perMachine ? "machine" : "user") << "\r\n"
+      << "RequestedExecutionLevel = " << execLvl << "\r\n"
+      << "BuildUniversal          = " << (data.buildUniversal ? "true" : "false") << "\r\n\r\n"
+      << "[Install]\r\n"
+      << "DefaultSubdir           = " << data.manufacturer << "\\" << data.suiteName << "\r\n\r\n"
+      << "[UI]\r\n"
+      << "InstallButtonText       = &Install Selected\r\n"
+      << "ShowComponentProgressBar= " << (data.showCompProgressBar ? "true" : "false") << "\r\n\r\n";
+
+    if (!data.child1Name.empty() && !data.child1Source.empty()) {
+        const bool isMsi1 = EqualsIgnoreCase(WideToUtf8(std::filesystem::path(Utf8ToWide(data.child1Source)).extension().wstring()), ".msi");
+        s << "[SuitePackage.CoreApp]\r\n"
+          << "Name                    = " << data.child1Name << "\r\n"
+          << "Source                  = " << data.child1Source << "\r\n"
+          << "Engine                  = " << (isMsi1 ? "msi" : "native") << "\r\n"
+          << "UpgradeCode             = " << GenerateRandomMsiGuid() << "\r\n"
+          << "Required                = true\r\n"
+          << "AdoptStandalone         = true\r\n\r\n";
+    }
+    if (!data.child2Name.empty() && !data.child2Source.empty()) {
+        const bool isMsi2 = EqualsIgnoreCase(WideToUtf8(std::filesystem::path(Utf8ToWide(data.child2Source)).extension().wstring()), ".msi");
+        s << "[SuitePackage.CompanionTool]\r\n"
+          << "Name                    = " << data.child2Name << "\r\n"
+          << "Source                  = " << data.child2Source << "\r\n"
+          << "Engine                  = " << (isMsi2 ? "msi" : "native") << "\r\n"
+          << "UpgradeCode             = " << GenerateRandomMsiGuid() << "\r\n"
+          << "SelectedByDefault       = true\r\n"
+          << "AdoptStandalone         = true\r\n";
+    }
+
+    outGeneratedRsipUtf8 = s.str();
+    return true;
+}
+
 } // namespace rsw::ide_wizards

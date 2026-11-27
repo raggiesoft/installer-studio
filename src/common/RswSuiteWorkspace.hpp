@@ -37,16 +37,32 @@ struct RswSuiteProjectEntry {
     std::filesystem::path resolvedPath;  // Absolute/resolved path to member `.rsip`
     std::string           rawRelPath;    // Original relative path written in `.rsis`
     std::string           category;      // Optional grouping (`CoreApps`, `Books`, `Albums`, `MergeModules`)
-    int                   buildOrder = 100;
-    int                   declIndex  = 0;
-    bool                  enabled    = true;
+    int                   buildOrder        = 100;
+    int                   declIndex         = 0;
+    bool                  enabled           = true;
+    bool                  includeInSuite    = true;  // Bundled into unified Suite Setup when `BuildSuiteInstaller = true`
+    bool                  requiredInSuite   = false; // Locked as required in the Suite checklist
+    bool                  selectedByDefault = true;  // Pre-checked by default in the Suite checklist
 };
 
 struct RswSuiteWorkspace {
     std::filesystem::path                suiteFilePath;
     std::string                          name;
     std::string                          description;
+    std::string                          tagline;
     std::string                          version;
+    std::string                          manufacturer            = "RaggieSoft";
+    std::string                          upgradeCode;
+    std::string                          scope                   = "machine";
+    std::string                          requestedExecutionLevel = "asInvoker";
+    std::string                          outputName;
+    std::string                          outputDir               = "out";
+    std::string                          defaultSubdir;
+    std::string                          accentPrimaryHex        = "#2563EB";
+    std::string                          accentSecondaryHex      = "#FBBF24";
+    bool                                 buildSuiteInstaller     = false; // Emits unified `<OutputName>-setup.exe` chainer!
+    bool                                 buildUniversal          = false; // Emits `x64 + ARM64` combined Universal Suite EXE!
+    bool                                 showComponentProgressBar = true; // Secondary `Current Component` bar beneath Overall!
     std::vector<std::string>             defaultArchitectures;
     std::map<std::string, std::string>   variables;
     std::vector<RswSuiteProjectEntry>    projects;
@@ -64,10 +80,23 @@ inline bool ParseSuiteWorkspace(
     std::string& outError)
 {
     outSuite = {};
-    outSuite.suiteFilePath = doc.sourcePath;
-    outSuite.name          = doc.GetString("Suite", "", "Name", "Untitled Installer Suite");
-    outSuite.description   = doc.GetString("Suite", "", "Description", "");
-    outSuite.version       = doc.GetString("Suite", "", "Version", "1.0.0");
+    outSuite.suiteFilePath            = doc.sourcePath;
+    outSuite.name                     = doc.GetString("Suite", "", "Name", "Untitled Installer Suite");
+    outSuite.description              = doc.GetString("Suite", "", "Description", "");
+    outSuite.tagline                  = doc.GetString("Suite", "", "Tagline", outSuite.description);
+    outSuite.version                  = doc.GetString("Suite", "", "Version", "1.0.0");
+    outSuite.manufacturer             = doc.GetString("Suite", "", "Manufacturer", "RaggieSoft");
+    outSuite.upgradeCode              = doc.GetString("Suite", "", "UpgradeCode", "");
+    outSuite.scope                    = doc.GetString("Suite", "", "Scope", "machine");
+    outSuite.requestedExecutionLevel  = doc.GetString("Suite", "", "RequestedExecutionLevel", "asInvoker");
+    outSuite.outputName               = doc.GetString("Suite", "", "OutputName", "");
+    outSuite.outputDir                = doc.GetString("Suite", "", "OutputDir", "out");
+    outSuite.defaultSubdir            = doc.GetString("Suite", "", "DefaultSubdir", "");
+    outSuite.accentPrimaryHex         = doc.GetString("Suite", "", "AccentPrimaryHex", "#2563EB");
+    outSuite.accentSecondaryHex       = doc.GetString("Suite", "", "AccentSecondaryHex", "#FBBF24");
+    outSuite.buildSuiteInstaller      = doc.GetBool("Suite", "", "BuildSuiteInstaller", false);
+    outSuite.buildUniversal           = doc.GetBool("Suite", "", "BuildUniversal", false);
+    outSuite.showComponentProgressBar = doc.GetBool("Suite", "", "ShowComponentProgressBar", true);
 
     // Parse pipe- or comma-separated `Architectures = arm64|x64`
     const std::string rawArchs = doc.GetString("Suite", "", "Architectures", "arm64|x64");
@@ -105,12 +134,15 @@ inline bool ParseSuiteWorkspace(
     int declIdx = 0;
     for (const auto& pid : doc.GetNamedSectionIds("Project")) {
         RswSuiteProjectEntry pe{};
-        pe.id         = pid;
-        pe.rawRelPath = doc.GetString("Project", pid, "Path", "");
-        pe.category   = doc.GetString("Project", pid, "Category", "Default");
-        pe.buildOrder = doc.GetInt("Project", pid, "BuildOrder", 100);
-        pe.enabled    = doc.GetBool("Project", pid, "Enabled", true);
-        pe.declIndex  = declIdx++;
+        pe.id                = pid;
+        pe.rawRelPath        = doc.GetString("Project", pid, "Path", "");
+        pe.category          = doc.GetString("Project", pid, "Category", "Default");
+        pe.buildOrder        = doc.GetInt("Project", pid, "BuildOrder", 100);
+        pe.enabled           = doc.GetBool("Project", pid, "Enabled", true);
+        pe.includeInSuite    = doc.GetBool("Project", pid, "IncludeInSuite", true);
+        pe.requiredInSuite   = doc.GetBool("Project", pid, "Required", false);
+        pe.selectedByDefault = doc.GetBool("Project", pid, "SelectedByDefault", true);
+        pe.declIndex         = declIdx++;
 
         if (pe.rawRelPath.empty()) {
             outError = "[Project." + pid + "] in suite is missing required 'Path = <project.rsip>'.";

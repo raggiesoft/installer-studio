@@ -107,6 +107,7 @@ enum IdeId : int {
     IDM_WIZ_INSERT_PRESET    = 2009,
     IDM_WIZ_PREREQ_MSM       = 2017,
     IDM_WIZ_SFX_SIMPLE       = 2018,
+    IDM_WIZ_SUITE            = 2019,
 
     IDM_BUILD_VALIDATE       = 2010,
     IDM_BUILD_MSI            = 2011,
@@ -778,6 +779,7 @@ public:
         HMENU hBar  = ::CreateMenu();
         HMENU hFile = ::CreatePopupMenu();
         ::AppendMenuW(hFile, MF_STRING, IDM_WIZ_PROJECT,    L"New Project &Wizard (Aero Project Assistant)...\tCtrl+W");
+        ::AppendMenuW(hFile, MF_STRING, IDM_WIZ_SUITE,      L"New Unified Multi-Product &Suite Wizard (.rsip)...");
         ::AppendMenuW(hFile, MF_STRING, IDM_WIZ_SFX_SIMPLE, L"New Self-Extracting .E&XE / Simple Native Setup Wizard...");
         ::AppendMenuW(hFile, MF_STRING, IDM_FILE_NEW,       L"&New Starter .rsip Project\tCtrl+N");
         ::AppendMenuW(hFile, MF_STRING, IDM_FILE_OPEN,      L"&Open .rsip Project or .rsis Suite...\tCtrl+O");
@@ -787,6 +789,7 @@ public:
 
         HMENU hWiz = ::CreatePopupMenu();
         ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_PROJECT,       L"&New Project AeroWizard (Project Assistant)...\tCtrl+W");
+        ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_SUITE,         L"&Unified Multi-Product Suite AeroWizard (Dual-Bar Progress)...");
         ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_SFX_SIMPLE,    L"&Self-Extracting .EXE && Simple Native Setup AeroWizard...");
         ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_PREREQ_MSM,    L"&Runtime Prerequisite (.NET 11 / 10) & .MSM AeroWizard...");
         ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_COMPONENT,     L"&Component & KeyPath AeroWizard (Microsoft Rules)...");
@@ -3646,7 +3649,15 @@ public:
                         return 0;
                     }
 
-                    // --- 6 Guided Native Win32 AeroWizards (`PSH_AEROWIZARD`)! ---
+                    // --- 7 Guided Native Win32 AeroWizards (`PSH_AEROWIZARD`)! ---
+                    case IDM_WIZ_SUITE: {
+                        std::string genText;
+                        if (rsw::ide_wizards::RunUnifiedSuiteAeroWizard(hWnd, genText)) {
+                            self->LoadProjectText(genText, {});
+                            self->AppendConsole(L"[AEROWIZARD] Generated Unified Multi-Product Suite (PackageKind = suite) .rsip manifest.\r\n");
+                        }
+                        return 0;
+                    }
                     case IDM_WIZ_SFX_SIMPLE: {
                         std::string genText;
                         bool autoVal = false;

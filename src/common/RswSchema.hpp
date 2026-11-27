@@ -345,6 +345,8 @@ inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>
      "Helper caption for the Custom Setup mode card in `SetupWizard.exe` and MSI `SetupTypeDlg`."},
     {"UI",       "AuthorOrArtist",       FieldValueKind::String,      false, "",                  "",
      "Optional author or band credit badge displayed in `autorun16x9` book/album micro-installers."},
+    {"UI",       "ShowComponentProgressBar", FieldValueKind::Boolean, false, "true",              "",
+     "When `true` (default) in Unified Suite Setup (`PackageKind = suite`), displays a secondary `Current Component` (`0%–100%`) progress bar beneath the monotonic byte-weighted `Overall Suite Progress` (`0%–100%`) bar; Windows Taskbar `ITaskbarList3` always tracks Overall Suite Progress."},
 
     // --- [SetupType.<id>] (Custom Author-Defined Setup Types!) ---
     {"SetupType","Title",                FieldValueKind::AcceleratorString, true, "",             "",
@@ -404,6 +406,12 @@ inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>
      "Whether this child package is pre-checked by default on fresh Suite installations."},
     {"SuitePackage", "AdoptStandalone",  FieldValueKind::Boolean,     false, "true",              "",
      "When `true` (default), dynamically adopts any already-installed standalone sibling (`REINSTALL=ALL REINSTALLMODE=vomus RS_SUITE_MANAGED=1`) under the single Suite Installed Apps entry."},
+    {"SuitePackage", "Category",         FieldValueKind::String,      false, "Suite",             "",
+     "Optional category badge displayed for this application in the Unified Suite Setup checklist."},
+    {"SuitePackage", "Version",          FieldValueKind::String,      false, "",                  "",
+     "Optional display version (`X.Y.Z`) shown alongside this child package in the Suite checklist."},
+    {"SuitePackage", "EstimatedSizeKB",  FieldValueKind::Integer,     false, "0",                 "",
+     "Optional uncompressed size override in kilobytes used to weight Overall Suite Progress (`0` uses actual payload size)."},
     {"Payload",  "TargetRoot",           FieldValueKind::EnumChoice,  false, "INSTALLDIR",        kAllowedTargetRoots,
      "Destination MSI system folder root (`INSTALLDIR`, `CommonAppDataFolder`, `AppDataFolder`, `FontsFolder`, etc.)."},
     {"Payload",  "Component",            FieldValueKind::String,      false, "",                  "",

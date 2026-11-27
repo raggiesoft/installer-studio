@@ -131,7 +131,7 @@ int ProcessSingleProject(
     const std::string pkgKind = rsw::AsciiLower(rsw::TrimAscii(doc.GetString("Package", "", "PackageKind", "msi")));
     const std::string engine  = rsw::AsciiLower(rsw::TrimAscii(doc.GetString("Package", "", "Engine", "msi")));
     const bool buildUniversal = archOverride.empty() &&
-                                pkgKind != "msm" && pkgKind != "suite" &&
+                                pkgKind != "msm" &&
                                 (forceUniversal || doc.GetBool("Package", "", "BuildUniversal", false));
 
     if (buildUniversal && !validateOnly) {
@@ -148,7 +148,13 @@ int ProcessSingleProject(
         rsw::CompiledMsiSummary x64Sum{}, arm64Sum{};
         std::filesystem::path x64Setup, arm64Setup;
         std::string buildErr;
-        if (pkgKind == "sfx" || engine == "native") {
+        if (pkgKind == "suite") {
+            if (!rsw::PackageUnifiedSuiteExecutable(doc, "x64", compilerExeDir, x64Sum, x64Setup, buildErr) ||
+                !rsw::PackageUnifiedSuiteExecutable(doc, "arm64", compilerExeDir, arm64Sum, arm64Setup, buildErr)) {
+                std::cerr << "[ERROR] " << buildErr << "\n";
+                return 1;
+            }
+        } else if (pkgKind == "sfx" || engine == "native") {
             if (!rsw::PackageNativeOrSfxExecutable(doc, "x64", compilerExeDir, x64Sum, x64Setup, buildErr) ||
                 !rsw::PackageNativeOrSfxExecutable(doc, "arm64", compilerExeDir, arm64Sum, arm64Setup, buildErr)) {
                 std::cerr << "[ERROR] " << buildErr << "\n";
@@ -171,11 +177,15 @@ int ProcessSingleProject(
             return 1;
         }
 
-        std::cout << "[OK] Compiled Multi-Arch & Universal Installers (" << x64Sum.productName << " v" << x64Sum.productVersion << "):\n"
-                  << "     X64 MSI         : " << rsw::WideToUtf8(x64Sum.msiPath.wstring()) << "\n"
-                  << "     X64 SETUP       : " << rsw::WideToUtf8(x64Setup.wstring()) << " (SHA-256: " << univOut.sha256X64.substr(0, 16) << "...)\n"
-                  << "     ARM64 MSI       : " << rsw::WideToUtf8(arm64Sum.msiPath.wstring()) << "\n"
-                  << "     ARM64 SETUP     : " << rsw::WideToUtf8(arm64Setup.wstring()) << " (SHA-256: " << univOut.sha256Arm64.substr(0, 16) << "...)\n"
+        std::cout << "[OK] Compiled Multi-Arch & Universal Installers (" << x64Sum.productName << " v" << x64Sum.productVersion << "):\n";
+        if (pkgKind == "msi" && engine != "native") {
+            std::cout << "     X64 MSI         : " << rsw::WideToUtf8(x64Sum.msiPath.wstring()) << "\n";
+        }
+        std::cout << "     X64 SETUP       : " << rsw::WideToUtf8(x64Setup.wstring()) << " (SHA-256: " << univOut.sha256X64.substr(0, 16) << "...)\n";
+        if (pkgKind == "msi" && engine != "native") {
+            std::cout << "     ARM64 MSI       : " << rsw::WideToUtf8(arm64Sum.msiPath.wstring()) << "\n";
+        }
+        std::cout << "     ARM64 SETUP     : " << rsw::WideToUtf8(arm64Setup.wstring()) << " (SHA-256: " << univOut.sha256Arm64.substr(0, 16) << "...)\n"
                   << "     OFFLINE UNIV EXE: " << rsw::WideToUtf8(univOut.offlineSetupExePath.wstring()) << " (x64 + ARM64 combined)\n";
         if (!univOut.webStubExePath.empty()) {
             std::cout << "     SMART WEB STUB  : " << rsw::WideToUtf8(univOut.webStubExePath.wstring()) << " (Auto-detects CPU via WinHTTP)\n";
@@ -581,6 +591,102 @@ int wmain(int argc, wchar_t* argv[]) {
             std::cerr << "[ERROR] No enabled projects in suite matched filter.\n";
             return 2;
         }
+
+        // Optional One-Command `.rsis` Unified Suite Installer (`[Suite] BuildSuiteInstaller = true`)!
+        // After compiling member `.rsip` projects in `BuildOrder`, automatically synthesize & compile
+        // the Unified Suite Setup chainer bundling all non-`.msm` / non-`sfx` member outputs!
+        if (!validateOnly && suite.buildSuiteInstaller && categoryFilter.empty() && projectFilter.empty()) {
+            const std::filesystem::path suiteBaseDir = inputPath.has_parent_path()
+                ? inputPath.parent_path()
+                : std::filesystem::current_path();
+            rsw::RswManifestDocument synthDoc;
+            synthDoc.sourcePath = inputPath;
+            synthDoc.SetString("Package", "", "Name",                    suite.name);
+            synthDoc.SetString("Package", "", "Tagline",                 suite.tagline);
+            synthDoc.SetString("Package", "", "Version",                 suite.version);
+            synthDoc.SetString("Package", "", "Manufacturer",            suite.manufacturer);
+            synthDoc.SetString("Package", "", "PackageKind",             "suite");
+            synthDoc.SetString("Package", "", "Scope",                   suite.scope);
+            synthDoc.SetString("Package", "", "RequestedExecutionLevel", suite.requestedExecutionLevel);
+            synthDoc.SetString("Package", "", "UpgradeCode",
+                suite.upgradeCode.empty()
+                    ? rsw::ComputeDeterministicComponentGuid("{A18F4E20-7C93-4D62-9B44-524147474945}", "suite", suite.name)
+                    : suite.upgradeCode);
+            if (!suite.outputName.empty()) {
+                synthDoc.SetString("Package", "", "OutputName", suite.outputName);
+            }
+            synthDoc.SetString("Package", "", "OutputDir", suite.outputDir);
+            if (!suite.defaultSubdir.empty()) {
+                synthDoc.SetString("Install", "", "DefaultSubdir", suite.defaultSubdir);
+            }
+            synthDoc.SetString("UI", "", "AccentPrimaryHex",         suite.accentPrimaryHex);
+            synthDoc.SetString("UI", "", "AccentSecondaryHex",       suite.accentSecondaryHex);
+            synthDoc.SetString("UI", "", "ShowComponentProgressBar", suite.showComponentProgressBar ? "true" : "false");
+
+            int bundledChildren = 0;
+            for (const auto& proj : suite.projects) {
+                if (!proj.enabled || !proj.includeInSuite) continue;
+                rsw::RswManifestDocument mRaw, mDoc;
+                if (!rsw::LoadManifestFile(proj.resolvedPath, mRaw, err) ||
+                    !rsw::ResolveManifestIncludesAndVars(mRaw, suite.variables, mDoc, err)) {
+                    continue;
+                }
+                const std::string mKind = rsw::AsciiLower(mDoc.GetString("Package", "", "PackageKind", "msi"));
+                if (mKind == "msm" || mKind == "sfx" || mKind == "suite") continue;
+
+                const std::string mEng  = rsw::AsciiLower(mDoc.GetString("Package", "", "Engine", "msi"));
+                const std::string mName = mDoc.GetString("Package", "", "Name", proj.id);
+                const std::string mVer  = mDoc.GetString("Package", "", "Version", "1.0.0");
+                const std::string mUpg  = mDoc.GetString("Package", "", "UpgradeCode");
+                const std::string mRawOut = mDoc.GetString("Package", "", "OutputName");
+                const std::string mStem = mRawOut.empty() ? (rsw::SlugifyName(mName) + "-$(ARCH)") : mRawOut;
+                const std::filesystem::path mProjDir = proj.resolvedPath.parent_path();
+                const std::filesystem::path mOutDir  = mProjDir / rsw::Utf8ToWide(mDoc.GetString("Package", "", "OutputDir", "out"));
+                const std::string artLeaf = (mEng == "native") ? (mStem + "-setup.exe") : (mStem + ".msi");
+                const std::filesystem::path artFull = (mOutDir / rsw::Utf8ToWide(artLeaf)).lexically_normal();
+
+                synthDoc.SetString("SuitePackage", proj.id, "Name",              mName);
+                synthDoc.SetString("SuitePackage", proj.id, "Description",       mDoc.GetString("Package", "", "Tagline"));
+                synthDoc.SetString("SuitePackage", proj.id, "Category",          proj.category);
+                synthDoc.SetString("SuitePackage", proj.id, "Version",           mVer);
+                synthDoc.SetString("SuitePackage", proj.id, "Source",            rsw::WideToUtf8(artFull.wstring()));
+                if (!mUpg.empty()) synthDoc.SetString("SuitePackage", proj.id, "UpgradeCode", mUpg);
+                synthDoc.SetString("SuitePackage", proj.id, "Engine",            (mEng == "native") ? "native" : "msi");
+                synthDoc.SetString("SuitePackage", proj.id, "Required",          proj.requiredInSuite ? "true" : "false");
+                synthDoc.SetString("SuitePackage", proj.id, "SelectedByDefault", proj.selectedByDefault ? "true" : "false");
+                ++bundledChildren;
+            }
+
+            if (bundledChildren > 0) {
+                const bool wantUnivSuite = archOverride.empty() && (universalFlag || suite.buildUniversal) &&
+                                           archList.size() >= 2;
+                if (wantUnivSuite) {
+                    rsw::CompiledMsiSummary xSum{}, aSum{};
+                    std::filesystem::path xExe, aExe;
+                    rsw::UniversalPackageOutputs uOut{};
+                    if (!rsw::PackageUnifiedSuiteExecutable(synthDoc, "x64", compilerExeDir, xSum, xExe, err) ||
+                        !rsw::PackageUnifiedSuiteExecutable(synthDoc, "arm64", compilerExeDir, aSum, aExe, err) ||
+                        !rsw::PackageUniversalInstallers(synthDoc, xSum, xExe, aSum, aExe, compilerExeDir, uOut, err)) {
+                        std::cerr << "[ERROR] " << err << "\n";
+                        return 1;
+                    }
+                    std::cout << "[OK] Compiled Universal Suite Chainer (" << bundledChildren << " member package(s)): "
+                              << rsw::WideToUtf8(uOut.offlineSetupExePath.wstring()) << "\n";
+                } else {
+                    for (const auto& arch : archList) {
+                        std::filesystem::path sExe;
+                        if (!rsw::PackageUnifiedSuiteExecutable(synthDoc, arch, compilerExeDir, sExe, err)) {
+                            std::cerr << "[ERROR] " << err << "\n";
+                            return 1;
+                        }
+                        std::cout << "[OK] Compiled Unified Suite Chainer (" << arch << ", " << bundledChildren << " member package(s)): "
+                                  << rsw::WideToUtf8(sExe.wstring()) << "\n";
+                    }
+                }
+            }
+            (void)suiteBaseDir;
+        }
+
         if (jsonDiagnostics) {
             std::cout << "{\n  \"ok\": true,\n  \"suite\": \"" << suite.name
                       << "\",\n  \"projectsProcessed\": " << matchedCount << "\n}\n";

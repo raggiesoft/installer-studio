@@ -1638,15 +1638,18 @@ inline bool PackageNativeOrSfxExecutable(
 }
 
 /// Compiles a Unified Suite Setup (`PackageKind = suite` -> `<OutputName>-setup.exe`) chaining
-/// multiple child `.msi` and `Engine = native` packages under ONE UAC prompt and ONE Suite
-/// Maintenance entry in Windows *Installed apps* (`RS_SUITE_MANAGED=1` adoption)!
+/// multiple child `.msi` and `Engine = native` packages under ONE UAC prompt, Monotonic Dual-Bar
+/// Progress (`Overall Suite Progress` + `Current Component`), and ONE Suite Maintenance entry in
+/// Windows *Installed apps* (`RS_SUITE_MANAGED=1` adoption)!
 inline bool PackageUnifiedSuiteExecutable(
     const RswManifestDocument& doc,
     std::string_view cliArchOverride,
     const std::filesystem::path& compilerExeDir,
+    CompiledMsiSummary& outSummary,
     std::filesystem::path& outSuiteExePath,
     std::string& outError)
 {
+    outSummary = {};
     const ValidationReport val = ValidateManifestDocument(doc, cliArchOverride);
     if (!val.IsOk()) {
         outError = "Suite manifest validation failed (" + std::to_string(val.ErrorCount()) +
@@ -1672,21 +1675,23 @@ inline bool PackageUnifiedSuiteExecutable(
     }
 
     SuiteChainerManifest sm{};
-    sm.suiteName          = ExpandArchToken(doc.GetString("Package", "", "Name"), arch);
-    sm.tagline            = ExpandArchToken(doc.GetString("Package", "", "Tagline", "Unified Application Suite"), arch);
-    sm.websiteLabel       = doc.GetString("Package", "", "WebsiteLabel");
-    sm.version            = ExpandArchToken(doc.GetString("Package", "", "Version", "1.0.0"), arch);
-    sm.manufacturer       = ExpandArchToken(doc.GetString("Package", "", "Manufacturer", "RaggieSoft"), arch);
+    sm.suiteName                = ExpandArchToken(doc.GetString("Package", "", "Name"), arch);
+    sm.tagline                  = ExpandArchToken(doc.GetString("Package", "", "Tagline", "Unified Application Suite"), arch);
+    sm.websiteLabel             = doc.GetString("Package", "", "WebsiteLabel");
+    sm.version                  = ExpandArchToken(doc.GetString("Package", "", "Version", "1.0.0"), arch);
+    sm.manufacturer             = ExpandArchToken(doc.GetString("Package", "", "Manufacturer", "RaggieSoft"), arch);
     NormalizeMsiGuid(doc.GetString("Package", "", "UpgradeCode"), sm.upgradeCode);
-    sm.architecture       = arch;
-    sm.perMachine         = EqualsIgnoreCase(doc.GetString("Package", "", "Scope", "machine"), "machine");
-    sm.requestedExecLevel = std::string(NormalizeRequestedExecutionLevel(
+    sm.architecture             = arch;
+    sm.perMachine               = EqualsIgnoreCase(doc.GetString("Package", "", "Scope", "machine"), "machine");
+    sm.requestedExecLevel       = std::string(NormalizeRequestedExecutionLevel(
         doc.GetString("Package", "", "RequestedExecutionLevel", "asInvoker")));
-    sm.minWindowsBuild    = doc.GetInt("Requirements", "", "MinWindowsBuild", 22000);
-    sm.osLaunchMessage    = doc.GetString("Requirements", "", "OsLaunchMessage", "This suite requires Windows 11 (Build 22000) or later.");
-    sm.defaultSubdir      = ExpandArchToken(doc.GetString("Install", "", "DefaultSubdir", sm.manufacturer + "\\" + sm.suiteName), arch);
-    sm.accentPrimaryHex   = doc.GetString("UI", "", "AccentPrimaryHex", "#2563EB");
-    sm.accentSecondaryHex = doc.GetString("UI", "", "AccentSecondaryHex", "#FBBF24");
+    sm.minWindowsBuild          = doc.GetInt("Requirements", "", "MinWindowsBuild", 22000);
+    sm.osLaunchMessage          = doc.GetString("Requirements", "", "OsLaunchMessage", "This suite requires Windows 11 (Build 22000) or later.");
+    sm.defaultSubdir            = ExpandArchToken(doc.GetString("Install", "", "DefaultSubdir", sm.manufacturer + "\\" + sm.suiteName), arch);
+    sm.accentPrimaryHex         = doc.GetString("UI", "", "AccentPrimaryHex", "#2563EB");
+    sm.accentSecondaryHex       = doc.GetString("UI", "", "AccentSecondaryHex", "#FBBF24");
+    sm.installBtnText           = doc.GetString("UI", "", "InstallButtonText", "&Install Selected");
+    sm.showComponentProgressBar = doc.GetBool("UI", "", "ShowComponentProgressBar", true);
 
     struct EmbeddedSuiteBlob {
         int                       resId = 0;
@@ -1709,17 +1714,22 @@ inline bool PackageUnifiedSuiteExecutable(
         }
 
         SuiteChildSpec ch{};
-        ch.id                = spId;
-        ch.name              = ExpandArchToken(doc.GetString("SuitePackage", spId, "Name", spId), arch);
-        ch.description       = ExpandArchToken(doc.GetString("SuitePackage", spId, "Description"), arch);
-        ch.fileName          = WideToUtf8(srcPath.filename().wstring());
+        ch.id          = spId;
+        ch.name        = ExpandArchToken(doc.GetString("SuitePackage", spId, "Name", spId), arch);
+        ch.description = ExpandArchToken(doc.GetString("SuitePackage", spId, "Description"), arch);
+        ch.category    = ExpandArchToken(doc.GetString("SuitePackage", spId, "Category", "Suite"), arch);
+        ch.version     = ExpandArchToken(doc.GetString("SuitePackage", spId, "Version"), arch);
+        ch.fileName    = WideToUtf8(srcPath.filename().wstring());
         const std::string rawChUpg = doc.GetString("SuitePackage", spId, "UpgradeCode");
         if (!rawChUpg.empty()) NormalizeMsiGuid(rawChUpg, ch.upgradeCode);
         ch.engine            = AsciiLower(doc.GetString("SuitePackage", spId, "Engine",
                                    EqualsIgnoreCase(WideToUtf8(srcPath.extension().wstring()), ".msi") ? "msi" : "native"));
         ch.installArgs       = ExpandArchToken(doc.GetString("SuitePackage", spId, "InstallArgs"), arch);
         ch.sha256Hex         = shaHex;
-        ch.uncompressedBytes = static_cast<std::uint64_t>(rawBytes.size());
+        const int estKb      = doc.GetInt("SuitePackage", spId, "EstimatedSizeKB", 0);
+        ch.uncompressedBytes = (estKb > 0)
+            ? (static_cast<std::uint64_t>(estKb) * 1024ull)
+            : static_cast<std::uint64_t>(rawBytes.size());
         ch.embeddedResId     = kResIdSuiteChildBase + static_cast<int>(i);
         ch.required          = doc.GetBool("SuitePackage", spId, "Required", false);
         ch.selectedByDefault = doc.GetBool("SuitePackage", spId, "SelectedByDefault", true);
@@ -1738,8 +1748,23 @@ inline bool PackageUnifiedSuiteExecutable(
     std::filesystem::create_directories(outDir, ec);
     outSuiteExePath = outDir / Utf8ToWide(outStem + "-setup.exe");
 
+    const auto iconPath = resolvePath(doc.GetString("UI", "", "IconFile"));
+    outSummary.msiPath         = outSuiteExePath;
+    outSummary.architecture    = arch;
+    outSummary.productName     = sm.suiteName;
+    outSummary.productVersion  = sm.version;
+    outSummary.manufacturer    = sm.manufacturer;
+    outSummary.upgradeCode     = sm.upgradeCode;
+    outSummary.perMachine      = sm.perMachine;
+    outSummary.minWindowsBuild = sm.minWindowsBuild;
+    outSummary.osLaunchMessage = sm.osLaunchMessage;
+    outSummary.defaultSubdir   = sm.defaultSubdir;
+    outSummary.iconFilePath    = iconPath;
+    outSummary.fileCount       = sm.children.size();
+    outSummary.componentCount  = sm.children.size();
+
     const auto scratchStage = std::filesystem::temp_directory_path(ec) /
-                              (L"rsw-suite-stage-" + std::to_wstring(::GetCurrentProcessId()) + L".exe");
+                              (L"rsw-suite-stage-" + std::to_wstring(::GetCurrentProcessId()) + L"-" + Utf8ToWide(arch) + L".exe");
     if (!std::filesystem::copy_file(stubTemplate, scratchStage, std::filesystem::copy_options::overwrite_existing, ec)) {
         outError = "Failed copying SetupWizard.exe stub for Suite packaging.";
         return false;
@@ -1765,7 +1790,6 @@ inline bool PackageUnifiedSuiteExecutable(
             const_cast<std::uint8_t*>(cb.compBytes.data()), static_cast<DWORD>(cb.compBytes.size()));
     }
 
-    const auto iconPath        = resolvePath(doc.GetString("UI", "", "IconFile"));
     const std::string origFile = WideToUtf8(outSuiteExePath.filename().wstring());
     const std::string desc     = doc.GetString("Package", "", "Description", sm.suiteName + " Unified Suite Setup");
     ok = ok && StampIconAndVersionOnExeResource(
@@ -1789,6 +1813,18 @@ inline bool PackageUnifiedSuiteExecutable(
     }
     std::filesystem::remove(scratchStage, ec);
     return true;
+}
+
+/// Convenience 5-argument overload preserving call-site compatibility.
+inline bool PackageUnifiedSuiteExecutable(
+    const RswManifestDocument& doc,
+    std::string_view cliArchOverride,
+    const std::filesystem::path& compilerExeDir,
+    std::filesystem::path& outSuiteExePath,
+    std::string& outError)
+{
+    CompiledMsiSummary unusedSummary{};
+    return PackageUnifiedSuiteExecutable(doc, cliArchOverride, compilerExeDir, unusedSummary, outSuiteExePath, outError);
 }
 
 } // namespace rsw
