@@ -1,0 +1,153 @@
+// ================================================================================
+// FILE: examples/raggiescript/sample-workbench-setup.rssc
+// PROJECT: RaggieSoft Installer Studio — End-to-End RaggieScript (`.rssc`) Setup Sample
+// WEBSITE: https://raggiesoftstudio.com/raggiescript  |  DEV HUB: https://raggiesoft.dev
+// LICENSE: MIT License (Copyright (c) 2026 Michael P. Ragsdale / RaggieSoft)
+//
+// PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+//   What does this sample `.rssc` installer demonstrate?
+//     This single plain-text file compiles directly via `instbuild.exe` (or runs via
+//     `raggiescript.exe`) into a native `x64` / `ARM64` Windows 11 `Setup.exe` with:
+//       1. Zero `msi.dll` lock contention (`Error 1618` impossible!).
+//       2. Compile-time `RSW701` Wizard Phase Isolation: `wizard { ... }` can inspect
+//          the OS, ask questions, and validate disk space, while any accidental file or
+//          registry write inside `wizard` is rejected at compile time!
+//       3. Atomic `.rsw-rollback.jnl` Transactional Rollback inside `install { ... }`:
+//          every extracted payload, JSON/INI config, registry value, `.lnk` shortcut,
+//          file association, and non-clobbering `PATH` entry rolls back automatically on
+//          cancellation or failure, and uninstalls cleanly via `Uninstall.exe`!
+//
+//   Fictitious Disclaimer: All sample personas, organizations, and events referenced
+//   in RaggieSoft documentation are works of fiction.
+// ================================================================================
+
+use installer;
+use ui;
+
+include "../../includes/raggiesoft-requirements.rssc";
+include "../../includes/raggiesoft-suite-contract.rssc";
+
+package "RaggieSoft Sample Workbench" {
+    id:        "{8C41E2B0-5D19-4A73-9E22-524147474945}";
+    version:   1.2.0;
+    publisher: "RaggieSoft";
+    tagline:   "Sample Zero-MSI Transactional RaggieScript Setup";
+    website:   "https://raggiesoftstudio.com/raggiescript";
+    scope:     Scope.User;
+    uac:       Uac.AsInvoker;
+    style:     "fluentmica";
+    mainExe:   "HelloRaggieSoft.exe";
+    minWindowsBuild: 22000;
+}
+
+// CLI-bindable setup parameters:
+//   - Soft override: `Setup.exe /s installDir="C:\Custom\Path"`
+//   - Hard IT lock : `Setup.exe /s installDir:"C:\PolicyLocked\Path"` (immutable!)
+param installDir: path          = sys.localAppData / "RaggieSoft" / "Sample Workbench";
+param createDesktopLink: bool   = false;
+param registerWorkspaceExt: bool= true;
+param launchWhenFinished: bool  = false;
+
+// Embedded LZMS payload harvested at build time by `instbuild.exe` (`#220` `RSWPAK1`)
+payload CoreApp {
+    from "../hello-raggiesoft/ReadMe.txt";
+    feature: "Main";
+}
+
+// Pre-flight Windows 11 & RAM gate (`ntdll!RtlGetVersion` >= Build 22000, >= 512 MB RAM)
+verifyWindows11AndHardware("RaggieSoft Sample Workbench", 22000, 512);
+
+// Side-effect-free interactive wizard phase (automatically skipped in `/s` silent mode!)
+wizard {
+    step Welcome {
+        let actionBtn = 0;
+        ui.taskDialog(
+            title: "RaggieSoft Sample Workbench Setup",
+            heading: "Install RaggieSoft Sample Workbench v1.2.0",
+            body: "Target Folder:\n${installDir}\n\nDetected Architecture: ${sys.arch()} (Free Disk: ${sys.freeDiskMB(installDir)} MB)",
+            icon: Icon.Info,
+            choice: ref actionBtn,
+            buttons: [
+                {
+                    id: 101,
+                    text: "&Express Install (Recommended)",
+                    subtitle: "Installs immediately into your personal LocalAppData folder with zero UAC prompts."
+                },
+                {
+                    id: 102,
+                    text: "Choose &Custom Folder...",
+                    subtitle: "Pick a custom destination folder before installing."
+                },
+                {
+                    id: 103,
+                    text: "Cancel",
+                    subtitle: "Exit Setup without making any changes."
+                }
+            ]
+        );
+        if (actionBtn == 103) {
+            wizard.cancel();
+        }
+        if (actionBtn == 102) {
+            const picked = ui.pickFolder("Select Destination Folder", str(installDir));
+            if (str(picked) != "") {
+                installDir = path(picked);
+            }
+        }
+    }
+}
+
+// Rollback-journaled transactional installation phase!
+install {
+    ui.progress(20, "Extracting application files...");
+    fs.mkdir(installDir);
+    fs.extract("CoreApp", to: installDir);
+
+    ui.progress(55, "Writing configuration & telemetry-free profile...");
+    fs.writeJson(installDir / "workbench.config.json", {
+        product:     "RaggieSoft Sample Workbench",
+        version:     "1.2.0",
+        silicon:     sys.arch(),
+        telemetry:   false,
+        fictitiousDisclaimer: "All characters, corporations, and universities in RaggieSoft works are fictitious."
+    });
+    ini.write(installDir / "settings.ini", "General", "Theme", sys.isDarkMode() ? "Dark" : "Light");
+
+    ui.progress(80, "Registering settings & shortcuts...");
+    reg.writeString("HKCU", r"Software\RaggieSoft\SampleWorkbench", "InstallDir", str(installDir));
+    reg.writeString("HKCU", r"Software\RaggieSoft\SampleWorkbench", "Version", "1.2.0");
+
+    if (registerWorkspaceExt) {
+        shell.registerFileType(
+            ext: ".rswb",
+            progId: "RaggieSoft.SampleWorkbench.File",
+            description: "RaggieSoft Sample Workbench Document",
+            target: installDir / "HelloRaggieSoft.exe"
+        );
+    }
+
+    if (createDesktopLink && fs.exists(installDir / "HelloRaggieSoft.exe")) {
+        shortcut.create(
+            location: "Desktop",
+            name: "RaggieSoft Sample Workbench",
+            target: installDir / "HelloRaggieSoft.exe",
+            description: "Open RaggieSoft Sample Workbench"
+        );
+    }
+
+    ui.progress(100, "Installation complete.");
+    if (launchWhenFinished && !sys.isSilent()) {
+        launchInstalledAppOnDesktop(installDir / "HelloRaggieSoft.exe", "");
+    }
+}
+
+// Two-tier maintenance repair (`QuickRepair` vs `FullReinstall`)
+repair(mode) {
+    log.info("Running ${mode} on ${installDir}...");
+    fs.extract("CoreApp", to: installDir);
+}
+
+// Safe-Uninstall handler preserving user documents unless explicitly requested
+uninstall(purgeUserData) {
+    cleanupOptionalUserData("SampleWorkbench", purgeUserData);
+}

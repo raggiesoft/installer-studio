@@ -44,6 +44,8 @@
 #include "../common/RswMsiFeatureTree.hpp"
 #include "../common/RswPlatform.hpp"
 #include "../common/RswPrerequisites.hpp"
+#include "../common/RswRaggieScript.hpp"
+#include "../common/RswRaggieScriptVm.hpp"
 #include "../common/RswVersion.hpp"
 #include "../common/RswWcagContrast.hpp"
 #include "../common/RswWizardStyles.hpp"
@@ -5660,6 +5662,131 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
             return rsw::compact_suite::RunNativeOrSfxEntrypoint(
                 hInstance, nCmdShow, args,
                 std::string_view(reinterpret_cast<const char*>(natPtr), natSz));
+        }
+    }
+
+    // Standalone `RaggieScript` (`.rssc` -> `kResIdScriptBytecode` `#225`) Native Execution Mode!
+    {
+        const std::uint8_t* rsscPtr = nullptr;
+        std::size_t rsscSz = 0;
+        const std::uint8_t* msiCheckPtr = nullptr;
+        std::size_t msiCheckSz = 0;
+        if (GetEmbeddedRcDataView(rsw::kResIdScriptBytecode, rsscPtr, rsscSz) && rsscSz > 0 &&
+            !GetEmbeddedRcDataView(rsw::kResIdEmbeddedMsi, msiCheckPtr, msiCheckSz)) {
+            std::vector<std::uint8_t> bcRaw;
+            std::string bcErr;
+            rsw::rssc::ScriptProgram prog;
+            if (!rsw::DecompressLzmsOrCopyRaw(rsscPtr, rsscSz, bcRaw, bcErr) ||
+                !rsw::rssc::LoadRaggieScriptBytecode(bcRaw.data(), bcRaw.size(), prog, bcErr)) {
+                return ERROR_INVALID_DATA;
+            }
+
+            rsw::rssc::VmExecutionOptions vmOpts{};
+            wchar_t selfBuf[MAX_PATH * 4]{};
+            ::GetModuleFileNameW(nullptr, selfBuf, static_cast<DWORD>(std::size(selfBuf)));
+            vmOpts.runningExePath = std::filesystem::path(selfBuf);
+
+            for (const auto& wa : args) {
+                const std::string a = rsw::WideToUtf8(wa);
+                if (a == "/s" || a == "/S" || a == "/qn" || a == "/quiet" || a == "--silent") {
+                    vmOpts.silentMode = true;
+                } else if (a == "/passive" || a == "/qb" || a == "--passive") {
+                    vmOpts.passiveMode = true;
+                } else if (a.rfind("/l=", 0) == 0 || a.rfind("--log=", 0) == 0) {
+                    vmOpts.logFilePath = std::filesystem::path(rsw::Utf8ToWide(a.substr(a.find('=') + 1)));
+                } else if (a == "--repair") {
+                    vmOpts.maintenanceMode   = true;
+                    vmOpts.maintenanceAction = "repair";
+                } else if (a == "--uninstall") {
+                    vmOpts.maintenanceMode   = true;
+                    vmOpts.maintenanceAction = "uninstall";
+                } else if (a.find('=') != std::string::npos && a.front() != '-' && a.front() != '/') {
+                    const auto eq = a.find('=');
+                    vmOpts.cliProperties[a.substr(0, eq)] = a.substr(eq + 1);
+                } else if (a.find(':') != std::string::npos && a.find(':') >= 2 && a.front() != '-' && a.front() != '/') {
+                    const auto col = a.find(':');
+                    const std::string k = a.substr(0, col);
+                    vmOpts.cliProperties[k] = a.substr(col + 1);
+                    vmOpts.lockedCliProperties.insert(k);
+                } else {
+                    vmOpts.rawCliSwitches.push_back(a);
+                }
+            }
+
+            // Enforce minimum OS build (`9007` canonical RaggieSoft OS-unsupported exit code!)
+            if (!rsw::MeetsWindowsBuildFloor(prog.package.minWinBuild)) {
+                if (!vmOpts.silentMode) {
+                    const std::wstring tit = rsw::Utf8ToWide(prog.package.name + " Setup");
+                    ::TaskDialog(nullptr, hInstance, tit.c_str(), L"Unsupported Windows Version",
+                                 L"This setup package requires a newer release of Windows.",
+                                 TDCBF_CLOSE_BUTTON, TD_WARNING_ICON, nullptr);
+                }
+                return 9007;
+            }
+
+            // Enforce `requireAdministrator` when UAC is disabled (`740` = `ERROR_ELEVATION_REQUIRED`)
+            if (rsw::EqualsIgnoreCase(prog.package.uac, "requireAdministrator")) {
+                const auto priv = rsw::QueryProcessPrivilegeState();
+                if (!priv.HasEffectiveAdminRights()) {
+                    if (!vmOpts.silentMode) {
+                        const std::wstring tit = rsw::Utf8ToWide(prog.package.name + " Setup");
+                        ::TaskDialog(nullptr, hInstance, tit.c_str(), L"Administrator Privileges Required",
+                                     L"Administrator privileges are required to install this application.",
+                                     TDCBF_CLOSE_BUTTON, TD_ERROR_ICON, nullptr);
+                    }
+                    return ERROR_ELEVATION_REQUIRED;
+                }
+            }
+
+            // Extract any embedded `RSWPAK1` (`#220`) `__support__` staging files to `%TEMP%`!
+            const std::uint8_t* pakPtr = nullptr;
+            std::size_t pakSz = 0;
+            std::filesystem::path tempSupportRoot;
+            std::error_code ec;
+            if (GetEmbeddedRcDataView(rsw::kResIdSfxOrNativeArchive, pakPtr, pakSz) && pakSz > 0) {
+                vmOpts.embeddedPakBytes = pakPtr;
+                vmOpts.embeddedPakSize  = pakSz;
+                std::vector<rsw::RswPakFileMetadata> metas;
+                std::vector<std::uint8_t> payload;
+                std::string pErr;
+                if (rsw::UnpackRswPakBytesInMemory(pakPtr, pakSz, metas, payload, pErr)) {
+                    for (const auto& m : metas) {
+                        if (m.featureId != "__support__") continue;
+                        if (tempSupportRoot.empty()) {
+                            tempSupportRoot = std::filesystem::temp_directory_path(ec) /
+                                              (L"rsw-rssc-sup-" + std::to_wstring(::GetCurrentProcessId()));
+                            vmOpts.supportDirPath = tempSupportRoot / L"_support";
+                        }
+                        const auto dst = (vmOpts.supportDirPath / rsw::Utf8ToWide(m.archiveRelPath)).lexically_normal();
+                        std::filesystem::create_directories(dst.parent_path(), ec);
+                        std::ofstream out(dst, std::ios::binary | std::ios::trunc);
+                        if (m.payloadSize > 0) {
+                            out.write(reinterpret_cast<const char*>(payload.data() + m.payloadOffset),
+                                      static_cast<std::streamsize>(m.payloadSize));
+                        }
+                    }
+                }
+            }
+
+            ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+            INITCOMMONCONTROLSEX iccRssc{sizeof(iccRssc), ICC_STANDARD_CLASSES | ICC_PROGRESS_CLASS};
+            ::InitCommonControlsEx(&iccRssc);
+
+            rsw::rssc::RaggieScriptVm vm(prog, vmOpts);
+            const auto res = vm.ExecuteFullLifecycle();
+
+            if (!res.ok && !vmOpts.silentMode) {
+                const std::wstring tit = rsw::Utf8ToWide(prog.package.name + " Setup");
+                const std::wstring msg = rsw::Utf8ToWide(res.errorMessage) +
+                    (res.rolledBack ? L"\n\nAll partial system changes were rolled back cleanly." : L"");
+                ::TaskDialog(nullptr, hInstance, tit.c_str(), L"Installation Could Not Complete",
+                             msg.c_str(), TDCBF_CLOSE_BUTTON, TD_ERROR_ICON, nullptr);
+            }
+            if (!tempSupportRoot.empty()) {
+                std::filesystem::remove_all(tempSupportRoot, ec);
+            }
+            ::CoUninitialize();
+            return res.exitCode;
         }
     }
 

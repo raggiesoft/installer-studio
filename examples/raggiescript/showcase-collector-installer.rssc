@@ -1,0 +1,58 @@
+// ================================================================================
+// FILE: examples/raggiescript/showcase-collector-installer.rssc
+// PROJECT: RaggieSoft Showcase Studio & Installer Studio — Bespoke Canvas Installer
+// WEBSITE: https://raggiesoftstudio.com/showcase-studio  |  DEV HUB: https://raggiesoft.dev
+// LICENSE: MIT License (Copyright (c) 2026 Michael P. Ragsdale / RaggieSoft)
+//
+// PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+//   What does this sample demonstrate?
+//     In **RaggieSoft Showcase Studio** (`Community` and `Architect` editions), authors
+//     can combine `use showcase;` and `use installer;` inside a single self-extracting
+//     `.exe` with an embedded `_support\` staging folder (`supportDir: "./_support"`),
+//     selectable UAC (`asInvoker`, `highestAvailable`, or `requireAdministrator`),
+//     full `fs.copy` / `reg.*` / `shortcut.create` APIs, and atomic rollback journaling—
+//     turning a painted 1990s CD-ROM autorun menu or modern Windows 11 `FluentMica`
+//     collector launchpad into a genuine, WCAG 2.2 AA accessible Windows installer!
+//
+//   Fictitious Disclaimer: All creative characters, bands, universities (CPI), and
+//   corporations referenced in RaggieSoft lore are works of fiction.
+// ================================================================================
+
+use showcase;
+use installer;
+use ui;
+
+showcase "RaggieSoft Collector Launchpad" {
+    id:         "{9D52F3C1-6E2A-4B84-AF33-524147474945}";
+    version:    1.0.0;
+    publisher:  "RaggieSoft";
+    tagline:    "Dual-Era Accessible Collector Launchpad & Self-Extracting Installer";
+    scope:      Scope.User;
+    uac:        Uac.AsInvoker;
+    supportDir: "./_support";
+    autoPlayAudio: false; // WCAG 2.2 AA rule: background audio ALWAYS starts muted!
+}
+
+param installDir: path = sys.localAppData / "RaggieSoft" / "Collector Edition";
+
+// Interactive hotspot event handlers bound to UI Automation `BUTTON` peers on the canvas
+on page("Main").show {
+    showcase.setHotspotEnabled("BtnInstall", true);
+    showcase.setHotspotBadge("BtnInstall", sys.arch() == "arm64" ? "Native ARM64" : "Native x64");
+}
+
+on hotspot("BtnReadMe").click {
+    showcase.navigate("LinerNotes");
+}
+
+on hotspot("BtnInstall").click {
+    showcase.navigate("ProgressPage");
+    ui.progress(25, "Copying collector edition files from _support...");
+    fs.mkdir(installDir);
+    if (fs.isDir(sys.supportDir)) {
+        fs.copyTree(sys.supportDir, installDir);
+    }
+    reg.writeString("HKCU", r"Software\RaggieSoft\CollectorEdition", "InstallLocation", str(installDir));
+    ui.progress(100, "Collector Edition ready!");
+    showcase.navigate("CompletePage");
+}

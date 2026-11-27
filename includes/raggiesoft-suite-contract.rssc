@@ -1,0 +1,70 @@
+// ================================================================================
+// FILE: includes/raggiesoft-suite-contract.rssc
+// PROJECT: RaggieSoft Studio — Suite Governance, Content Packs & Safe-Uninstall Helpers
+// WEBSITE: https://raggiesoftstudio.com/raggiescript  |  DEV HUB: https://raggiesoft.dev
+// LICENSE: MIT License (Copyright (c) 2026 Michael P. Ragsdale / RaggieSoft)
+//
+// PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+//   What three RaggieSoft ecosystem contracts live in this reusable `.rssc` module?
+//     1. **Dynamic Suite & Content-Pack `SystemComponent` Governance**:
+//        - Standalone apps appear normally in Windows *Installed apps*.
+//        - Content packs (such as individual books or albums) and Suite-managed child
+//          tools set `SystemComponent = 1` via `arp.setSystemComponent(...)` so a user's
+//          *Installed apps* list stays clean and uncluttered!
+//     2. **Parent/Child Content Enumeration & Removal**:
+//        - Demonstrates how a host app iterates `HKCU` / `HKLM` child content keys via
+//          `reg.listSubkeys(...)` + `for (childId in keys)` without fragile newline-split loops.
+//     3. **De-Elevated Finish Launch & Safe-Uninstall Data Preservation**:
+//        - Launches user applications at the end of an elevated setup using
+//          `Token.Desktop` (`explorer.exe` medium-integrity token duplication) so
+//          Explorer drag-and-drop works immediately.
+//        - Preserves `%LOCALAPPDATA%` personal libraries, bookmarks, and preferences
+//          during uninstall unless the user explicitly checks opt-in cleanup!
+// ================================================================================
+
+// Registers a RaggieSoft Studio offline Help Module (`.rshm.json` folder) so pressing
+// `F1` in any RaggieSoft Studio IDE opens `RaggieSoftHelp.exe` directly to that topic!
+fn registerStudioHelpModule(moduleSlug: string, helpFolder: path, perMachine: bool) : bool {
+    const hive = perMachine ? "HKLM" : "HKCU";
+    return reg.writeString(hive, r"Software\RaggieSoft\HelpModules", moduleSlug, str(helpFolder));
+}
+
+// Enumerates registered child content packs under `Software\RaggieSoft\<HostApp>\Content`
+// across both `HKLM` and `HKCU` cleanly!
+fn listRegisteredContentPacks(hostAppKeyName: string) : array {
+    const subKey = r"Software\RaggieSoft\" + hostAppKeyName + r"\Content";
+    const machinePacks = reg.listSubkeys("HKLM", subKey, view: RegView.Both);
+    const userPacks    = reg.listSubkeys("HKCU", subKey);
+    return machinePacks + userPacks;
+}
+
+// Launches an installed desktop executable safely in the interactive user's non-elevated
+// Explorer desktop token (`Token.Desktop`) so `%LOCALAPPDATA%` files are never owned by Admin!
+fn launchInstalledAppOnDesktop(exePath: path, launchArgs: string) : int {
+    if (!fs.exists(exePath)) {
+        return -1;
+    }
+    return proc.run(
+        exePath,
+        args: launchArgs,
+        wait: false,
+        hidden: false,
+        token: Token.Desktop,
+        workDir: fs.parent(exePath)
+    );
+}
+
+// Implements RaggieSoft's Safe-Uninstall pledge: removes application binaries cleanly
+// while keeping personal `%LOCALAPPDATA%` libraries/preferences intact unless `purgeUserData` is true.
+fn cleanupOptionalUserData(appFolderSlug: string, purgeUserData: bool) : bool {
+    if (!purgeUserData) {
+        log.info("Preserving user library & preferences under LocalAppData\\RaggieSoft\\${appFolderSlug}.");
+        return false;
+    }
+    const userDataDir = sys.localAppData / "RaggieSoft" / appFolderSlug;
+    if (fs.isDir(userDataDir)) {
+        fs.removeTreeIfExists(userDataDir);
+        return true;
+    }
+    return false;
+}

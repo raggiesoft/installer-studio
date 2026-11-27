@@ -1,0 +1,87 @@
+// ================================================================================
+// FILE: includes/raggiesoft-requirements.rssc
+// PROJECT: RaggieSoft Studio — Standard RaggieScript Include Library
+// WEBSITE: https://raggiesoftstudio.com/raggiescript  |  DEV HUB: https://raggiesoft.dev
+// LICENSE: MIT License (Copyright (c) 2026 Michael P. Ragsdale / RaggieSoft)
+//
+// PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+//   What is this file, and why does it exist?
+//     Every RaggieSoft desktop application and Studio tool shares the same baseline
+//     Windows 11 OS build, CPU silicon (`ARM64` vs `x64`), RAM, disk-space, and
+//     UAC privilege checks before installing files.
+//
+//     Instead of copy-pasting fragile OS and architecture checks into every project
+//     (or toggling global 32-bit/64-bit state flags), any `.rssc` script can simply write:
+//       `include "raggiesoft-requirements.rssc";`
+//     and call clean, strongly-structured helper functions!
+//
+//   Fictitious Disclaimer: Any sample brand, university, or corporate names referenced
+//   in documentation comments are works of fiction.
+// ================================================================================
+
+// Verifies that the host PC meets the minimum Windows kernel build (`22000` = Windows 11+)
+// and physical RAM floor. On failure, displays an accessible Windows 11 TaskDialog
+// (automatically skipped in `/s` silent mode) and exits with RaggieSoft code `9007`.
+fn verifyWindows11AndHardware(productTitle: string, minBuild: int, minRamMB: int) : bool {
+    // `sys.osBuild()` calls `ntdll.dll!RtlGetVersion` directly so compatibility shims never lie!
+    const currentBuild = sys.osBuild();
+    if (currentBuild < minBuild) {
+        ui.taskDialog(
+            title: "${productTitle} Setup",
+            heading: "Windows 11 or Later Is Required",
+            body: "${productTitle} requires Windows Build ${minBuild} or newer.\n\nDetected Windows Build: ${currentBuild} (${sys.arch()}).",
+            icon: Icon.Warning,
+            detailsTitle: "System compatibility details",
+            detailsBody: "Kernel Version: ${sys.osVersion()}\nTrue Silicon: ${sys.arch()}\nPrism Emulated: ${sys.isEmulatedUnderPrism()}"
+        );
+        exit(EXIT_UNSUPPORTED_OS);
+    }
+
+    // Verify physical memory (`GlobalMemoryStatusEx`) when a positive floor is requested.
+    const detectedRam = sys.ramMB();
+    if (minRamMB > 0 && detectedRam < minRamMB) {
+        ui.taskDialog(
+            title: "${productTitle} Setup",
+            heading: "Insufficient System Memory",
+            body: "${productTitle} recommends at least ${minRamMB} MB of RAM (detected ${detectedRam} MB).",
+            icon: Icon.Warning
+        );
+        exit(EXIT_UNSUPPORTED_OS);
+    }
+    return true;
+}
+
+// Verifies Administrator rights for per-machine (`C:\Program Files`) installations.
+// Handles the subtle Windows `EnableLUA = 0` case cleanly: if UAC is disabled and the
+// current account is a Standard User, Windows cannot show an elevation prompt, so we
+// explain the requirement clearly via `TaskDialogIndirect` and return Win32 `740`.
+fn ensureMachineAdminOrExplain(productTitle: string) : bool {
+    if (sys.isAdmin()) {
+        return true;
+    }
+    if (!sys.uacEnabled()) {
+        ui.taskDialog(
+            title: "${productTitle} Setup",
+            heading: "Administrator Sign-In Required",
+            body: "${productTitle} installs into Program Files, and User Account Control (UAC) elevation prompts are turned off on this computer.\n\nPlease sign in with an Administrator account and run Setup again.",
+            icon: Icon.Shield
+        );
+        exit(EXIT_ELEVATION_REQUIRED);
+    }
+    return false;
+}
+
+// Returns a structured map of true native & WOW64 system paths without mutating any global mode!
+fn querySystemPathSnapshot() : map {
+    return {
+        arch:        sys.arch(),
+        isArm64:     sys.isArm64(),
+        isEmulated:  sys.isEmulatedUnderPrism(),
+        programFiles: sys.programFiles,
+        programFilesX86: sys.programFilesX86,
+        localAppData: sys.localAppData,
+        programData: sys.programData,
+        system32:    sys.system32Dir,
+        sysWow64:    sys.sysWow64Dir
+    };
+}

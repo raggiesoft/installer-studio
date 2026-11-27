@@ -45,11 +45,11 @@ namespace {
 void PrintUsageBanner() {
     std::cout
         << rsw::kSuiteTitle << " — " << rsw::kProductTagline << " (v" << rsw::kVersionString << ")\n"
-        << "Zero-Dependency Native Win32 C++20 Compiler (`instbuild.exe` -> MSI, MSM, MST, MSP, Universal Setup.exe & VPAT 2.5)\n\n"
+        << "Zero-Dependency Native Win32 C++20 Compiler (`instbuild.exe` -> MSI, MSM, MST, MSP, RaggieScript .rssc, Universal Setup.exe & VPAT 2.5)\n\n"
         << "Usage:\n"
-        << "  instbuild.exe <project.rsip | suite.rsis> [--arch=x64|arm64] [--universal] [--with-vpat] [--out-dir=<dir>]\n"
+        << "  instbuild.exe <project.rsip | suite.rsis | script.rssc> [--arch=x64|arm64] [--universal] [--with-vpat] [--out-dir=<dir>]\n"
         << "                [--version-override=<X.Y.Z>] [--output-name=<stem>] [--universal-name=<stem>] [--web-base-url=<url>]\n"
-        << "  instbuild.exe --validate [--diagnostics=json] <project.rsip | suite.rsis> [--arch=x64|arm64]\n"
+        << "  instbuild.exe --validate [--diagnostics=json] <project.rsip | suite.rsis | script.rssc> [--arch=x64|arm64]\n"
         << "  instbuild.exe --emit-ai-spec <output-dir>\n"
         << "  instbuild.exe --emit-vpat <project.rsip> <output-dir>\n"
         << "  instbuild.exe --emit-msm <project.rsip> <output.msm> [--arch=x64|arm64]\n"
@@ -532,6 +532,81 @@ int wmain(int argc, wchar_t* argv[]) {
     }
 
     const std::filesystem::path inputPath(rsw::Utf8ToWide(positional.front()));
+
+    // Dispatch standalone `RaggieScript` (`.rssc`) compilation or `--validate` directly!
+    if (rsw::EqualsIgnoreCase(rsw::WideToUtf8(inputPath.extension().wstring()), ".rssc")) {
+        if (validateOnly) {
+            rsw::rssc::ScriptProgram prog;
+            std::vector<rsw::rssc::ScriptDiagnostic> diags;
+            std::map<std::string, std::string> defs = cliVariables;
+            if (!archOverride.empty()) defs["ARCH"] = rsw::AsciiLower(archOverride);
+            const bool ok = rsw::rssc::CompileRaggieScriptFile(inputPath, prog, diags, defs);
+            if (jsonDiagnostics) {
+                rsw::ValidationReport rep;
+                rep.manifestPath         = inputPath;
+                rep.resolvedArchitecture = defs.count("ARCH") ? defs["ARCH"] : std::string(rsw::QueryHostPlatform().NativeArchSlug());
+                for (const auto& d : diags) {
+                    rep.diagnostics.push_back({
+                        d.isError ? rsw::DiagnosticSeverity::Error : rsw::DiagnosticSeverity::Warning,
+                        d.code, d.line, "RaggieScript", "", d.message
+                    });
+                }
+                std::cout << rsw::FormatValidationReportAsJson(rep);
+            } else {
+                for (const auto& d : diags) {
+                    std::cerr << "[" << d.code << " Line " << d.line << "] " << d.message << "\n";
+                }
+                if (ok) {
+                    std::cout << "[OK] RaggieScript is valid (RSW701 & RSW702 passed): "
+                              << rsw::WideToUtf8(inputPath.wstring()) << "\n";
+                }
+            }
+            return ok ? 0 : 1;
+        }
+
+        if (universalFlag && archOverride.empty()) {
+            rsw::CompiledMsiSummary xSum{}, aSum{};
+            std::filesystem::path xExe, aExe;
+            std::string err;
+            if (!rsw::PackageRaggieScriptExecutable(inputPath, "x64", cliVariables, compilerExeDir,
+                    pkgOverrides.outDir, pkgOverrides.outputName, pkgOverrides.version, xSum, xExe, err) ||
+                !rsw::PackageRaggieScriptExecutable(inputPath, "arm64", cliVariables, compilerExeDir,
+                    pkgOverrides.outDir, pkgOverrides.outputName, pkgOverrides.version, aSum, aExe, err)) {
+                std::cerr << "[ERROR] " << err << "\n";
+                return 1;
+            }
+            rsw::RswManifestDocument univDoc;
+            univDoc.sourcePath = inputPath;
+            univDoc.SetString("Package", "", "Name",        xSum.productName);
+            univDoc.SetString("Package", "", "Version",     xSum.productVersion);
+            univDoc.SetString("Package", "", "Manufacturer", xSum.manufacturer);
+            if (!pkgOverrides.universalName.empty()) univDoc.SetString("Package", "", "UniversalOutputName", pkgOverrides.universalName);
+            if (pkgOverrides.hasWebBaseUrl) univDoc.SetString("Package", "", "UniversalDownloadBaseUrl", pkgOverrides.webBaseUrl);
+            rsw::UniversalPackageOutputs uOut{};
+            if (!rsw::PackageUniversalInstallers(univDoc, xSum, xExe, aSum, aExe, compilerExeDir, uOut, err)) {
+                std::cerr << "[ERROR] " << err << "\n";
+                return 1;
+            }
+            std::cout << "[OK] Compiled Universal RaggieScript Installers (" << xSum.productName << " v" << xSum.productVersion << "):\n"
+                      << "     X64 SETUP       : " << rsw::WideToUtf8(xExe.wstring()) << "\n"
+                      << "     ARM64 SETUP     : " << rsw::WideToUtf8(aExe.wstring()) << "\n"
+                      << "     OFFLINE UNIV EXE: " << rsw::WideToUtf8(uOut.offlineSetupExePath.wstring()) << "\n";
+            return 0;
+        }
+
+        rsw::CompiledMsiSummary sum{};
+        std::filesystem::path outExe;
+        std::string err;
+        if (!rsw::PackageRaggieScriptExecutable(inputPath, archOverride, cliVariables, compilerExeDir,
+                pkgOverrides.outDir, pkgOverrides.outputName, pkgOverrides.version, sum, outExe, err)) {
+            std::cerr << "[ERROR] " << err << "\n";
+            return 1;
+        }
+        std::cout << "[OK] Compiled RaggieScript Native Installer (" << sum.architecture << ", "
+                  << sum.fileCount << " embedded file(s)):\n"
+                  << "     SETUP: " << rsw::WideToUtf8(outExe.wstring()) << "\n";
+        return 0;
+    }
 
     // Dispatch `.rsis` Multi-Project Suite (just like `dotnet build RaggieSoft.slnx`)!
     if (rsw::IsSuiteFilePath(inputPath)) {

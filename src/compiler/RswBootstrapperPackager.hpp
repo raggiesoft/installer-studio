@@ -37,6 +37,7 @@
 #include "../common/RswNativeAndSuiteEngine.hpp"
 #include "../common/RswPlatform.hpp"
 #include "../common/RswPrerequisites.hpp"
+#include "../common/RswRaggieScript.hpp"
 #include "../common/RswVersion.hpp"
 #include "RswMsiCompiler.hpp"
 
@@ -1825,6 +1826,186 @@ inline bool PackageUnifiedSuiteExecutable(
 {
     CompiledMsiSummary unusedSummary{};
     return PackageUnifiedSuiteExecutable(doc, cliArchOverride, compilerExeDir, unusedSummary, outSuiteExePath, outError);
+}
+
+/// Compiles a standalone `RaggieScript` (`.rssc`) installer or `Showcase` custom-canvas setup
+/// directly into `<outDir>\<outStem>-setup.exe` using `SetupWizard.exe`, embedding:
+///   - `kResIdScriptBytecode` (`#225`): LZMS-compressed, SHA-256-verified `RSWBC1` bytecode
+///   - `kResIdSfxOrNativeArchive` (`#220`): Solid `RSWPAK1` LZMS payload + `_support\` staging files
+///   - Publisher `VERSIONINFO` (`RT_VERSION` `#1`), `.ico`, and UAC `RequestedExecutionLevel`!
+inline bool PackageRaggieScriptExecutable(
+    const std::filesystem::path& scriptPath,
+    std::string_view cliArchOverride,
+    const std::map<std::string, std::string>& cliDefines,
+    const std::filesystem::path& compilerExeDir,
+    const std::string& outDirOverride,
+    const std::string& outNameOverride,
+    const std::string& versionOverride,
+    CompiledMsiSummary& outSummary,
+    std::filesystem::path& outExePath,
+    std::string& outError)
+{
+    outSummary = {};
+    const std::string arch = cliArchOverride.empty()
+        ? std::string(QueryHostPlatform().NativeArchSlug())
+        : AsciiLower(cliArchOverride);
+
+    std::map<std::string, std::string> defs = cliDefines;
+    defs["ARCH"] = arch;
+
+    rssc::ScriptProgram prog;
+    std::vector<rssc::ScriptDiagnostic> diags;
+    if (!rssc::CompileRaggieScriptFile(scriptPath, prog, diags, defs)) {
+        outError = diags.empty()
+            ? ("Failed compiling RaggieScript: " + WideToUtf8(scriptPath.wstring()))
+            : ("[" + diags.front().code + " Line " + std::to_string(diags.front().line) + "] " + diags.front().message);
+        return false;
+    }
+
+    if (!versionOverride.empty()) {
+        prog.package.version = versionOverride;
+    }
+
+    std::vector<std::uint8_t> bcRaw;
+    if (!rssc::EmitRaggieScriptBytecode(prog, bcRaw, outError)) {
+        return false;
+    }
+    const std::vector<std::uint8_t> bcComp = CompressWithLzmsIfSmaller(bcRaw);
+
+    const std::filesystem::path stubTemplate = LocateSetupBootstrapperTemplate(compilerExeDir, arch);
+    if (stubTemplate.empty()) {
+        outError = "Could not locate SetupWizard.exe template binary for '" + arch + "'.";
+        return false;
+    }
+
+    std::error_code ec;
+    const std::filesystem::path baseDir = scriptPath.has_parent_path()
+        ? scriptPath.parent_path()
+        : std::filesystem::current_path();
+    auto resolveRel = [&](std::string_view raw) -> std::filesystem::path {
+        if (raw.empty()) return {};
+        const std::string exp = ExpandArchToken(raw, arch);
+        const std::filesystem::path p(Utf8ToWide(exp));
+        return (p.is_absolute() ? p : (baseDir / p)).lexically_normal();
+    };
+
+    // Harvest `package.supportDir` (`__support__`) + `payload <id> { from "..." }` into `RSWPAK1` (`#220`)!
+    std::vector<RswPakInputItem> pakItems;
+    if (!prog.package.supportDir.empty()) {
+        const auto supDir = resolveRel(prog.package.supportDir);
+        if (std::filesystem::is_directory(supDir, ec)) {
+            for (const auto& de : std::filesystem::recursive_directory_iterator(supDir, ec)) {
+                if (!de.is_regular_file(ec)) continue;
+                const auto rel = std::filesystem::relative(de.path(), supDir, ec);
+                pakItems.push_back({de.path(), WideToUtf8(rel.generic_wstring()), "__support__"});
+            }
+        }
+    }
+    for (const auto& pl : prog.payloads) {
+        const auto absSrc = resolveRel(pl.sourceGlob);
+        if (std::filesystem::is_regular_file(absSrc, ec)) {
+            pakItems.push_back({absSrc, WideToUtf8(absSrc.filename().wstring()), pl.id});
+        } else if (std::filesystem::is_directory(absSrc, ec)) {
+            if (pl.recursive) {
+                for (const auto& de : std::filesystem::recursive_directory_iterator(absSrc, ec)) {
+                    if (!de.is_regular_file(ec)) continue;
+                    const auto rel = std::filesystem::relative(de.path(), absSrc, ec);
+                    pakItems.push_back({de.path(), WideToUtf8(rel.generic_wstring()), pl.id});
+                }
+            } else {
+                for (const auto& de : std::filesystem::directory_iterator(absSrc, ec)) {
+                    if (!de.is_regular_file(ec)) continue;
+                    pakItems.push_back({de.path(), WideToUtf8(de.path().filename().wstring()), pl.id});
+                }
+            }
+        }
+    }
+
+    std::vector<std::uint8_t> pakBytes;
+    std::uint64_t uncompTotal = 0;
+    if (!pakItems.empty() && !BuildRswPakBytes(pakItems, pakBytes, uncompTotal, outError)) {
+        return false;
+    }
+
+    const std::string outStem = !outNameOverride.empty()
+        ? ExpandArchToken(outNameOverride, arch)
+        : (SlugifyName(prog.package.name) + "-" + arch);
+    const std::filesystem::path outDir = !outDirOverride.empty()
+        ? resolveRel(outDirOverride)
+        : (baseDir / L"out");
+    std::filesystem::create_directories(outDir, ec);
+    outExePath = outDir / Utf8ToWide(outStem + "-setup.exe");
+
+    outSummary.msiPath         = outExePath;
+    outSummary.architecture    = arch;
+    outSummary.productName     = prog.package.name;
+    outSummary.productVersion  = prog.package.version;
+    outSummary.manufacturer    = prog.package.publisher;
+    outSummary.upgradeCode     = prog.package.id.empty()
+        ? ComputeDeterministicComponentGuid("{A18F4E20-7C93-4D62-9B44-524147474945}", arch, "rssc:" + prog.package.name)
+        : prog.package.id;
+    outSummary.perMachine      = EqualsIgnoreCase(prog.package.scope, "machine");
+    outSummary.minWindowsBuild = prog.package.minWinBuild;
+    outSummary.iconFilePath    = resolveRel(prog.package.iconFile);
+    outSummary.fileCount       = pakItems.size();
+    outSummary.componentCount  = std::max<std::size_t>(1, prog.payloads.size());
+
+    const auto scratchStage = std::filesystem::temp_directory_path(ec) /
+                              (L"rsw-rssc-stage-" + std::to_wstring(::GetCurrentProcessId()) + L"-" + Utf8ToWide(arch) + L".exe");
+    if (!std::filesystem::copy_file(stubTemplate, scratchStage, std::filesystem::copy_options::overwrite_existing, ec)) {
+        outError = "Failed staging SetupWizard.exe template for RaggieScript packaging.";
+        return false;
+    }
+    StripExistingPeCertificates(scratchStage);
+    const auto existingLangs = QueryExistingPeManifestLangIds(scratchStage);
+
+    HANDLE hRes = ::BeginUpdateResourceW(scratchStage.wstring().c_str(), FALSE);
+    if (!hRes) {
+        std::filesystem::remove(scratchStage, ec);
+        outError = "BeginUpdateResourceW failed while packaging RaggieScript EXE.";
+        return false;
+    }
+
+    constexpr WORD kLangNeutral = MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL);
+    bool ok = ::UpdateResourceW(
+        hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdScriptBytecode), kLangNeutral,
+        const_cast<std::uint8_t*>(bcComp.data()), static_cast<DWORD>(bcComp.size()));
+    if (!pakBytes.empty()) {
+        ok = ok && ::UpdateResourceW(
+            hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdSfxOrNativeArchive), kLangNeutral,
+            pakBytes.data(), static_cast<DWORD>(pakBytes.size()));
+    }
+
+    const std::string origFile = WideToUtf8(outExePath.filename().wstring());
+    const std::string desc     = prog.package.tagline.empty() ? (prog.package.name + " Setup") : prog.package.tagline;
+    ok = ok && StampIconAndVersionOnExeResource(
+        hRes, outSummary.iconFilePath, prog.package.publisher, desc,
+        prog.package.version, outStem, origFile, prog.package.name, outError);
+    ok = ok && StampExecutionLevelManifestOnResource(hRes, existingLangs, prog.package.uac);
+
+    if (!::EndUpdateResourceW(hRes, !ok) || !ok) {
+        std::filesystem::remove(scratchStage, ec);
+        outError = "EndUpdateResourceW failed while stamping RaggieScript setup EXE.";
+        return false;
+    }
+
+    RswManifestDocument signDoc;
+    signDoc.sourcePath = scriptPath;
+    signDoc.SetString("Package", "", "Name",     prog.package.name);
+    signDoc.SetString("Package", "", "AboutUrl", prog.package.websiteUrl);
+    if (!RunAuthenticodeSignTool(signDoc, scratchStage, outError)) {
+        std::filesystem::remove(scratchStage, ec);
+        return false;
+    }
+
+    std::filesystem::remove(outExePath, ec);
+    if (!std::filesystem::copy_file(scratchStage, outExePath, std::filesystem::copy_options::overwrite_existing, ec)) {
+        std::filesystem::remove(scratchStage, ec);
+        outError = "Failed copying stamped RaggieScript Setup.exe to '" + WideToUtf8(outExePath.wstring()) + "'.";
+        return false;
+    }
+    std::filesystem::remove(scratchStage, ec);
+    return true;
 }
 
 } // namespace rsw

@@ -1,0 +1,105 @@
+// ================================================================================
+// FILE: includes/raggiesoft-runtimes.rssc
+// PROJECT: RaggieSoft Studio — Curated Pre-Install Runtime Prerequisite Helpers
+// WEBSITE: https://raggiesoftstudio.com/raggiescript  |  DEV HUB: https://raggiesoft.dev
+// LICENSE: MIT License (Copyright (c) 2026 Michael P. Ragsdale / RaggieSoft)
+//
+// PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+//   What does this reusable RaggieScript module do?
+//     Modern Windows 11 desktop apps frequently depend on Microsoft's `.NET Desktop
+//     Runtime` (`.NET 10 LTS` or `.NET 11`) and `Microsoft Edge WebView2`.
+//
+//     In legacy scripting tools, checking `.NET` across `x64`, `ARM64`, and `WOW6432Node`
+//     required dozens of stateful registry-mode toggles and `"one version less"` string
+//     comparisons. Here in `RaggieScript`, `prereq.isDotNetDesktopInstalled(major, arch)`
+//     and `prereq.isWebView2Installed()` inspect both native 64-bit and WOW64 locations
+//     statelessly in <1ms, prompt with accessible Command Links + UAC shields when
+//     needed, and latch pending reboots (`3010` / `9001`) automatically!
+// ================================================================================
+
+// Ensures the requested `.NET Desktop Runtime` (`8`, `9`, `10`, or `11`) is installed
+// for the true physical host architecture (`arm64` or `x64`).
+fn ensureDotNetDesktopRuntime(productTitle: string, majorVer: int) : bool {
+    const hostArch = sys.arch();
+    if (prereq.isDotNetDesktopInstalled(majorVer, hostArch)) {
+        log.info("Detected Microsoft .NET ${majorVer}.0 Desktop Runtime (${hostArch}).");
+        return true;
+    }
+
+    // In interactive GUI mode, offer a clear Command-Link TaskDialog with a UAC shield!
+    if (!sys.isSilent()) {
+        let choice = 0;
+        ui.taskDialog(
+            title: "${productTitle} Setup",
+            heading: "Microsoft .NET ${majorVer}.0 Desktop Runtime Needed",
+            body: "${productTitle} requires the official Microsoft .NET ${majorVer}.0 Desktop Runtime (${hostArch}) to run.",
+            icon: Icon.Shield,
+            choice: ref choice,
+            buttons: [
+                {
+                    id: 101,
+                    text: "&Download and Install .NET ${majorVer}.0 Runtime",
+                    subtitle: "Streams directly from Microsoft over HTTPS and installs silently.",
+                    shield: !sys.isAdmin()
+                },
+                {
+                    id: 102,
+                    text: "&Cancel Setup",
+                    subtitle: "Exit without making changes to this computer."
+                }
+            ]
+        );
+        if (choice != 101) {
+            exit(1602);
+        }
+    }
+
+    const presetId = "DotNet${majorVer}Desktop";
+    ui.progress(15, "Acquiring Microsoft .NET ${majorVer}.0 Desktop Runtime (${hostArch})...");
+    if (!prereq.installPreset(presetId, hostArch)) {
+        exit(EXIT_DOWNLOAD_FAILED);
+    }
+    return true;
+}
+
+// Ensures the Microsoft Edge WebView2 Evergreen Runtime is present (inspecting native
+// HKLM, WOW6432Node HKLM, and per-user HKCU EdgeUpdate client keys statelessly).
+fn ensureEdgeWebView2Runtime(productTitle: string) : bool {
+    if (prereq.isWebView2Installed()) {
+        log.info("Detected Microsoft Edge WebView2 Evergreen Runtime.");
+        return true;
+    }
+
+    if (!sys.isSilent()) {
+        let choice = 0;
+        ui.taskDialog(
+            title: "${productTitle} Setup",
+            heading: "Microsoft Edge WebView2 Runtime Needed",
+            body: "${productTitle} uses the Evergreen WebView2 component to render accessible documentation and diff views.",
+            icon: Icon.Shield,
+            choice: ref choice,
+            buttons: [
+                {
+                    id: 201,
+                    text: "&Install Microsoft Edge WebView2 Runtime",
+                    subtitle: "Installs the official Evergreen runtime from Microsoft.",
+                    shield: !sys.isAdmin()
+                },
+                {
+                    id: 202,
+                    text: "&Cancel Setup",
+                    subtitle: "Exit setup without installing."
+                }
+            ]
+        );
+        if (choice != 201) {
+            exit(1602);
+        }
+    }
+
+    ui.progress(25, "Installing Microsoft Edge WebView2 Evergreen Runtime...");
+    if (!prereq.installPreset("EdgeWebView2", sys.arch())) {
+        exit(EXIT_DOWNLOAD_FAILED);
+    }
+    return true;
+}

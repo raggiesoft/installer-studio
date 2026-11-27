@@ -71,12 +71,14 @@ foreach ($targetArch in @("arm64", "x64")) {
         "rc.exe /nologo /fo `"$objDir\RswIde.res`" `"$RepoRoot\src\ide\RswIde.rc`" || exit /b 1",
         "rc.exe /nologo /fo `"$objDir\MsiPrism.res`" `"$RepoRoot\src\prism\MsiPrism.rc`" || exit /b 1",
         "rc.exe /nologo /fo `"$objDir\RswHelp.res`" `"$RepoRoot\src\help\RswHelpViewer.rc`" || exit /b 1",
+        "rc.exe /nologo /fo `"$objDir\RswScript.res`" `"$RepoRoot\src\script\RswScript.rc`" || exit /b 1",
         "rc.exe /nologo /fo `"$objDir\Hello.res`" `"$RepoRoot\examples\hello-raggiesoft\HelloRaggieSoft.rc`" || exit /b 1",
         "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 `"$RepoRoot\src\compiler\RswBuildMain.cpp`" `"$objDir\RswBuild.res`" /Fo`"$objDir\RswBuildMain.obj`" /Fe`"$outBinDir\instbuild.exe`" /link /INCREMENTAL:NO || exit /b 1",
         "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 `"$RepoRoot\src\bootstrapper\RswSetupMain.cpp`" `"$objDir\RswSetup.res`" /Fo`"$objDir\RswSetupMain.obj`" /Fe`"$outBinDir\SetupWizard.exe`" /link /INCREMENTAL:NO /SUBSYSTEM:WINDOWS || exit /b 1",
         "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 `"$RepoRoot\src\ide\RswIdeMain.cpp`" `"$objDir\RswIde.res`" /Fo`"$objDir\RswIdeMain.obj`" /Fe`"$outBinDir\InstallerStudio.exe`" /link /INCREMENTAL:NO /SUBSYSTEM:WINDOWS || exit /b 1",
         "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 `"$RepoRoot\src\prism\MsiPrismMain.cpp`" `"$objDir\MsiPrism.res`" /Fo`"$objDir\MsiPrismMain.obj`" /Fe`"$outBinDir\msiprism.exe`" /link /INCREMENTAL:NO /SUBSYSTEM:WINDOWS || exit /b 1",
         "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 `"$RepoRoot\src\help\RswHelpMain.cpp`" `"$objDir\RswHelp.res`" /Fo`"$objDir\RswHelpMain.obj`" /Fe`"$outBinDir\RaggieSoftHelp.exe`" /link /INCREMENTAL:NO /SUBSYSTEM:WINDOWS || exit /b 1",
+        "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 `"$RepoRoot\src\script\RswScriptMain.cpp`" `"$objDir\RswScript.res`" /Fo`"$objDir\RswScriptMain.obj`" /Fe`"$outBinDir\raggiescript.exe`" /link /INCREMENTAL:NO || exit /b 1",
         "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 `"$RepoRoot\src\tests\RswSelfTests.cpp`" /Fo`"$objDir\RswSelfTests.obj`" /Fe`"$outBinDir\insttests.exe`" /link /INCREMENTAL:NO || exit /b 1",
         "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 `"$RepoRoot\examples\hello-raggiesoft\HelloRaggieSoft.cpp`" `"$objDir\Hello.res`" /Fo`"$objDir\Hello.obj`" /Fe`"$outBinDir\HelloRaggieSoft.exe`" /link /INCREMENTAL:NO /SUBSYSTEM:WINDOWS || exit /b 1"
     )

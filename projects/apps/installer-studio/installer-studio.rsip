@@ -85,6 +85,18 @@ TargetRoot            = INSTALLDIR
 TargetSubdir          = templates
 Feature               = Templates
 
+[Payload.RaggieScriptIncludes]
+Source                = ..\..\..\includes
+TargetRoot            = INSTALLDIR
+TargetSubdir          = includes
+Feature               = Templates
+
+[Payload.RaggieScriptExamples]
+Source                = ..\..\..\examples\raggiescript
+TargetRoot            = INSTALLDIR
+TargetSubdir          = examples\raggiescript
+Feature               = Templates
+
 [Payload.AiSpecs]
 Source                = ..\..\..\specs
 TargetRoot            = INSTALLDIR
@@ -110,6 +122,17 @@ TargetFile            = InstallerStudio.exe
 ContentType           = text/x-raggiesoft-rsis
 PerceivedType         = text
 Verbs                 = open:&Open Suite in Installer Studio:"%1"
+Advertise             = false
+Feature               = Main
+
+[FileAssociation.RsscScript]
+Extension             = .rssc
+ProgId                = RaggieSoft.InstallerStudio.Script
+Description           = RaggieScript Source File
+TargetFile            = InstallerStudio.exe
+ContentType           = text/x-raggiesoft-rssc
+PerceivedType         = text
+Verbs                 = open:&Open RaggieScript in Installer Studio:"%1"
 Advertise             = false
 Feature               = Main
 

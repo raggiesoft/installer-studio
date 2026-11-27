@@ -24,6 +24,8 @@
 #include "../common/RswNativeAndSuiteEngine.hpp"
 #include "../common/RswPlatform.hpp"
 #include "../common/RswPrerequisites.hpp"
+#include "../common/RswRaggieScript.hpp"
+#include "../common/RswRaggieScriptVm.hpp"
 #include "../common/RswSuiteWorkspace.hpp"
 #include "../common/RswVersion.hpp"
 #include "../common/RswWcagContrast.hpp"
@@ -1692,6 +1694,303 @@ int wmain() {
             Check(instOk && uninstRc == ERROR_SUCCESS && !std::filesystem::exists(installedExe),
                   "Live MsiInstallProductW + MsiConfigureProductExW(INSTALLSTATE_ABSENT) full round-trip",
                   "inst=" + std::to_string(instRc) + " uninst=" + std::to_string(uninstRc));
+        }
+    }
+
+    // ============================================================================
+    // 7. RAGGIESCRIPT (`.rssc`) COMPILER, `RSW701`/`RSW702`, `RSWBC1` BYTECODE,
+    //    15-NAMESPACE WIN32 VM, FAULT-INJECTED ROLLBACK, `raggiescript.exe`, & `Setup.exe`!
+    // ============================================================================
+    {
+        const auto rsscWorkDir = testWorkDir / L"raggiescript-suite";
+        std::filesystem::create_directories(rsscWorkDir, ec);
+
+        // Enable virtual registry store if running inside zero-HKCU sandbox
+        bool rsscVirtReg = false;
+        {
+            HKEY hProbe = nullptr;
+            if (::RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\RaggieSoft\\_RsscProbe", 0, nullptr, 0, KEY_WRITE, nullptr, &hProbe, nullptr) == ERROR_SUCCESS) {
+                ::RegCloseKey(hProbe);
+                ::RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\RaggieSoft\\_RsscProbe");
+            } else {
+                const auto vr = rsscWorkDir / L"virt-reg";
+                std::filesystem::create_directories(vr, ec);
+                ::SetEnvironmentVariableW(L"RSW_TEST_REG_STORE_DIR", vr.wstring().c_str());
+                rsscVirtReg = true;
+            }
+        }
+
+        // 7a. Expressions, Raw Strings, `${...}` Interpolation, `#if/#elif`, `SemVer` `<`/`>=`, `ref` params, & `KEY:VAL` CLI Lock!
+        {
+            const std::string langSrc = R"RSSC(
+                #if CHANNEL == "Preview"
+                const channelTag = "preview";
+                #elif CHANNEL == "Stable"
+                const channelTag = "stable";
+                #else
+                const channelTag = "dev";
+                #endif
+
+                param targetTag: string = "default";
+
+                fn bumpCounter(outSlot, delta: int) : int {
+                    outSlot += delta;
+                    return outSlot;
+                }
+
+                let counter = 10;
+                bumpCounter(ref counter, 15);
+
+                let sum = 0;
+                for (n in [2, 4, 6, 8]) {
+                    sum += n;
+                }
+
+                let loops = 0;
+                repeat {
+                    loops += 1;
+                } until (loops >= 3);
+
+                let caughtText = "";
+                try {
+                    throw "RecoverableFault";
+                } catch (e) {
+                    caughtText = e;
+                }
+
+                const verCheckOk = (v"7.0.1" < v"7.0.2") && (v"10.0.22000" <= sys.osVersion()) && (1.2.0 == v"1.2.0");
+                const rawRegKey  = r"SOFTWARE\RaggieSoft\Book Reader";
+                print("Summary:${channelTag}|${targetTag}|${counter}|${sum}|${loops}|${caughtText}|${verCheckOk}|${rawRegKey}");
+            )RSSC";
+
+            rsw::rssc::ScriptProgram prog;
+            std::vector<rsw::rssc::ScriptDiagnostic> diags;
+            const bool compiled = rsw::rssc::CompileRaggieScriptText(
+                langSrc, rsscWorkDir / L"lang-check.rssc", prog, diags, {{"CHANNEL", "Stable"}});
+
+            rsw::rssc::VmExecutionOptions vopts{};
+            vopts.silentMode = true;
+            vopts.cliProperties["targetTag"] = "locked-enterprise";
+            vopts.lockedCliProperties.insert("targetTag");
+            rsw::rssc::RaggieScriptVm vm(prog, vopts);
+            const auto res = compiled ? vm.ExecuteFullLifecycle() : rsw::rssc::VmExecutionResult{false};
+
+            const std::string expectedLine =
+                "Summary:stable|locked-enterprise|25|20|3|RecoverableFault|true|SOFTWARE\\RaggieSoft\\Book Reader";
+            Check(compiled && res.ok && !res.consoleLines.empty() && res.consoleLines.back() == expectedLine,
+                  "RaggieScript (#if/#elif, ${...} interpolation, r\"...\" raw strings, SemVer <, ref out-params, repeat/until, try/catch)",
+                  res.errorMessage + (res.consoleLines.empty() ? "" : (" got=" + res.consoleLines.back())));
+
+            // Prove `KEY:VALUE` immutable CLI lock blocks script reassignment!
+            const std::string lockViolationSrc = "param lockedDir: string = \"A\";\nlockedDir = \"B\";\n";
+            rsw::rssc::ScriptProgram lockProg;
+            rsw::rssc::CompileRaggieScriptText(lockViolationSrc, {}, lockProg, diags);
+            rsw::rssc::VmExecutionOptions lockOpts{};
+            lockOpts.cliProperties["lockedDir"] = "C:\\CorporatePolicy";
+            lockOpts.lockedCliProperties.insert("lockedDir");
+            rsw::rssc::RaggieScriptVm lockVm(lockProg, lockOpts);
+            const auto lockRes = lockVm.ExecuteFullLifecycle();
+            Check(!lockRes.ok && lockRes.errorMessage.find("const") != std::string::npos,
+                  "RaggieScript enforces immutable CLI hard-lock ('KEY:VALUE') against script reassignment");
+        }
+
+        // 7b. Compile-Time `RSW701` (Wizard Phase Isolation incl. transitive `fn` calls!) & `RSW702` (Training Sandbox)
+        {
+            const std::string badWizardSrc = R"RSSC(
+                use installer;
+                fn sneakyMutator() {
+                    reg.writeString("HKCU", r"Software\RaggieSoft\Bad", "Flag", "1");
+                }
+                wizard {
+                    step Welcome {
+                        sneakyMutator();
+                    }
+                }
+            )RSSC";
+            rsw::rssc::ScriptProgram badWizProg;
+            std::vector<rsw::rssc::ScriptDiagnostic> wizDiags;
+            const bool wizAccepted = rsw::rssc::CompileRaggieScriptText(badWizardSrc, {}, badWizProg, wizDiags);
+            bool saw701 = false;
+            for (const auto& d : wizDiags) if (d.code == "RSW701") saw701 = true;
+            Check(!wizAccepted && saw701,
+                  "RaggieScript static analyzer (RSW701) rejects transitive system mutations inside wizard { ... } at compile time");
+
+            const std::string badTrainingSrc = R"RSSC(
+                use training;
+                let secret = fs.readText(r"C:\Windows\win.ini");
+            )RSSC";
+            rsw::rssc::ScriptProgram badTrProg;
+            std::vector<rsw::rssc::ScriptDiagnostic> trDiags;
+            const bool trAccepted = rsw::rssc::CompileRaggieScriptText(badTrainingSrc, {}, badTrProg, trDiags);
+            bool saw702 = false;
+            for (const auto& d : trDiags) if (d.code == "RSW702") saw702 = true;
+            Check(!trAccepted && saw702,
+                  "RaggieScript capability sandbox (RSW702) blocks filesystem/network/registry calls under 'use training;'");
+        }
+
+        // 7c. `RSWBC1` Binary Bytecode Round-Trip, SHA-256 Tamper Detection, & Disassembler
+        {
+            const std::filesystem::path sampleRssc = binDir / L".." / L".." / L"examples" / L"raggiescript" / L"sample-workbench-setup.rssc";
+            rsw::rssc::ScriptProgram origProg, loadedProg;
+            std::vector<rsw::rssc::ScriptDiagnostic> diags;
+            std::vector<std::uint8_t> bcBytes;
+            std::string bcErr, tamperErr;
+            const bool compOk = rsw::rssc::CompileRaggieScriptFile(sampleRssc, origProg, diags);
+            const bool emitOk = compOk && rsw::rssc::EmitRaggieScriptBytecode(origProg, bcBytes, bcErr);
+            const bool loadOk = emitOk && rsw::rssc::LoadRaggieScriptBytecode(bcBytes.data(), bcBytes.size(), loadedProg, bcErr);
+
+            // Flip 1 bit in the `RSWBC1` instruction stream and verify SHA-256 rejects it!
+            std::vector<std::uint8_t> tampered = bcBytes;
+            if (tampered.size() > 52) tampered.back() ^= 0xFFu;
+            rsw::rssc::ScriptProgram dummyProg;
+            const bool tamperRejected = !rsw::rssc::LoadRaggieScriptBytecode(tampered.data(), tampered.size(), dummyProg, tamperErr);
+            const std::string disasmTxt = rsw::rssc::DisassembleRaggieScriptProgram(loadedProg);
+
+            Check(compOk && emitOk && loadOk && tamperRejected &&
+                  loadedProg.package.name == "RaggieSoft Sample Workbench" &&
+                  disasmTxt.find("RSW701 Side-Effect-Free Verified") != std::string::npos,
+                  "RSWBC1 bytecode compiler + SHA-256 tamper rejection + disassembler round-trip cleanly",
+                  bcErr);
+        }
+
+        // 7d. Fault-Injected Transactional Rollback across Files, Overwritten `.rswbak`, INI, & Registry!
+        {
+            const auto rbDir = rsscWorkDir / L"rollback-target";
+            std::filesystem::create_directories(rbDir, ec);
+            {
+                std::ofstream origOut(rbDir / L"ExistingConfig.txt", std::ios::binary | std::ios::trunc);
+                origOut << "PRESERVE_ME_V1";
+            }
+
+            const std::string rbScript = R"RSSC(
+                use installer;
+                param installDir: path = "";
+                install {
+                    fs.writeText(installDir / "ExistingConfig.txt", "CORRUPTED_PARTIAL_V2");
+                    fs.writeText(installDir / "SubFolder" / "PartialNewFile.txt", "SHOULD_VANISH");
+                    ini.write(installDir / "app.ini", "Setup", "Stage", "Halfway");
+                    reg.writeString("HKCU", r"Software\RaggieSoft\RsscRollbackSelfTest", "Marker", "Partial");
+                    fs.writeText(installDir / "TriggerFaultFile.txt", "BOOM");
+                }
+            )RSSC";
+
+            rsw::rssc::ScriptProgram rbProg;
+            std::vector<rsw::rssc::ScriptDiagnostic> rbDiags;
+            rsw::rssc::CompileRaggieScriptText(rbScript, {}, rbProg, rbDiags);
+
+            rsw::rssc::VmExecutionOptions rbOpts{};
+            rbOpts.silentMode            = true;
+            rbOpts.cliProperties["installDir"] = rsw::WideToUtf8(rbDir.wstring());
+            rbOpts.simulateFaultAfterOps = 5; // Fault right on the 5th mutating op (`TriggerFaultFile.txt`)!
+
+            rsw::rssc::RaggieScriptVm rbVm(rbProg, rbOpts);
+            const auto rbRes = rbVm.ExecuteFullLifecycle();
+
+            std::vector<std::uint8_t> restoredBytes;
+            std::string readErr;
+            rsw::ReadBinaryFileBytes(rbDir / L"ExistingConfig.txt", restoredBytes, readErr);
+            const std::string restoredText(restoredBytes.begin(), restoredBytes.end());
+
+            Check(!rbRes.ok && rbRes.rolledBack &&
+                  restoredText == "PRESERVE_ME_V1" &&
+                  !std::filesystem::exists(rbDir / L"SubFolder" / L"PartialNewFile.txt", ec) &&
+                  !std::filesystem::exists(rbDir / L"TriggerFaultFile.txt", ec) &&
+                  !std::filesystem::exists(rbDir / L".rsw-rollback.jnl", ec),
+                  "RaggieScript transactional rollback journal restores overwritten .rswbak files & cleans partial dirs/keys on fault",
+                  "restored='" + restoredText + "' err=" + rbRes.errorMessage);
+        }
+
+        // 7e. End-to-End `raggiescript.exe pack-exe` Micro-App (with `_support\`) & `instbuild.exe <.rssc>` -> `Setup.exe` + `Uninstall.exe`!
+        {
+            auto runCli = [](const std::filesystem::path& exe, const std::wstring& cliArgs) -> DWORD {
+                std::wstring cmd = L"\"" + exe.wstring() + L"\" " + cliArgs;
+                STARTUPINFOW si{sizeof(si)};
+                PROCESS_INFORMATION pi{};
+                if (!::CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+                    return 9999u;
+                }
+                ::WaitForSingleObject(pi.hProcess, 25000);
+                DWORD code = 9998u;
+                ::GetExitCodeProcess(pi.hProcess, &code);
+                ::CloseHandle(pi.hThread);
+                ::CloseHandle(pi.hProcess);
+                return code;
+            };
+
+            const auto raggiescriptExe = binDir / L"raggiescript.exe";
+            const auto instbuildExe    = binDir / L"instbuild.exe";
+
+            // 1. Test `raggiescript.exe pack-exe` with an embedded `_support\seed.json` directory!
+            const auto microDir = rsscWorkDir / L"micro-app";
+            std::filesystem::create_directories(microDir / L"_support", ec);
+            {
+                std::ofstream sf(microDir / L"_support" / L"seed.json", std::ios::binary);
+                sf << "{\"edition\":\"Architect\",\"parity\":true}";
+            }
+            const auto microOutMarker = rsscWorkDir / L"micro-app-output.txt";
+            {
+                std::ofstream ms(microDir / L"micro.rssc", std::ios::binary);
+                ms << "app \"RaggieScript Micro Utility\" {\n"
+                   << "  version: 1.0.0;\n"
+                   << "  publisher: \"RaggieSoft\";\n"
+                   << "  supportDir: \"./_support\";\n"
+                   << "}\n"
+                   << "param outFile: path = \"\";\n"
+                   << "const cfg = fs.readJson(sys.supportDir / \"seed.json\");\n"
+                   << "fs.writeText(outFile, \"Edition=${cfg.edition}|Parity=${cfg.parity}|Arch=${sys.arch()}\");\n";
+            }
+            const auto packedMicroExe = microDir / L"MicroUtility.exe";
+            const DWORD packRc = runCli(raggiescriptExe, L"pack-exe \"" + (microDir / L"micro.rssc").wstring() + L"\" \"" + packedMicroExe.wstring() + L"\"");
+            const DWORD runPackedRc = (packRc == 0)
+                ? runCli(packedMicroExe, L"outFile=\"" + microOutMarker.wstring() + L"\"")
+                : 1u;
+            std::vector<std::uint8_t> microBytes;
+            std::string microErr;
+            rsw::ReadBinaryFileBytes(microOutMarker, microBytes, microErr);
+            const std::string microTxt(microBytes.begin(), microBytes.end());
+            Check(packRc == 0 && runPackedRc == 0 && microTxt.find("Edition=Architect|Parity=true|Arch=") == 0,
+                  "raggiescript.exe pack-exe compiles standalone zero-dependency Windows .exe micro-app with embedded _support\\ payload",
+                  "packRc=" + std::to_string(packRc) + " runRc=" + std::to_string(runPackedRc) + " out=" + microTxt);
+
+            // 2. Test `instbuild.exe sample-workbench-setup.rssc` -> `<Product>-setup.exe /s` -> `Uninstall.exe --native-uninstall /s`!
+            const auto sampleScriptPath = binDir / L".." / L".." / L"examples" / L"raggiescript" / L"sample-workbench-setup.rssc";
+            const auto rsscPkgOutDir    = rsscWorkDir / L"pkg-out";
+            const auto rsscLiveInstDir  = rsscWorkDir / L"live-installed-workbench";
+            const auto rsscLogFile      = rsscWorkDir / L"install.log";
+
+            const DWORD valJsonRc = runCli(instbuildExe, L"--validate --diagnostics=json \"" + sampleScriptPath.wstring() + L"\"");
+            const DWORD bldRsscRc = runCli(
+                instbuildExe,
+                L"\"" + sampleScriptPath.wstring() + L"\" --out-dir=\"" + rsscPkgOutDir.wstring() +
+                L"\" --output-name=sample-workbench-" + rsw::Utf8ToWide(hostArch));
+            const auto builtSetupExe = rsscPkgOutDir / (L"sample-workbench-" + rsw::Utf8ToWide(hostArch) + L"-setup.exe");
+
+            const DWORD instRsscRc = (bldRsscRc == 0 && std::filesystem::exists(builtSetupExe, ec))
+                ? runCli(builtSetupExe, L"/s /l=\"" + rsscLogFile.wstring() + L"\" installDir=\"" + rsscLiveInstDir.wstring() + L"\"")
+                : 1u;
+
+            const bool installedCleanly =
+                (valJsonRc == 0) &&
+                (instRsscRc == 0) &&
+                std::filesystem::exists(rsscLiveInstDir / L"ReadMe.txt", ec) &&
+                std::filesystem::exists(rsscLiveInstDir / L"workbench.config.json", ec) &&
+                std::filesystem::exists(rsscLiveInstDir / L"settings.ini", ec) &&
+                std::filesystem::exists(rsscLiveInstDir / L"Uninstall.exe", ec) &&
+                std::filesystem::exists(rsscLiveInstDir / L"Uninstall.rswm", ec);
+
+            std::string unErr;
+            const bool uninstalledCleanly = installedCleanly &&
+                rsw::ExecuteNativeUninstallFromMeta(rsscLiveInstDir / L"Uninstall.rswm", false, unErr) &&
+                !std::filesystem::exists(rsscLiveInstDir / L"workbench.config.json", ec) &&
+                !std::filesystem::exists(rsscLiveInstDir / L"ReadMe.txt", ec);
+
+            Check(installedCleanly && uninstalledCleanly,
+                  "instbuild.exe compiles .rssc -> Setup.exe (#225 RSWBC1 + #220 RSWPAK1), installs silently, & uninstalls cleanly via Uninstall.rswm",
+                  "bld=" + std::to_string(bldRsscRc) + " inst=" + std::to_string(instRsscRc) + " unErr=" + unErr);
+        }
+
+        if (rsscVirtReg) {
+            ::SetEnvironmentVariableW(L"RSW_TEST_REG_STORE_DIR", nullptr);
         }
     }
 
