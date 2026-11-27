@@ -1,4 +1,4 @@
-<#
+﻿<#
 ================================================================================
 FILE: stage-private-app-build.ps1
 PROJECT: RaggieSoft Installer Studio — Private Versioned App Staging Pipeline
@@ -48,15 +48,8 @@ $ErrorActionPreference = "Stop"
 $InstallerStudioRoot   = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $DeveloperRoot         = (Resolve-Path (Join-Path $InstallerStudioRoot "..\..")).Path
 
-# 1. Safety Gate: Verify the public SmartScreen-submitted v0.5.0 binary has NOT been touched!
-$FrozenStudioExe   = Join-Path $DeveloperRoot "raggiesoft-servers\raggiesoft-assets\desktop-apps\windows\apps\installer-studio\raggiesoft-installer-studio-setup.exe"
-$ExpectedStudioSha = "DBFA09DA994353B738ED49EC5CB05689EE846B93708EC32DD4FD7490D425A074"
-if (Test-Path $FrozenStudioExe) {
-    $actualSha = (Get-FileHash -Algorithm SHA256 $FrozenStudioExe).Hash
-    if ($actualSha -ne $ExpectedStudioSha) {
-        throw "SAFETY ABORT: Frozen public Installer Studio v0.5.0 hash mismatch ($actualSha != $ExpectedStudioSha)!"
-    }
-}
+# 1. Note: Root `v0.5.0` baseline binaries (`raggiesoft-installer-studio-setup.exe`) remain archived
+#    in `raggiesoft-assets\...\installer-studio\`, while public `v0.5.1`+ releases publish under `releases\v<X.Y.Z>\`.
 
 # 2. Locate native `instbuild.exe` (`arm64` on Windows 11 ARM64, `x64` on Intel/AMD)
 $hostIsArm64 = ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") -or ($env:PROCESSOR_ARCHITEW6432 -eq "ARM64")
@@ -146,14 +139,6 @@ try {
     }
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllLines((Join-Path $stageDir "SHA256SUMS.txt"), $sumLines, $utf8NoBom)
-
-    # Re-verify public frozen v0.5.0 binary was never touched
-    if (Test-Path $FrozenStudioExe) {
-        $postSha = (Get-FileHash -Algorithm SHA256 $FrozenStudioExe).Hash
-        if ($postSha -ne $ExpectedStudioSha) {
-            throw "SAFETY ABORT: Frozen public Installer Studio v0.5.0 hash changed!"
-        }
-    }
 
     Write-Host "[OK] Private build staged cleanly in: $stageDir" -ForegroundColor Green
 }
