@@ -379,6 +379,7 @@ inline void ApplySyntaxHighlightingToRichEdit(
     bool& ioSuppressChangeGuard)
 {
     if (!hRichEdit || !::IsWindow(hRichEdit)) return;
+    const bool wasVisible = (::IsWindowVisible(hRichEdit) != FALSE);
     const SyntaxPalette pal = SyntaxPalette::FromTheme(theme);
 
     ioSuppressChangeGuard = true;
@@ -438,7 +439,11 @@ inline void ApplySyntaxHighlightingToRichEdit(
     ::SendMessageW(hRichEdit, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&savedSel));
     ::SendMessageW(hRichEdit, EM_SETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&savedScroll));
     ::SendMessageW(hRichEdit, WM_SETREDRAW, TRUE, 0);
-    ::InvalidateRect(hRichEdit, nullptr, TRUE);
+    if (!wasVisible) {
+        ::ShowWindow(hRichEdit, SW_HIDE);
+    } else {
+        ::InvalidateRect(hRichEdit, nullptr, TRUE);
+    }
     ::SendMessageW(hRichEdit, EM_SETEVENTMASK, 0, prevMask);
     ioSuppressChangeGuard = false;
 }
