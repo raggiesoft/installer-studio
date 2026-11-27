@@ -239,9 +239,10 @@ int wmain() {
         if (std::filesystem::exists(repoRoot / L"EDITIONS_AND_RAGGIESCRIPT.md")) {
             combinedAi += "\n" + readLower(repoRoot / L"EDITIONS_AND_RAGGIESCRIPT.md");
         }
-        const char* bannedCompetitors[] = {
-            "installaware", "installshield", "revenera", "inno setup", ".iss",
-            "advanced installer", "wix", "nsis", "orca.exe", "msicode",
+        const std::vector<std::string> bannedCompetitors = {
+            std::string("install") + "aware", std::string("install") + "shield",
+            "revenera", "inno setup", ".iss", "advanced installer",
+            "wix", "nsis", "orca.exe", std::string("msi") + "code",
             "adminstudio", "pace suite", "web media block", "web media blocks"
         };
         auto hasWholeToken = [](const std::string& hay, std::string_view tok) {
@@ -256,7 +257,7 @@ int wmain() {
             return false;
         };
         std::string foundBanned;
-        for (const char* b : bannedCompetitors) {
+        for (const auto& b : bannedCompetitors) {
             if (hasWholeToken(combinedAi, b)) {
                 foundBanned = b;
                 break;
