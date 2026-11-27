@@ -6,10 +6,9 @@
 //
 // PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
 //   What is this file, and why does it make our C++ installers look so good?
-//     In legacy installer tools (like Delphi VCL `.dfm` forms), building modern
-//     rounded cards, glowing headers, step medallions, and vector badges required
-//     baking dozens of static `.png` images offline with Python scripts—and worse,
-//     legacy VCL radio controls (`TRzRadioButton` + `TGlowLabel`) split each option
+//     In older installer frameworks, building modern rounded cards, glowing headers,
+//     step medallions, and vector badges required baking dozens of static `.png`
+//     images offline—and worse, older wizard toolkits often split radio options
 //     into an unlabeled 15-pixel dot and separate non-focusable text labels,
 //     failing strict WCAG 2.2 AA / Section 508 screen-reader and target-size rules!
 //

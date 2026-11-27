@@ -80,6 +80,7 @@ function resolveToolBinary(exeName, docUri) {
     let cur = path.dirname(docUri.fsPath);
     for (let depth = 0; depth < 6; depth++) {
       candidates.push(path.join(cur, "bin", hostArch, exeName));
+      candidates.push(path.join(cur, "desktop-apps", "raggiescript", "bin", hostArch, exeName));
       candidates.push(path.join(cur, "desktop-apps", "installer-studio", "bin", hostArch, exeName));
       const parent = path.dirname(cur);
       if (parent === cur) break;
@@ -89,6 +90,7 @@ function resolveToolBinary(exeName, docUri) {
   if (vscode.workspace.workspaceFolders) {
     for (const wf of vscode.workspace.workspaceFolders) {
       candidates.push(path.join(wf.uri.fsPath, "bin", hostArch, exeName));
+      candidates.push(path.join(wf.uri.fsPath, "desktop-apps", "raggiescript", "bin", hostArch, exeName));
       candidates.push(path.join(wf.uri.fsPath, "desktop-apps", "installer-studio", "bin", hostArch, exeName));
     }
   }

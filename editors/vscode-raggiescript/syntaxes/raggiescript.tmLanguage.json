@@ -155,7 +155,7 @@
           }
         },
         {
-          "match": "\\b(package|showcase|app|feature|payload)\\s+(\"[A-Za-z0-9_.:\\s-]*\"|[A-Za-z_][A-Za-z0-9_]*)",
+          "match": "\\b(package|showcase|app|feature|payload|struct|enum)\\s+(\"[A-Za-z0-9_.:\\s-]*\"|[A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
             "1": {
               "name": "keyword.declaration.raggiescript"
@@ -197,7 +197,7 @@
         },
         {
           "name": "keyword.control.flow.raggiescript",
-          "match": "\\b(if|elif|else|for|in|while|repeat|until|break|continue|return|try|catch|throw|exit)\\b"
+          "match": "\\b(if|elif|else|for|in|while|repeat|until|match|break|continue|return|try|catch|throw|exit)\\b"
         },
         {
           "name": "storage.modifier.raggiescript",
@@ -208,7 +208,7 @@
     "namespaces_and_calls": {
       "patterns": [
         {
-          "match": "\\b(sys|fs|reg|ini|xml|json|str|regex|archive|crypto|net|proc|ffi|msi|prereq|shortcut|shell|env|arp|svc|task|firewall|acl|ui|wizard|feature|compile|payload|showcase|log|product)\\.([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+          "match": "\\b(sys|fs|reg|ini|xml|json|str|regex|array|archive|crypto|net|proc|rm|ffi|msi|prereq|shortcut|shell|env|arp|svc|task|firewall|acl|ui|wizard|feature|compile|payload|showcase|training|a11y|localization|document|launcher|help|Validation|log|product)\\.([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
           "captures": {
             "1": {
               "name": "support.class.namespace.raggiescript"

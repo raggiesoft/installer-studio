@@ -20,8 +20,8 @@
 //          `4px` Multi-Stop Accent Bar, `Hero Brand Card`, and `48x48` double-rimmed
 //          squircle Option Badges dynamically at any DPI (`100%`–`200%+`)!
 //     2. **True Accessible `BS_AUTORADIOBUTTON` Subclassing (`SetWindowSubclass`)**:
-//        - Legacy Delphi VCL installers used unlabeled `15px` radio dots next to
-//          non-focusable `TGlowLabel` text, failing screen readers and target-size
+//        - Older Windows setup wizards often used unlabeled `15px` radio dots next to
+//          non-focusable static text, failing screen readers and target-size
 //          accessibility rules.
 //        - Also note a subtle Win32 trap: combining `BS_OWNERDRAW` (`0x0B`) with
 //          `BS_AUTORADIOBUTTON` (`0x09`) overwrites the low 4 style bits (`BS_TYPEMASK`),
