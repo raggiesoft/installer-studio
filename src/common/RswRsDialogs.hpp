@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "RswGlassRenderer.hpp"
 #include "RswPlatform.hpp"
 #include "RswWin32UiTheme.hpp"
 
@@ -461,7 +462,7 @@ inline int ExecuteRsDialog(
         posX, posY, winW, winH, parentHwnd, nullptr, hInst, &st);
     if (!hWnd) return kResultCancel;
 
-    if (st.theme.isDark && !st.theme.isHighContrast) {
+    if (st.theme.isDarkMode && !st.theme.isHighContrast) {
         const BOOL dark = TRUE;
         ::DwmSetWindowAttribute(hWnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof(dark));
     }

@@ -30,6 +30,7 @@ package "Commonwealth Poly Lab Toolkit" {
     scope:     Scope.User;
     uac:       Uac.AsInvoker;
     style:     "aerowizard";
+    hideFromInstalledApps: true;
 }
 
 param installDir: path        = sys.localAppData / "RaggieSoft" / "Poly Lab Toolkit";
@@ -90,10 +91,16 @@ wizard {
 install {
     fs.mkdir(installDir);
     fs.writeJson(installDir / "install-profile.json", {
-        user:        userName,
+        user:         userName,
         organization: orgName,
-        mode:        setupMode,
-        addedToPath: addCliToPath,
-        desktopLink: createDesktopLink
+        mode:         setupMode,
+        addedToPath:  addCliToPath,
+        desktopLink:  createDesktopLink
     });
+    RsFinish(
+        "Commonwealth Poly Lab Toolkit Installed",
+        "Setup has finished installing Commonwealth Poly Lab Toolkit v0.7.0 on your workstation.",
+        ref launchAfterSetup,
+        ref viewReleaseNotes
+    );
 }

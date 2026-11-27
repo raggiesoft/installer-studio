@@ -2258,37 +2258,39 @@ int wmain() {
                 const bool tkCompOk = rsw::rssc::CompileRaggieScriptFile(turnkeyScript, tkProg, tkDiags);
 
                 rsw::rssc::VmExecutionOptions tkOpts{};
-                tkOpts.forceInteractiveRsDialogs = true;
-                auto mkStep = [](int res, std::string t1 = "", std::string t2 = "", std::string choice = "") {
-                    rsw::rsdialogs::RsDialogMockStep s{};
-                    s.result     = res;
-                    s.acceptLic  = true;
-                    s.text1      = std::move(t1);
-                    s.text2      = std::move(t2);
-                    s.choiceId   = std::move(choice);
+                tkOpts.silentMode = false;
+                tkOpts.cliProperties["installDir"] = rsw::WideToUtf8(turnkeyDest.wstring());
+                auto mkStep = [](int rc, std::string a = "", std::string b = "", std::vector<bool> opts = {}) {
+                    rsw::rssc::rsdlg::RsDialogMockStep s{};
+                    s.returnCode   = rc;
+                    s.boolA        = true;
+                    s.strA         = std::move(a);
+                    s.strB         = std::move(b);
+                    s.optionChecks = std::move(opts);
                     return s;
                 };
                 tkOpts.mockDialogSteps = {
-                    mkStep(rsw::rsdialogs::kResultNext),                                               // 1. RsWelcome
-                    mkStep(rsw::rsdialogs::kResultNext),                                               // 2. RsLicense
-                    mkStep(rsw::rsdialogs::kResultNext, "Ada Lovelace", "RaggieSoft Engineering Lab"), // 3. RsUserInfo
-                    mkStep(rsw::rsdialogs::kResultNext, "", "", "custom"),                             // 4. RsSetupType -> custom!
-                    mkStep(rsw::rsdialogs::kResultNext, rsw::WideToUtf8(turnkeyDest.wstring())),       // 5. RsSelectDestDir
-                    mkStep(rsw::rsdialogs::kResultBack),                                               // 6. RsAskOptions -> `< Back` rewinds to StepDestination!
-                    mkStep(rsw::rsdialogs::kResultNext, rsw::WideToUtf8(turnkeyDest.wstring())),       // 7. RsSelectDestDir (re-visited!)
-                    mkStep(rsw::rsdialogs::kResultNext),                                               // 8. RsAskOptions -> Next
-                    mkStep(rsw::rsdialogs::kResultNext),                                               // 9. RsReadyToInstall -> Install!
-                    mkStep(rsw::rsdialogs::kResultNext)                                                // 10. RsFinish
+                    mkStep(rsw::rssc::rsdlg::kResultNext),                                               // 1. RsWelcome
+                    mkStep(rsw::rssc::rsdlg::kResultNext),                                               // 2. RsLicense
+                    mkStep(rsw::rssc::rsdlg::kResultNext, "Ada Lovelace", "RaggieSoft Engineering Lab"), // 3. RsUserInfo
+                    mkStep(rsw::rssc::rsdlg::kResultNext, "custom"),                                     // 4. RsSetupType -> custom!
+                    mkStep(rsw::rssc::rsdlg::kResultNext, rsw::WideToUtf8(turnkeyDest.wstring())),       // 5. RsSelectDestDir
+                    mkStep(rsw::rssc::rsdlg::kResultBack),                                               // 6. RsAskOptions -> `< Back` rewinds to CustomFolder!
+                    mkStep(rsw::rssc::rsdlg::kResultNext, rsw::WideToUtf8(turnkeyDest.wstring())),       // 7. RsSelectDestDir (re-visited!)
+                    mkStep(rsw::rssc::rsdlg::kResultNext, "", "", {true, true}),                         // 8. RsAskOptions -> Next
+                    mkStep(rsw::rssc::rsdlg::kResultNext),                                               // 9. RsReadyToInstall -> Install!
+                    mkStep(rsw::rssc::rsdlg::kResultNext)                                                // 10. RsFinish
                 };
 
                 bool tkRunOk = false;
                 std::string tkJson;
                 std::size_t visitedCount = 0;
+                std::string tkVmErr;
                 if (tkCompOk) {
                     rsw::rssc::RaggieScriptVm tkVm(tkProg, tkOpts);
-                    tkVm.GlobalScope().Declare("installDir", rsw::rssc::Value::FromPath(turnkeyDest), false);
-                    const auto tkRes = tkVm.ExecuteFullInstaller();
-                    visitedCount = tkVm.VisitedRsDialogs().size();
+                    const auto tkRes = tkVm.ExecuteFullLifecycle();
+                    visitedCount = tkRes.visitedRsDialogs.size();
+                    tkVmErr      = tkRes.errorMessage;
                     std::vector<std::uint8_t> profBytes;
                     rsw::ReadBinaryFileBytes(turnkeyDest / L"install-profile.json", profBytes, surgErr);
                     tkJson  = std::string(profBytes.begin(), profBytes.end());
@@ -2296,11 +2298,11 @@ int wmain() {
                               visitedCount == 10 &&
                               (tkJson.find("Ada Lovelace") != std::string::npos) &&
                               (tkJson.find("RaggieSoft Engineering Lab") != std::string::npos) &&
-                              (tkJson.find("\"setupType\": \"custom\"") != std::string::npos);
+                              (tkJson.find("\"mode\": \"custom\"") != std::string::npos);
                 }
                 Check(tkCompOk && tkRunOk,
                       "v0.7.0 Turnkey RsDialog suite (RsWelcome..RsFinish) executes multi-step wizard, < Back rewind, & ref bindings",
-                      "comp=" + std::to_string(tkCompOk) + " visited=" + std::to_string(visitedCount) + " json=" + tkJson);
+                      "comp=" + std::to_string(tkCompOk) + " visited=" + std::to_string(visitedCount) + " err=" + tkVmErr + " json=" + tkJson);
             }
 
             // 11. v0.7.0 Test D — Declarative `[Environment.*]` Non-Clobbering `PATH` & `[IniFile.*]` (MSI + Native)!
@@ -2392,6 +2394,8 @@ int wmain() {
                 }
 
                 // Seed pre-existing user `Path` inside isolated virtual registry store so live host `PATH` is never touched!
+                wchar_t prevVirtRegBuf[MAX_PATH * 4]{};
+                const DWORD prevVirtLen = ::GetEnvironmentVariableW(L"RSW_TEST_REG_STORE_DIR", prevVirtRegBuf, static_cast<DWORD>(std::size(prevVirtRegBuf)));
                 const auto envVirtStore = envTestDir / L"virt-reg";
                 std::filesystem::create_directories(envVirtStore, ec);
                 ::SetEnvironmentVariableW(L"RSW_TEST_REG_STORE_DIR", envVirtStore.wstring().c_str());
@@ -2417,11 +2421,7 @@ int wmain() {
                 std::string pathAfterUninstall;
                 rsw::native_detail::VirtualRegReadValue(envVirtStore, "HKCU", L"Environment", L"Path", pathAfterUninstall);
 
-                if (rsscVirtReg) {
-                    ::SetEnvironmentVariableW(L"RSW_TEST_REG_STORE_DIR", rsscVirtRegDir.wstring().c_str());
-                } else {
-                    ::SetEnvironmentVariableW(L"RSW_TEST_REG_STORE_DIR", nullptr);
-                }
+                ::SetEnvironmentVariableW(L"RSW_TEST_REG_STORE_DIR", (prevVirtLen > 0) ? prevVirtRegBuf : nullptr);
 
                 const std::string expectedAppended = "C:\\Windows\\System32;D:\\ExistingUserTools;" + rsw::WideToUtf8((envNatInst / L"bin").wstring());
                 Check(msiTablesOk && natRunRc == 0 &&

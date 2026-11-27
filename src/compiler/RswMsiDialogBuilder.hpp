@@ -707,7 +707,7 @@ inline bool PopulateMsiInternalUiTables(
 
         const int attr = EqualsIgnoreCase(type, "Text")
             ? kVisTrans
-            : (isPasswordEdit ? (kVisEn | msidbControlAttributesPassword) : kVisEn);
+            : (isPasswordEdit ? (kVisEn | msidbControlAttributesPasswordInput) : kVisEn);
         addCtrl(dlg, cid, type, x, y, w, h, attr,
                 prop.empty() ? SqlVal{std::monostate{}} : SqlVal{prop},
                 txt.empty()  ? SqlVal{std::monostate{}} : SqlVal{txt},

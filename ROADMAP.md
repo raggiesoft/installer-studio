@@ -178,5 +178,5 @@ Once `v1.0.0 GA` is actively powering 100% of RaggieSoft's own software distribu
 
 1. **Snapshot-Diff Setup Capture ("Repackager") & One-Click Disposable Windows 11 Pro Sandbox (`.wsb`) Mode**: Capture legacy installers inside a throwaway Windows Sandbox VM and emit clean `.rsip` + `.mst` packages without touching the host workstation.
 2. **Visual Studio Extension (`.vsix`)**: Syntax highlighting, schema hover tooltips, and right-click packaging inside Visual Studio.
-3. **Enterprise System Primitives & Config Patchers**: Declarative `[Service.*]`, safe `[Environment.*]` `PATH` updates, `[FirewallRule.*]`, `[ScheduledTask.*]`, and `[JsonPatch.*]` / `[XmlConfig.*]` / `[IniFile.*]` config stampers.
+3. **Enterprise System Primitives & Config Patchers**: Declarative `[Service.*]`, `[FirewallRule.*]`, `[ScheduledTask.*]`, and `[JsonPatch.*]` / `[XmlConfig.*]` config stampers (building on `[Environment.*]` non-clobbering `PATH` and `[IniFile.*]` shipped in `v0.7.0`).
 4. **In-Process `.MSIX` / `.MSIXBUNDLE` (`AppxPackaging.dll`), `I18N` + RTL & Procurement SBOMs (`--emit-sbom`)**: Native dual-arch `.msixbundle` generation, Sparse Package Identity, 20+ language `.rslang` tables with `WS_EX_LAYOUTRTL` mirroring, and SPDX 2.3 / CycloneDX JSON SBOMs alongside HTML5 VPAT 2.5 reports.

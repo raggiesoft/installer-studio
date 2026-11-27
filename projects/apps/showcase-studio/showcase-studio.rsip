@@ -41,7 +41,7 @@ MainExecutable           = StudioIDE\ShowcaseStudio.exe
 [UI]
 WizardLayout             = aerowizard
 MsiDialogPreset          = express_custom
-AccentPrimaryHex         = #1D4ED8
+AccentPrimaryHex         = #2563EB
 AccentSecondaryHex       = #D97706
 LicenseRtf               = License.rtf
 IconFile                 = ..\..\..\..\showcase-studio\assets\ShowcaseStudio.ico
