@@ -891,6 +891,24 @@ enum class SuiteOperationKind {
 
 namespace suite_detail {
 
+/// Sets a Win32 `ComCtl32 v6` `PROGRESS_CLASSW` bar (`0..1000` permille) to its exact
+/// instantaneous pixel fill without `ComCtl32`'s 500ms laggy forward animation timer
+/// (so fast NVMe installs and screenshots always match the numeric `%` readout 1:1!).
+inline void SetProgressBarPermilleExact(HWND hBar, int permille) noexcept {
+    if (!hBar) return;
+    const int p = std::clamp(permille, 0, 1000);
+    if (p < 1000) {
+        ::SendMessageW(hBar, PBM_SETPOS, static_cast<WPARAM>(p + 1), 0);
+        ::SendMessageW(hBar, PBM_SETPOS, static_cast<WPARAM>(p), 0);
+    } else {
+        ::SendMessageW(hBar, PBM_SETRANGE32, 0, 1001);
+        ::SendMessageW(hBar, PBM_SETPOS, 1001, 0);
+        ::SendMessageW(hBar, PBM_SETPOS, 1000, 0);
+        ::SendMessageW(hBar, PBM_SETRANGE32, 0, 1000);
+        ::SendMessageW(hBar, PBM_SETPOS, 1000, 0);
+    }
+}
+
 /// Formats byte counts cleanly (`"512 KB"`, `"14.8 MB"`, `"1.24 GB"`) for Suite checklist rows.
 inline std::wstring FormatSuiteBytesShort(std::uint64_t bytes) {
     wchar_t buf[64]{};
@@ -1775,10 +1793,10 @@ public:
         const int listH      = std::max(S(96), progTop - listTop - comboRowH - S(10));
 
         ::MoveWindow(hList, S(18), listTop, W - S(36), listH, TRUE);
-        ListView_SetColumnWidth(hList, 0, S(246));
-        ListView_SetColumnWidth(hList, 1, S(68));
-        ListView_SetColumnWidth(hList, 2, S(84));
-        ListView_SetColumnWidth(hList, 3, std::max(S(140), W - S(36) - S(420)));
+        ListView_SetColumnWidth(hList, 0, S(296));
+        ListView_SetColumnWidth(hList, 1, S(64));
+        ListView_SetColumnWidth(hList, 2, S(76));
+        ListView_SetColumnWidth(hList, 3, std::max(S(130), W - S(36) - S(456)));
 
         if (hOpCombo) {
             ::MoveWindow(hOpCombo, S(18), listTop + listH + S(6), W - S(36), S(220), TRUE);
@@ -1816,7 +1834,7 @@ public:
         const int ovrPct  = ovrPerm / 10;
         const int cmpPct  = cmpPerm / 10;
 
-        ::SendMessageW(hOvrBar, PBM_SETPOS, static_cast<WPARAM>(ovrPerm), 0);
+        suite_detail::SetProgressBarPermilleExact(hOvrBar, ovrPerm);
         ::SendMessageW(hOvrBar, PBM_SETSTATE, snap.queuePaused ? PBST_PAUSED : PBST_NORMAL, 0);
 
         std::wstring ovrRight = std::to_wstring(ovrPct) + L"%";
@@ -1827,7 +1845,7 @@ public:
         ::SetWindowTextW(hOvrPct, ovrRight.c_str());
 
         if (suite.showComponentProgressBar) {
-            ::SendMessageW(hCmpBar, PBM_SETPOS, static_cast<WPARAM>(cmpPerm), 0);
+            suite_detail::SetProgressBarPermilleExact(hCmpBar, cmpPerm);
             std::wstring cmpLeft = L"Current Component: ";
             if (!snap.componentName.empty()) {
                 cmpLeft += snap.componentName;
