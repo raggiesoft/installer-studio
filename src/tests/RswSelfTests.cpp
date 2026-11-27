@@ -1987,6 +1987,151 @@ int wmain() {
             Check(installedCleanly && uninstalledCleanly,
                   "instbuild.exe compiles .rssc -> Setup.exe (#225 RSWBC1 + #220 RSWPAK1), installs silently, & uninstalls cleanly via Uninstall.rswm",
                   "bld=" + std::to_string(bldRsscRc) + " inst=" + std::to_string(instRsscRc) + " unErr=" + unErr);
+
+            // 3. Test RaggieScript Direct MSI SQL Surgeon (`msi-table-surgeon.rssc`) + `msiprism.exe --exec-sql` & `--export-table-json`!
+            std::string err;
+            const auto surgeonScript = binDir / L".." / L".." / L"examples" / L"raggiescript" / L"msi-table-surgeon.rssc";
+            const auto surgeonDir    = rsscWorkDir / L"msi-surgeon";
+            const DWORD surgeonRc    = runCli(raggiescriptExe, L"run \"" + surgeonScript.wstring() + L"\" workDir=\"" + surgeonDir.wstring() + L"\"");
+            std::vector<std::uint8_t> repBytes;
+            rsw::ReadBinaryFileBytes(surgeonDir / L"surgeon-report.json", repBytes, err);
+            const std::string repJson(repBytes.begin(), repBytes.end());
+            const bool surgeonOk =
+                (surgeonRc == 0) &&
+                std::filesystem::exists(surgeonDir / L"EnterprisePolicy.mst", ec) &&
+                (repJson.find("Commonwealth Polytechnic Engineering Lab") != std::string::npos);
+            Check(surgeonOk,
+                  "RaggieScript msi.* creates .msi from scratch, executes DDL/DML SQL tables, stamps SummaryInformation, & emits .mst Transform",
+                  "rc=" + std::to_string(surgeonRc) + " json=" + repJson);
+
+            const auto prismExe      = binDir / L"msiprism.exe";
+            const auto corpMsiPath   = surgeonDir / L"EnterpriseCustomized.msi";
+            const auto prismJsonOut  = surgeonDir / L"prism-property-table.json";
+            const DWORD prismSqlRc   = surgeonOk
+                ? runCli(prismExe, L"--exec-sql \"" + corpMsiPath.wstring() + L"\" \"INSERT INTO `Property` (`Property`, `Value`) VALUES ('PRISM_DIRECT_EDIT', 'ENABLED')\"")
+                : 1u;
+            const DWORD prismExpRc   = (prismSqlRc == 0)
+                ? runCli(prismExe, L"--export-table-json \"" + corpMsiPath.wstring() + L"\" Property \"" + prismJsonOut.wstring() + L"\"")
+                : 1u;
+            std::vector<std::uint8_t> pJsonBytes;
+            rsw::ReadBinaryFileBytes(prismJsonOut, pJsonBytes, err);
+            const std::string pJsonStr(pJsonBytes.begin(), pJsonBytes.end());
+            Check(prismSqlRc == 0 && prismExpRc == 0 && pJsonStr.find("PRISM_DIRECT_EDIT") != std::string::npos,
+                  "msiprism.exe --exec-sql mutates MSI tables in-place and --export-table-json exports verified JSON",
+                  "sqlRc=" + std::to_string(prismSqlRc) + " expRc=" + std::to_string(prismExpRc));
+
+            // 4. Test Deferred UAC (`Uac.Deferred`): PE manifest stays `asInvoker` for un-elevated Wizard,
+            //    and `ExportWizardStateJson` -> `ImportWizardStateJson` -> `ExecuteCommitPhaseOnly` hands off state cleanly!
+            const auto defUacScript = rsscWorkDir / L"deferred-uac-test.rssc";
+            const auto defUacOutDir = rsscWorkDir / L"deferred-uac-out";
+            const auto defUacDest   = rsscWorkDir / L"deferred-uac-installed";
+            {
+                const std::string duSrc =
+                    "use installer;\n"
+                    "package \"Deferred UAC Demo\" {\n"
+                    "    version: v\"1.2.0\";\n"
+                    "    scope: Scope.Machine;\n"
+                    "    uac: Uac.Deferred;\n"
+                    "    hideFromInstalledApps: true;\n"
+                    "}\n"
+                    "feature \"core\" { title: \"Core\"; inCompact: true; required: true; }\n"
+                    "feature \"extras\" { title: \"Extras\"; inCompact: false; }\n"
+                    "param customChannel: string = \"standard\";\n"
+                    "install {\n"
+                    "    fs.mkdir(installDir);\n"
+                    "    fs.writeJson(installDir / \"uac-handoff.json\", {\n"
+                    "        channel: customChannel,\n"
+                    "        coreSelected: feature.isSelected(\"core\"),\n"
+                    "        extrasSelected: feature.isSelected(\"extras\")\n"
+                    "    });\n"
+                    "}\n";
+                std::ofstream out(defUacScript, std::ios::binary | std::ios::trunc);
+                out.write(duSrc.data(), static_cast<std::streamsize>(duSrc.size()));
+            }
+            const DWORD duBuildRc = runCli(
+                instbuildExe,
+                L"\"" + defUacScript.wstring() + L"\" --out-dir=\"" + defUacOutDir.wstring() + L"\" --output-name=deferred-uac-demo");
+            const auto duExePath = defUacOutDir / L"deferred-uac-demo-setup.exe";
+            std::vector<std::uint8_t> duExeBytes;
+            rsw::ReadBinaryFileBytes(duExePath, duExeBytes, err);
+            const std::string duExeRaw(reinterpret_cast<const char*>(duExeBytes.data()), duExeBytes.size());
+            const bool manifestIsAsInvoker = (duExeRaw.find("level=\"asInvoker\"") != std::string::npos);
+
+            rsw::rssc::ScriptProgram duProg;
+            std::vector<rsw::rssc::ScriptDiagnostic> duDiags;
+            const bool duCompiled = rsw::rssc::CompileRaggieScriptFile(defUacScript, duProg, duDiags);
+            bool handoffOk = false;
+            if (duCompiled) {
+                // Simulate un-elevated `wizard` choosing Compact preset + custom installDir + customChannel
+                rsw::rssc::RaggieScriptVm wizVm(duProg);
+                wizVm.GlobalScope().Declare("customChannel", rsw::rssc::Value::FromStr("elevated-broker"), false);
+                wizVm.GlobalScope().Declare("installDir",    rsw::rssc::Value::FromPath(defUacDest), false);
+                const std::string stateJson = wizVm.ExportWizardStateJson();
+
+                // Hydrate inside simulated `--elevated-rssc-worker` VM and run ONLY Commit phase!
+                rsw::rssc::VmExecutionOptions workerOpts{};
+                workerOpts.isElevatedWorker = true;
+                rsw::rssc::RaggieScriptVm workerVm(duProg, workerOpts);
+                if (workerVm.ImportWizardStateJson(stateJson)) {
+                    const auto cRes = workerVm.ExecuteCommitPhaseOnly();
+                    std::vector<std::uint8_t> hoBytes;
+                    rsw::ReadBinaryFileBytes(defUacDest / L"uac-handoff.json", hoBytes, err);
+                    const std::string hoTxt(hoBytes.begin(), hoBytes.end());
+                    handoffOk = cRes.ok && (hoTxt.find("elevated-broker") != std::string::npos);
+                }
+            }
+            Check(duBuildRc == 0 && manifestIsAsInvoker && handoffOk,
+                  "RaggieScript Uac.Deferred stamps asInvoker PE manifest for un-elevated Wizard and hands off state to elevated Commit worker",
+                  "bld=" + std::to_string(duBuildRc) + " asInvoker=" + std::to_string(manifestIsAsInvoker) + " handoff=" + std::to_string(handoffOk));
+
+            // 5. Test `compile.json(...)` build-time embedding, `??` coalesce, `elif`, `ffi.call`, & Restart Manager `proc.getLockingProcesses`!
+            const auto ctJsonFile = rsscWorkDir / L"build-meta.json";
+            {
+                const std::string j = "{\"codename\":\"NebulaForge\",\"editionCount\":4}";
+                std::ofstream out(ctJsonFile, std::ios::binary | std::ios::trunc);
+                out.write(j.data(), static_cast<std::streamsize>(j.size()));
+            }
+            const auto advScript = rsscWorkDir / L"advanced-features.rssc";
+            const auto advBcFile = rsscWorkDir / L"advanced-features.rswbc";
+            const auto advReport = rsscWorkDir / L"adv-report.txt";
+            {
+                const std::string advSrc =
+                    "use installer;\n"
+                    "#ifndef CUSTOM_TAG\n"
+                    "#define CUSTOM_TAG \"DefaultTag\"\n"
+                    "#endif\n"
+                    "let meta = compile.json(\"build-meta.json\");\n"
+                    "let pid = ffi.call(\"kernel32.dll\", \"GetCurrentProcessId\", \"uint\", []);\n"
+                    "let fallback = reg.read(Hive.HKCU, r\"Software\\RaggieSoft\\NonExistentTestKey\", \"MissingVal\") ?? \"CoalescedOK\";\n"
+                    "let tierLabel = \"unknown\";\n"
+                    "if (meta.editionCount == 2) { tierLabel = \"two\"; }\n"
+                    "elif (meta.editionCount == 4) { tierLabel = \"four\"; }\n"
+                    "else { tierLabel = \"other\"; }\n"
+                    "let locks = proc.getLockingProcesses([sys.exePath]);\n"
+                    "fs.writeText(r\"" + rsw::WideToUtf8(advReport.wstring()) + "\", "
+                    "\"${meta.codename}|${tierLabel}|${fallback}|${def(\"CUSTOM_TAG\")}|pid=${pid > 0}|locks=${typeof(locks)}\");\n";
+                std::ofstream out(advScript, std::ios::binary | std::ios::trunc);
+                out.write(advSrc.data(), static_cast<std::streamsize>(advSrc.size()));
+            }
+            const DWORD advCompRc = runCli(raggiescriptExe, L"compile \"" + advScript.wstring() + L"\" \"" + advBcFile.wstring() + L"\" -DCUSTOM_TAG=StudioV060");
+            // Delete `build-meta.json` BEFORE running bytecode to prove `compile.json` baked it into `RSWBC1`!
+            std::filesystem::remove(ctJsonFile, ec);
+            const DWORD advRunRc  = (advCompRc == 0) ? runCli(raggiescriptExe, L"run \"" + advBcFile.wstring() + L"\"") : 1u;
+            std::vector<std::uint8_t> advBytes;
+            rsw::ReadBinaryFileBytes(advReport, advBytes, err);
+            const std::string advTxt(advBytes.begin(), advBytes.end());
+            Check(advCompRc == 0 && advRunRc == 0 && advTxt == "NebulaForge|four|CoalescedOK|StudioV060|pid=true|locks=array",
+                  "RaggieScript compile.json, -D/#define, ?? coalesce, elif, 64-bit ffi.call, and Restart ManagerRmGetList verified",
+                  "comp=" + std::to_string(advCompRc) + " run=" + std::to_string(advRunRc) + " out=" + advTxt);
+
+            // 6. Validate Book & Album Micro-Installer `.rssc` Templates (`RSW701` & `RSW702`)!
+            const auto bookTmpl  = binDir / L".." / L".." / L"examples" / L"raggiescript" / L"book-pack-autorun.rssc";
+            const auto albumTmpl = binDir / L".." / L".." / L"examples" / L"raggiescript" / L"album-pack-autorun.rssc";
+            const DWORD bkValRc  = runCli(instbuildExe, L"--validate \"" + bookTmpl.wstring() + L"\" -DBOOK_SLUG=cedar-run");
+            const DWORD alValRc  = runCli(instbuildExe, L"--validate \"" + albumTmpl.wstring() + L"\" -DALBUM_SLUG=1997-hard-reset");
+            Check(bkValRc == 0 && alValRc == 0,
+                  "Book and Album CD-Autorun RaggieScript templates pass RSW701/RSW702 static validation",
+                  "bookRc=" + std::to_string(bkValRc) + " albumRc=" + std::to_string(alValRc));
         }
 
         if (rsscVirtReg) {

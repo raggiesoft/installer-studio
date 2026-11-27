@@ -169,8 +169,16 @@ int RunSelfContainedPackedMode(const std::filesystem::path& selfPath, const std:
     vmOpts.runningExePath = selfPath;
     vmOpts.onStdout       = [](const std::string& ln) { std::cout << ln << "\n"; };
 
-    for (const auto& a : args) {
-        if (a == "--silent" || a == "/s" || a == "/S" || a == "/qn" || a == "/quiet") {
+    std::filesystem::path elevatedStateIn;
+    std::filesystem::path elevatedResultOut;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const auto& a = args[i];
+        if (a == "--elevated-rssc-worker" && i + 2 < args.size()) {
+            vmOpts.isElevatedWorker = true;
+            elevatedStateIn   = std::filesystem::path(rsw::Utf8ToWide(args[i + 1]));
+            elevatedResultOut = std::filesystem::path(rsw::Utf8ToWide(args[i + 2]));
+            i += 2;
+        } else if (a == "--silent" || a == "/s" || a == "/S" || a == "/qn" || a == "/quiet") {
             vmOpts.silentMode = true;
         } else if (a.rfind("/l=", 0) == 0 || a.rfind("--log=", 0) == 0) {
             vmOpts.logFilePath = std::filesystem::path(rsw::Utf8ToWide(a.substr(a.find('=') + 1)));
@@ -228,7 +236,33 @@ int RunSelfContainedPackedMode(const std::filesystem::path& selfPath, const std:
     }
 
     rsw::rssc::RaggieScriptVm vm(prog, vmOpts);
-    const auto res = vm.ExecuteFullLifecycle();
+    rsw::rssc::VmExecutionResult res{};
+    if (vmOpts.isElevatedWorker && !elevatedStateIn.empty()) {
+        std::vector<std::uint8_t> stBytes;
+        std::string stErr;
+        if (!rsw::ReadBinaryFileBytes(elevatedStateIn, stBytes, stErr) ||
+            !vm.ImportWizardStateJson(std::string(stBytes.begin(), stBytes.end()))) {
+            res.ok = false;
+            res.exitCode = 1603;
+            res.errorMessage = "Failed importing elevated RaggieScript worker state.";
+        } else {
+            res = vm.ExecuteCommitPhaseOnly();
+        }
+        std::ostringstream rJson;
+        rJson << "{\"ok\":" << (res.ok ? "true" : "false")
+              << ",\"exitCode\":" << res.exitCode
+              << ",\"rolledBack\":" << (res.rolledBack ? "true" : "false")
+              << ",\"rebootNeeded\":" << (res.rebootNeeded ? "true" : "false")
+              << ",\"errorLine\":" << res.errorLine
+              << ",\"errorMessage\":";
+        rsw::rssc::json_detail::EscapeJsonStr(rJson, res.errorMessage);
+        rJson << "}";
+        const std::string outTxt = rJson.str();
+        std::ofstream rOut(elevatedResultOut, std::ios::binary | std::ios::trunc);
+        rOut.write(outTxt.data(), static_cast<std::streamsize>(outTxt.size()));
+    } else {
+        res = vm.ExecuteFullLifecycle();
+    }
     if (!tempSupportRoot.empty()) {
         std::filesystem::remove_all(tempSupportRoot, ec);
     }

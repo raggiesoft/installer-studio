@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE language>
+<!--
+================================================================================
+FILE: editors/kate/raggiescript.xml
+PROJECT: RaggieScript Syntax Highlighting for KDE Kate, KWrite, & Qt Creator
+INSTALL PATH (Linux KDE Plasma): ~/.local/share/org.kde.syntax-highlighting/syntax/
+================================================================================
+-->
+<language name="RaggieScript" version="1" kateversion="5.79" section="Scripts" extensions="*.rssc" license="MIT">
+  <highlighting>
+    <list name="keywords">
+      <item>use</item><item>include</item><item>import</item><item>package</item>
+      <item>showcase</item><item>app</item><item>feature</item><item>param</item>
+      <item>payload</item><item>wizard</item><item>step</item><item>when</item>
+      <item>install</item><item>repair</item><item>uninstall</item><item>on</item>
+      <item>fn</item><item>function</item><item>let</item><item>const</item>
+      <item>ref</item><item>if</item><item>elif</item><item>else</item>
+      <item>for</item><item>in</item><item>while</item><item>repeat</item>
+      <item>until</item><item>break</item><item>continue</item><item>return</item>
+      <item>try</item><item>catch</item><item>throw</item><item>exit</item><item>from</item>
+    </list>
+    <list name="namespaces">
+      <item>sys</item><item>fs</item><item>reg</item><item>ini</item><item>xml</item>
+      <item>json</item><item>str</item><item>regex</item><item>archive</item>
+      <item>crypto</item><item>net</item><item>proc</item><item>ffi</item>
+      <item>msi</item><item>prereq</item><item>shortcut</item><item>shell</item>
+      <item>env</item><item>arp</item><item>svc</item><item>task</item>
+      <item>firewall</item><item>acl</item><item>ui</item><item>compile</item>
+      <item>showcase</item><item>log</item><item>product</item><item>def</item><item>assert</item>
+    </list>
+    <list name="types">
+      <item>bool</item><item>int</item><item>float</item><item>string</item>
+      <item>path</item><item>version</item><item>array</item><item>map</item>
+      <item>Scope</item><item>Uac</item><item>Token</item><item>RegView</item>
+      <item>Icon</item><item>Hive</item><item>SetupMode</item><item>WizardStyle</item>
+      <item>Delivery</item><item>true</item><item>false</item><item>null</item>
+    </list>
+    <contexts>
+      <context name="Normal" attribute="Normal Text" lineEndContext="#stay">
+        <Detect2Chars attribute="Comment" context="LineComment" char="/" char1="/"/>
+        <Detect2Chars attribute="Comment" context="BlockComment" char="/" char1="*" beginRegion="Comment"/>
+        <RegExpr attribute="Preprocessor" context="#stay" String="^\s*#(if|ifdef|ifndef|elif|else|endif|define|error|region|endregion|include)\b.*$"/>
+        <RegExpr attribute="Version" context="#stay" String="\b[vV]&quot;[0-9.]+&quot;"/>
+        <RegExpr attribute="String" context="#stay" String="\b[rR]&quot;[^&quot;]*&quot;"/>
+        <DetectChar attribute="String" context="DoubleString" char="&quot;"/>
+        <keyword attribute="Keyword" context="#stay" String="keywords"/>
+        <keyword attribute="Namespace" context="#stay" String="namespaces"/>
+        <keyword attribute="Data Type" context="#stay" String="types"/>
+        <Float attribute="Float" context="#stay"/>
+        <Int attribute="Decimal" context="#stay"/>
+      </context>
+      <context name="LineComment" attribute="Comment" lineEndContext="#pop"/>
+      <context name="BlockComment" attribute="Comment" lineEndContext="#stay">
+        <Detect2Chars attribute="Comment" context="#pop" char="*" char1="/" endRegion="Comment"/>
+      </context>
+      <context name="DoubleString" attribute="String" lineEndContext="#pop">
+        <HlCStringChar attribute="String Char" context="#stay"/>
+        <RegExpr attribute="Interpolation" context="#stay" String="\$\{[^}]*\}"/>
+        <DetectChar attribute="String" context="#pop" char="&quot;"/>
+      </context>
+    </contexts>
+    <itemDatas>
+      <itemData name="Normal Text" defStyleNum="dsNormal"/>
+      <itemData name="Keyword" defStyleNum="dsKeyword"/>
+      <itemData name="Namespace" defStyleNum="dsBuiltIn"/>
+      <itemData name="Data Type" defStyleNum="dsDataType"/>
+      <itemData name="Preprocessor" defStyleNum="dsPreprocessor"/>
+      <itemData name="Version" defStyleNum="dsConstant"/>
+      <itemData name="String" defStyleNum="dsString"/>
+      <itemData name="String Char" defStyleNum="dsChar"/>
+      <itemData name="Interpolation" defStyleNum="dsSpecialString"/>
+      <itemData name="Comment" defStyleNum="dsComment"/>
+      <itemData name="Decimal" defStyleNum="dsDecVal"/>
+      <itemData name="Float" defStyleNum="dsFloat"/>
+    </itemDatas>
+  </highlighting>
+</language>

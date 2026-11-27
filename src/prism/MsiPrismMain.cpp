@@ -398,8 +398,10 @@ bool RunRowEditorModalDialog(HWND hOwner, const rsw::ui::RswTheme& theme, const 
 
     RECT ownRc{0, 0, ::GetSystemMetrics(SM_CXSCREEN), ::GetSystemMetrics(SM_CYSCREEN)};
     if (hOwner) ::GetWindowRect(hOwner, &ownRc);
-    const int posX = ownRc.left + std::max(0, ((ownRc.right - ownRc.left) - wW) / 2);
-    const int posY = ownRc.top  + std::max(0, ((ownRc.bottom - ownRc.top) - wH) / 2);
+    const int ownW = static_cast<int>(ownRc.right - ownRc.left);
+    const int ownH = static_cast<int>(ownRc.bottom - ownRc.top);
+    const int posX = static_cast<int>(ownRc.left) + std::max<int>(0, (ownW - wW) / 2);
+    const int posY = static_cast<int>(ownRc.top)  + std::max<int>(0, (ownH - wH) / 2);
 
     if (hOwner) ::EnableWindow(hOwner, FALSE);
     HWND hDlg = ::CreateWindowExW(

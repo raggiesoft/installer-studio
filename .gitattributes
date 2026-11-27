@@ -1,0 +1,8 @@
+# ================================================================================
+# FILE: .gitattributes
+# PROJECT: RaggieSoft Installer Studio — GitHub / Gitea Linguist Syntax Mapping
+# ================================================================================
+*.rssc linguist-language=Rust text eol=crlf
+*.rsip linguist-language=INI text eol=crlf
+*.rsis linguist-language=INI text eol=crlf
+*.rsii linguist-language=INI text eol=crlf

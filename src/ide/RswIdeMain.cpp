@@ -2799,8 +2799,7 @@ public:
             return;
         }
         const std::wstring arch = rsw::Utf8ToWide(SelectedArch());
-        const auto effDoc = ResolvedEffectiveDoc();
-        const bool buildUniv = !mergeModule && effDoc.GetBool("Package", "", "BuildUniversal", false);
+        const bool buildUniv = (!mergeModule && !isRsscMode) && ResolvedEffectiveDoc().GetBool("Package", "", "BuildUniversal", false);
         std::wstring cmd = L"\"" + cliExe.wstring() + L"\" ";
         if (mergeModule) {
             const auto msmOut = currentFilePath.parent_path() / L"out" /

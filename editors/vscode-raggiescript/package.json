@@ -1,0 +1,109 @@
+{
+  "name": "raggiescript",
+  "displayName": "RaggieScript & RaggieSoft Studio Language Support",
+  "description": "Syntax highlighting, live RSW701/RSW702 diagnostics, IntelliSense, snippets, and build commands for RaggieScript (.rssc) and RaggieSoft Studio manifests (.rsip, .rsis, .rsii).",
+  "version": "0.6.0",
+  "publisher": "raggiesoft",
+  "license": "MIT",
+  "homepage": "https://raggiesoftstudio.com/raggiescript",
+  "repository": {
+    "type": "git",
+    "url": "https://raggiesoft.dev/raggiescript"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Snippets"
+  ],
+  "activationEvents": [
+    "onLanguage:raggiescript",
+    "onLanguage:raggiesoft-manifest"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "raggiescript",
+        "aliases": [
+          "RaggieScript",
+          "rssc"
+        ],
+        "extensions": [
+          ".rssc"
+        ],
+        "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "raggiesoft-manifest",
+        "aliases": [
+          "RaggieSoft Project Manifest",
+          "rsip",
+          "rsis"
+        ],
+        "extensions": [
+          ".rsip",
+          ".rsis",
+          ".rsii",
+          ".rssp",
+          ".rstp",
+          ".rshp"
+        ],
+        "configuration": "./rsip-language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "raggiescript",
+        "scopeName": "source.raggiescript",
+        "path": "./syntaxes/raggiescript.tmLanguage.json"
+      },
+      {
+        "language": "raggiesoft-manifest",
+        "scopeName": "source.raggiesoft-manifest",
+        "path": "./syntaxes/rsip.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "raggiescript",
+        "path": "./snippets/raggiescript.code-snippets"
+      }
+    ],
+    "commands": [
+      {
+        "command": "raggiescript.check",
+        "title": "RaggieScript: Check Script (RSW701 & RSW702 Static Verifier)"
+      },
+      {
+        "command": "raggiescript.compileExe",
+        "title": "RaggieScript: Compile Setup Executable (instbuild.exe)"
+      },
+      {
+        "command": "raggiescript.disasm",
+        "title": "RaggieScript: Disassemble RSWBC1 Bytecode"
+      },
+      {
+        "command": "raggiescript.openMsiPrism",
+        "title": "RaggieSoft: Open MSI Prism SQL Table Editor"
+      }
+    ],
+    "configuration": {
+      "title": "RaggieScript",
+      "properties": {
+        "raggiescript.toolchainBinDir": {
+          "type": "string",
+          "default": "",
+          "description": "Optional directory containing raggiescript.exe, instbuild.exe, and msiprism.exe. Auto-discovered from workspace or PATH when empty."
+        },
+        "raggiescript.lintOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run instant compile-time RSW701 (Wizard Phase Isolation) and RSW702 (Capability Sandbox) validation whenever saving .rssc or .rsip files."
+        }
+      }
+    }
+  }
+}

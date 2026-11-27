@@ -21,6 +21,8 @@ Makefile
 *.rswm
 *.7z
 *.7zip
+*.vsix
+editors/dist/
 *.pdb
 *.ilk
 *.iobj

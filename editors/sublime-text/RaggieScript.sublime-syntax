@@ -1,0 +1,51 @@
+%YAML 1.2
+---
+# ================================================================================
+# FILE: editors/sublime-text/RaggieScript.sublime-syntax
+# PROJECT: RaggieScript Syntax Definition for Sublime Text 4 & Bat (`bat`)
+# ================================================================================
+name: RaggieScript
+file_extensions:
+  - rssc
+scope: source.raggiescript
+
+contexts:
+  main:
+    - match: //.*$
+      scope: comment.line.double-slash.raggiescript
+    - match: /\*
+      scope: punctuation.definition.comment.begin.raggiescript
+      push: block_comment
+    - match: ^\s*#(?:if|ifdef|ifndef|elif|else|endif|define|error|region|endregion|include)\b.*$
+      scope: meta.preprocessor.raggiescript
+    - match: \b[vV]"[0-9]+(?:\.[0-9]+){1,3}"
+      scope: constant.numeric.version.raggiescript
+    - match: \b[rR]"[^"]*"
+      scope: string.quoted.other.raw.raggiescript
+    - match: '"'
+      scope: punctuation.definition.string.begin.raggiescript
+      push: double_string
+    - match: \b(use|include|import|package|showcase|app|feature|param|payload|wizard|step|when|install|repair|uninstall|on|fn|function|let|const|ref|if|elif|else|for|in|while|repeat|until|break|continue|return|try|catch|throw|exit|from)\b
+      scope: keyword.control.raggiescript
+    - match: \b(sys|fs|reg|ini|xml|json|str|regex|archive|crypto|net|proc|ffi|msi|prereq|shortcut|shell|env|arp|svc|task|firewall|acl|ui|feature|compile|showcase|log|product)\b
+      scope: support.class.namespace.raggiescript
+    - match: \b(bool|int|float|string|path|version|array|map|any|Scope|Uac|Token|RegView|Icon|Hive|SetupMode|WizardStyle|Delivery)\b
+      scope: storage.type.raggiescript
+    - match: \b(true|false|null|EXIT_OK|EXIT_ELEVATION_REQUIRED|EXIT_REBOOT_NEEDED|EXIT_UNSUPPORTED_OS|EXIT_PREREQ_MISSING|EXIT_DOWNLOAD_FAILED)\b
+      scope: constant.language.raggiescript
+    - match: \b(0[xX][0-9A-Fa-f_]+|[0-9][0-9_]*(?:\.[0-9_]+)*)\b
+      scope: constant.numeric.raggiescript
+
+  block_comment:
+    - meta_scope: comment.block.raggiescript
+    - match: \*/
+      pop: true
+
+  double_string:
+    - meta_scope: string.quoted.double.raggiescript
+    - match: \\.
+      scope: constant.character.escape.raggiescript
+    - match: \$\{[^}]*\}
+      scope: variable.interpolation.raggiescript
+    - match: '"'
+      pop: true

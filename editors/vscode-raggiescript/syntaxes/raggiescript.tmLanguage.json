@@ -1,0 +1,290 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "RaggieScript",
+  "scopeName": "source.raggiescript",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#preprocessor"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#versions_and_numbers"
+    },
+    {
+      "include": "#declarations"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#namespaces_and_calls"
+    },
+    {
+      "include": "#types_and_enums"
+    },
+    {
+      "include": "#named_arguments"
+    },
+    {
+      "include": "#operators"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.raggiescript",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.raggiescript",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "preprocessor": {
+      "patterns": [
+        {
+          "name": "meta.preprocessor.raggiescript",
+          "match": "^\\s*(#(?:if|ifdef|ifndef|elif|else|endif|define|error|region|endregion|include))\\b(.*)$",
+          "captures": {
+            "1": {
+              "name": "keyword.control.directive.raggiescript"
+            },
+            "2": {
+              "name": "entity.name.other.preprocessor.raggiescript"
+            }
+          }
+        },
+        {
+          "name": "meta.import.raggiescript",
+          "match": "\\b(include|import|use)\\b",
+          "captures": {
+            "1": {
+              "name": "keyword.control.import.raggiescript"
+            }
+          }
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "constant.numeric.version.raggiescript",
+          "match": "\\b[vV]\"[0-9]+(?:\\.[0-9]+){1,3}\""
+        },
+        {
+          "name": "string.quoted.other.raw.raggiescript",
+          "begin": "\\b[rR]\"",
+          "end": "\""
+        },
+        {
+          "name": "string.quoted.double.raggiescript",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.raggiescript",
+              "match": "\\\\."
+            },
+            {
+              "name": "meta.embedded.line.raggiescript",
+              "begin": "\\$\\{",
+              "beginCaptures": {
+                "0": {
+                  "name": "punctuation.section.embedded.begin.raggiescript"
+                }
+              },
+              "end": "\\}",
+              "endCaptures": {
+                "0": {
+                  "name": "punctuation.section.embedded.end.raggiescript"
+                }
+              },
+              "patterns": [
+                {
+                  "include": "$self"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "versions_and_numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.version.bare.raggiescript",
+          "match": "\\b[0-9]+\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?\\b"
+        },
+        {
+          "name": "constant.numeric.hex.raggiescript",
+          "match": "\\b0[xX][0-9a-fA-F_]+\\b"
+        },
+        {
+          "name": "constant.numeric.float.raggiescript",
+          "match": "\\b[0-9][0-9_]*\\.[0-9_]+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.raggiescript",
+          "match": "\\b[0-9][0-9_]*\\b"
+        },
+        {
+          "name": "constant.language.raggiescript",
+          "match": "\\b(true|false|null|EXIT_OK|EXIT_ELEVATION_REQUIRED|EXIT_REBOOT_NEEDED|EXIT_UNSUPPORTED_OS|EXIT_PREREQ_MISSING|EXIT_DOWNLOAD_FAILED)\\b"
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "match": "\\b(fn|function)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.function.raggiescript"
+            },
+            "2": {
+              "name": "entity.name.function.raggiescript"
+            }
+          }
+        },
+        {
+          "match": "\\b(package|showcase|app|feature|payload)\\s+(\"[A-Za-z0-9_.:\\s-]*\"|[A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.raggiescript"
+            },
+            "2": {
+              "name": "entity.name.type.package.raggiescript"
+            }
+          }
+        },
+        {
+          "match": "\\b(step)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.control.step.raggiescript"
+            },
+            "2": {
+              "name": "entity.name.section.step.raggiescript"
+            }
+          }
+        },
+        {
+          "match": "\\b(param|let|const)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.raggiescript"
+            },
+            "2": {
+              "name": "variable.other.readwrite.raggiescript"
+            }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.phase.raggiescript",
+          "match": "\\b(wizard|install|repair|uninstall|on|when|from)\\b"
+        },
+        {
+          "name": "keyword.control.flow.raggiescript",
+          "match": "\\b(if|elif|else|for|in|while|repeat|until|break|continue|return|try|catch|throw|exit)\\b"
+        },
+        {
+          "name": "storage.modifier.raggiescript",
+          "match": "\\b(ref|let|const|param)\\b"
+        }
+      ]
+    },
+    "namespaces_and_calls": {
+      "patterns": [
+        {
+          "match": "\\b(sys|fs|reg|ini|xml|json|str|regex|archive|crypto|net|proc|ffi|msi|prereq|shortcut|shell|env|arp|svc|task|firewall|acl|ui|wizard|feature|compile|payload|showcase|log|product)\\.([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+          "captures": {
+            "1": {
+              "name": "support.class.namespace.raggiescript"
+            },
+            "2": {
+              "name": "support.function.builtin.raggiescript"
+            }
+          }
+        },
+        {
+          "match": "\\b(sys|product)\\.([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": {
+              "name": "support.class.namespace.raggiescript"
+            },
+            "2": {
+              "name": "variable.other.property.raggiescript"
+            }
+          }
+        },
+        {
+          "match": "\\b(def|assert|coalesce|len|range|typeof|sleep|path|ver|int|float|bool|str|print|log)\\s*(?=\\()",
+          "captures": {
+            "1": {
+              "name": "support.function.std.raggiescript"
+            }
+          }
+        },
+        {
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+          "captures": {
+            "1": {
+              "name": "entity.name.function.call.raggiescript"
+            }
+          }
+        }
+      ]
+    },
+    "types_and_enums": {
+      "patterns": [
+        {
+          "name": "storage.type.primitive.raggiescript",
+          "match": "\\b(bool|int|float|string|path|version|array|map|any)\\b"
+        },
+        {
+          "match": "\\b(Scope|Uac|Token|RegView|Icon|Hive|SetupMode|WizardStyle|Delivery)\\.([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": {
+              "name": "support.type.enum.raggiescript"
+            },
+            "2": {
+              "name": "constant.other.enum.raggiescript"
+            }
+          }
+        }
+      ]
+    },
+    "named_arguments": {
+      "patterns": [
+        {
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*:(?!:)",
+          "captures": {
+            "1": {
+              "name": "variable.parameter.named.raggiescript"
+            }
+          }
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.raggiescript",
+          "match": "(\\?\\?|->|=>|\\+=|-=|==|!=|<=|>=|&&|\\|\\||[+\\-*/%=<>!?])"
+        }
+      ]
+    }
+  }
+}
