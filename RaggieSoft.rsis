@@ -28,30 +28,55 @@ Path                  = projects\apps\accessibility-studio\accessibility-studio.
 Category              = CoreApps
 BuildOrder            = 12
 
+[Project.App_training-studio]
+Path                  = projects\apps\training-studio\training-studio.rsip
+Category              = CoreApps
+BuildOrder            = 13
+
+[Project.App_help-studio]
+Path                  = projects\apps\help-studio\help-studio.rsip
+Category              = CoreApps
+BuildOrder            = 14
+
+[Project.App_showcase-studio]
+Path                  = projects\apps\showcase-studio\showcase-studio.rsip
+Category              = CoreApps
+BuildOrder            = 15
+
+[Project.App_msi-prism]
+Path                  = projects\apps\msi-prism\msi-prism.rsip
+Category              = CoreApps
+BuildOrder            = 16
+
+[Project.App_self-extractor]
+Path                  = projects\apps\self-extractor\self-extractor.rsip
+Category              = CoreApps
+BuildOrder            = 17
+
 [Project.App_launcher]
 Path                  = projects\apps\launcher\launcher.rsip
 Category              = CoreApps
-BuildOrder            = 13
+BuildOrder            = 18
 
 [Project.App_book-reader]
 Path                  = projects\apps\book-reader\book-reader.rsip
 Category              = CoreApps
-BuildOrder            = 14
+BuildOrder            = 19
 
 [Project.App_listening-room]
 Path                  = projects\apps\listening-room\listening-room.rsip
 Category              = CoreApps
-BuildOrder            = 15
+BuildOrder            = 20
 
 [Project.App_backstage]
 Path                  = projects\apps\backstage\backstage.rsip
 Category              = CoreApps
-BuildOrder            = 16
+BuildOrder            = 21
 
 [Project.App_storetrainer]
 Path                  = projects\apps\storetrainer\storetrainer.rsip
 Category              = CoreApps
-BuildOrder            = 17
+BuildOrder            = 22
 
 [Project.Book_ad-astra]
 Path                  = projects\books\ad-astra\ad-astra.rsip

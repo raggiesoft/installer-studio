@@ -1,0 +1,61 @@
+; ================================================================================
+; FILE: examples/hello-raggiesoft/book-pack-addon.rsip
+; PROJECT: RaggieSoft Installer Studio v0.9.0 ("Install Without Limits")
+;
+; PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
+;   What is a Host-Aware Add-On / Content Pack Installer (`PackageKind = addon`)?
+;     When a user already installed a host application—such as *RaggieSoft Book
+;     Reader* or *The Listening Room*—shipping a full heavyweight `.msi` for each
+;     individual book or music album is overkill.
+;
+;     Setting `PackageKind = addon` with a `[HostApp]` section compiles a fast,
+;     transactional, zero-UAC content installer (unlocked in ALL 4 Editions!) that:
+;       1. Searches for the installed Host Application (`RegistryKey`, `UpgradeCode`,
+;          and `FallbackSubdir` + `Executable`).
+;       2. Exits cleanly with Windows Installer code `1605` (`ERROR_UNKNOWN_PRODUCT`)
+;          in `/s` silent mode (or offers a 1-click `&Get Host App...` button in GUI
+;          mode) if the parent app is missing—never dumping orphaned files on disk!
+;       3. Drops the book or album files directly into the host's library folder,
+;          expands `[INSTALLDIR]` and `[HOSTDIR]` in `[Registry.*]`, and hides itself
+;          from Windows *Installed apps* (`HideFromInstalledApps = true`)!
+; ================================================================================
+
+[Package]
+Name                  = Sample Book Content Pack
+Tagline               = Host-Aware Add-On Pack for RaggieSoft Book Reader
+Version               = 1.0.0
+Manufacturer          = RaggieSoft Media
+PackageKind           = addon
+UpgradeCode           = {8C4E91A2-3B77-4D12-9A55-52414741444F}
+Architecture          = $(ARCH)
+Scope                 = user
+HideFromInstalledApps = true
+
+[HostApp]
+Name                  = RaggieSoft Book Reader
+UpgradeCode           = {71EC9272-2D8E-5089-82E3-4D296C1D7CAC}
+RegistryKey           = Software\RaggieSoft\Book Reader
+RegistryValue         = Install Path
+FallbackSubdir        = RaggieSoft\Book Reader
+Executable            = BookReader.exe
+ContentTargetRoot     = LocalAppData
+ContentSubdir         = RaggieSoft\Books\sample-book
+RequireHostInstalled  = true
+DownloadUrl           = https://books.raggiesoft.com
+
+[UI]
+WizardLayout          = simple
+AllowChangeFolder     = false
+AccentPrimaryHex      = #117A72
+AccentSecondaryHex    = #F59E0B
+InstallButtonText     = &Install Book
+FinishLaunchCheckbox  = &Open RaggieSoft Book Reader when finished
+
+[Payload.SampleChapter]
+Source                = hello-raggiesoft.rsip
+
+[Registry.BookPackEntry]
+Root                  = HKCU
+Key                   = Software\RaggieSoft\Book Reader\Books\List
+Name                  = sample-book
+Value                 = [INSTALLDIR]

@@ -110,6 +110,26 @@ inline bool EqualsIgnoreCase(std::string_view a, std::string_view b) noexcept {
     return true;
 }
 
+/// Converts any display title into a clean lowercase `kebab-case` filename/registry slug.
+inline std::string SlugifyName(std::string_view raw) {
+    std::string out;
+    bool prevDash = false;
+    for (char c : raw) {
+        if (c >= 'A' && c <= 'Z') {
+            out += static_cast<char>(c - 'A' + 'a');
+            prevDash = false;
+        } else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+            out += c;
+            prevDash = false;
+        } else if (!out.empty() && !prevDash) {
+            out += '-';
+            prevDash = true;
+        }
+    }
+    while (!out.empty() && out.back() == '-') out.pop_back();
+    return out.empty() ? "raggiesoft-package" : out;
+}
+
 /// Replaces every occurrence of `$(TOKEN)` (case-insensitively) with `replacement`.
 inline std::string ExpandNamedToken(std::string_view raw, std::string_view tokenName, std::string_view replacement) {
     std::string out(raw);

@@ -595,7 +595,7 @@ inline ValidationReport ValidateManifestDocument(
         } else {
             if (rawSp.empty()) {
                 addErr("RSW038", 1, "SuitePackage." + spId, "Source",
-                       "[SuitePackage." + spId + "] uses Delivery = embedded, so Source is required.");
+                       "[SuitePackage." + spId + "] uses Delivery = " + deliv + ", so Source is required.");
             } else {
                 const auto absSp = resolvePathStd(rawSp);
                 if (!std::filesystem::exists(absSp, ec)) {

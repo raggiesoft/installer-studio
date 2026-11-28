@@ -857,6 +857,8 @@ int wmain(int argc, wchar_t* argv[]) {
             synthDoc.SetString("UI", "", "ShowComponentProgressBar", suite.showComponentProgressBar ? "true" : "false");
 
             int bundledChildren = 0;
+            std::uint64_t approxSuiteBytes = 0;
+            const std::string sampleArch = archList.empty() ? "arm64" : archList.front();
             for (const auto& proj : suite.projects) {
                 if (!proj.enabled || !proj.includeInSuite) continue;
                 rsw::RswManifestDocument mRaw, mDoc;
@@ -880,6 +882,12 @@ int wmain(int argc, wchar_t* argv[]) {
                 const std::string artLeaf = mIsRsscExe ? (mStem + "-setup.exe") : (mStem + ".msi");
                 const std::filesystem::path artFull = (mOutDir / rsw::Utf8ToWide(artLeaf)).lexically_normal();
 
+                std::error_code szEc;
+                const auto probedPath = (mOutDir / rsw::Utf8ToWide(rsw::ExpandArchToken(artLeaf, sampleArch))).lexically_normal();
+                if (std::filesystem::is_regular_file(probedPath, szEc)) {
+                    approxSuiteBytes += static_cast<std::uint64_t>(std::filesystem::file_size(probedPath, szEc));
+                }
+
                 synthDoc.SetString("SuitePackage", proj.id, "Name",              mName);
                 synthDoc.SetString("SuitePackage", proj.id, "Description",       mDoc.GetString("Package", "", "Tagline"));
                 synthDoc.SetString("SuitePackage", proj.id, "Category",          proj.category);
@@ -892,6 +900,17 @@ int wmain(int argc, wchar_t* argv[]) {
                 synthDoc.SetString("SuitePackage", proj.id, "RollbackBoundary",  proj.rollbackBoundary ? "true" : "false");
                 synthDoc.SetString("SuitePackage", proj.id, "ForwardInstallDir", proj.forwardInstallDir ? "true" : "false");
                 ++bundledChildren;
+            }
+
+            // Automatically spill DVD/Boxset-scale suites (`>= 400 MB`) to `Delivery = side-by-side` (`packages\`)
+            // unless `SuiteDelivery = embedded` was explicitly requested, avoiding the 2 GB Win32 PE resource ceiling!
+            const bool useSideBySide =
+                (suite.suiteDelivery == "side-by-side") ||
+                (suite.suiteDelivery != "embedded" && approxSuiteBytes >= 400ull * 1024ull * 1024ull);
+            if (useSideBySide) {
+                for (const auto& spId : synthDoc.GetNamedSectionIds("SuitePackage")) {
+                    synthDoc.SetString("SuitePackage", spId, "Delivery", "side-by-side");
+                }
             }
 
             if (bundledChildren > 0) {

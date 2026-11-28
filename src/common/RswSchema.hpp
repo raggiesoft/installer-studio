@@ -285,6 +285,8 @@ inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>
      "Short subtitle displayed beneath the product title in `SetupWizard.exe` and `InstallerStudio.exe`."},
     {"Package",  "WebsiteLabel",         FieldValueKind::String,      false, "",                  "",
      "Optional domain badge shown in the setup wizard footer (left blank if omitted — 100% white-label!)."},
+    {"UI",       "AllowChangeFolder",    FieldValueKind::Boolean,     false, "true",              "",
+     "Controls whether the destination folder box and Browse button are editable in compact / add-on setups (defaults to `false` for `PackageKind = addon`)."},
 
     // --- [Media] (Multi-Volume Disk Spanning & Uncompressed Loose Source Media!) ---
     {"Media",    "Compression",          FieldValueKind::EnumChoice,  false, "cab",               "cab|none",
@@ -406,8 +408,8 @@ inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>
      "Consumer-facing child tool title displayed in the Unified Suite Setup & Maintenance Hub."},
     {"SuitePackage", "Description",      FieldValueKind::String,      false, "",                  "",
      "Plain-English description of this child package in the Suite checklist."},
-    {"SuitePackage", "Delivery",         FieldValueKind::EnumChoice,  false, "embedded",          "embedded|web",
-     "`embedded` packs the child installer inside the offline Suite `.exe`; `web` builds a lightweight `< 2 MB` Workload Suite stub that downloads only selected packages (`DownloadUrl`) and verifies `Sha256` before installing."},
+    {"SuitePackage", "Delivery",         FieldValueKind::EnumChoice,  false, "embedded",          "embedded|side-by-side|web",
+     "`embedded` packs the child installer inside the offline Suite `.exe`; `side-by-side` stages verified child packages in `<OutputDir>\\packages\\` for multi-gigabyte DVD/Boxset suites without the 2 GB PE resource limit; `web` downloads selected packages (`DownloadUrl`) via WinHTTP and verifies `Sha256` before installing."},
     {"SuitePackage", "Source",           FieldValueKind::Path,        false, "",                  "",
      "Path to the compiled child `.msi`, `-setup.exe`, or `addon` binary on the build machine (required when `Delivery = embedded`; optional when `Delivery = web` to auto-fill `Sha256` & `FileName`)."},
     {"SuitePackage", "DownloadUrl",      FieldValueKind::String,      false, "",                  "",

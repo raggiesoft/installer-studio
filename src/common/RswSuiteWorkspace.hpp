@@ -43,6 +43,8 @@ struct RswSuiteProjectEntry {
     bool                  includeInSuite    = true;  // Bundled into unified Suite Setup when `BuildSuiteInstaller = true`
     bool                  requiredInSuite   = false; // Locked as required in the Suite checklist
     bool                  selectedByDefault = true;  // Pre-checked by default in the Suite checklist
+    bool                  rollbackBoundary  = false; // Savepoint boundary when `RollbackPolicy = rollback_new`
+    bool                  forwardInstallDir = false; // Passes `SUITE_INSTALLDIR="<dir>"` to child setup
 };
 
 struct RswSuiteWorkspace {
@@ -55,6 +57,8 @@ struct RswSuiteWorkspace {
     std::string                          upgradeCode;
     std::string                          scope                   = "machine";
     std::string                          requestedExecutionLevel = "asInvoker";
+    std::string                          rollbackPolicy          = "keep_completed";
+    std::string                          suiteDelivery           = "auto"; // `auto` | `embedded` | `side-by-side`
     std::string                          outputName;
     std::string                          outputDir               = "out";
     std::string                          defaultSubdir;
@@ -90,6 +94,7 @@ inline bool ParseSuiteWorkspace(
     outSuite.scope                    = doc.GetString("Suite", "", "Scope", "machine");
     outSuite.requestedExecutionLevel  = doc.GetString("Suite", "", "RequestedExecutionLevel", "asInvoker");
     outSuite.rollbackPolicy           = AsciiLower(doc.GetString("Suite", "", "RollbackPolicy", "keep_completed"));
+    outSuite.suiteDelivery            = AsciiLower(doc.GetString("Suite", "", "SuiteDelivery", "auto"));
     outSuite.outputName               = doc.GetString("Suite", "", "OutputName", "");
     outSuite.outputDir                = doc.GetString("Suite", "", "OutputDir", "out");
     outSuite.defaultSubdir            = doc.GetString("Suite", "", "DefaultSubdir", "");

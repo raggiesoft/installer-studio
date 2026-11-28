@@ -1,39 +1,54 @@
 ; ==============================================================================
 ; FILE: projects/albums/the-stardust-engine/1997-forger-nation-war-chest/1997-forger-nation-war-chest.rsip
 ; ALBUM EDITION: Forger Nation War Chest - The Stardust Engine (The Stardust Engine)
-; LAYOUT: 640x480 16:9 OpenGraph CD-Autorun Micro-Installer (Per-User Vault)
+; PROJECT TYPE: Host-Aware Add-On Installer (PackageKind = addon -> Listening Room)
 ; ==============================================================================
 
 @include "..\..\..\shared\raggiesoft-defaults.rsii"
 
 [Package]
+SchemaVersion         = 0.9
 Name                  = Forger Nation War Chest - The Stardust Engine
 Tagline               = The Stardust Engine - Engine Room Records High-Quality Edition
 WebsiteLabel          = music.raggiesoft.com
 Version               = 1.0.0
 Manufacturer          = Engine Room Records
+PackageKind           = addon
 UpgradeCode           = {1D840C50-E799-541D-8E5A-233F298D54F1}
 Architecture          = $(ARCH)
 Scope                 = user
 OutputName            = raggiesoft-album-1997-forger-nation-war-chest-$(ARCH)
 OutputDir             = out
-BuildBootstrapper     = true
 HideFromInstalledApps = true
 AboutUrl              = https://music.raggiesoft.com
 
-[Install]
-DefaultSubdir         = RaggieSoft\Music\the-stardust-engine\1997-forger-nation-war-chest
+[HostApp]
+Name                  = RaggieSoft The Listening Room
+UpgradeCode           = {E347B8ED-1588-5A46-A23E-441676EB4EC5}
+RegistryHive          = auto
+RegistryKey           = Software\RaggieSoft\The Listening Room
+RegistryValue         = Install Path
+FallbackSubdir        = RaggieSoft\The Listening Room
+Executable            = ListeningRoom.exe
+ContentTargetRoot     = LocalAppData
+ContentSubdir         = RaggieSoft\Music\the-stardust-engine\1997-forger-nation-war-chest
+RequireHostInstalled  = true
+DownloadUrl           = https://music.raggiesoft.com
+LaunchUri             = https://music.raggiesoft.com
+RefreshArgs           = --refresh-library
 
 [UI]
-WizardLayout          = autorun16x9
+WizardLayout          = simple
+AllowChangeFolder     = false
 AuthorOrArtist        = The Stardust Engine
-AccentPrimaryHex      = #06B6D4
+AccentPrimaryHex      = #0E7490
 AccentSecondaryHex    = #EC4899
 LicenseRtf            = License.rtf
 IconFile              = ..\..\..\..\..\windows\RaggieSoftApps\ListeningRoom\Assets\ListeningRoom.ico
 ArtworkPng            = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\the-stardust-engine\1997-forger-nation-war-chest\social-preview.jpg
 InstallButtonText     = &Install Album
-OfferLaunchOnFinish   = false
+FinishLaunchCheckbox  = &Open The Listening Room when finished
+OfferLaunchOnFinish   = true
 
 [Payload.VaultMp3]
 Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-vaults\engine-room-records\artists\the-stardust-engine\1997-forger-nation-war-chest\vault\mp3

@@ -1,39 +1,54 @@
 ; ==============================================================================
 ; FILE: projects/books/pebble-borrow/pebble-borrow.rsip
 ; BOOK EDITION: Pebble Borrow (Ocean View Archives)
-; LAYOUT: 640x480 16:9 OpenGraph CD-Autorun Micro-Installer (Per-User)
+; PROJECT TYPE: Host-Aware Add-On Installer (PackageKind = addon -> Book Reader)
 ; ==============================================================================
 
 @include "..\..\shared\raggiesoft-defaults.rsii"
 
 [Package]
+SchemaVersion         = 0.9
 Name                  = Pebble Borrow
 Tagline               = Ocean View Archives Offline Illustrated Edition
 WebsiteLabel          = books.raggiesoft.com
 Version               = 1.0.0
 Manufacturer          = RaggieSoft Media
+PackageKind           = addon
 UpgradeCode           = {8C09E21D-1F31-524E-9125-A7A9483F6F76}
 Architecture          = $(ARCH)
 Scope                 = user
 OutputName            = raggiesoft-book-pebble-borrow-$(ARCH)
 OutputDir             = out
-BuildBootstrapper     = true
 HideFromInstalledApps = true
 AboutUrl              = https://books.raggiesoft.com
 
-[Install]
-DefaultSubdir         = RaggieSoft\Books\pebble-borrow
+[HostApp]
+Name                  = RaggieSoft Book Reader
+UpgradeCode           = {71EC9272-2D8E-5089-82E3-4D296C1D7CAC}
+RegistryHive          = auto
+RegistryKey           = Software\RaggieSoft\Book Reader
+RegistryValue         = Install Path
+FallbackSubdir        = RaggieSoft\Book Reader
+Executable            = BookReader.exe
+ContentTargetRoot     = LocalAppData
+ContentSubdir         = RaggieSoft\Books\pebble-borrow
+RequireHostInstalled  = true
+DownloadUrl           = https://books.raggiesoft.com
+LaunchUri             = https://books.raggiesoft.com
+RefreshArgs           = --refresh-library
 
 [UI]
-WizardLayout          = autorun16x9
+WizardLayout          = simple
+AllowChangeFolder     = false
 AuthorOrArtist        = Ocean View Archives
-AccentPrimaryHex      = #14B8A6
+AccentPrimaryHex      = #117A72
 AccentSecondaryHex    = #F59E0B
 LicenseRtf            = License.rtf
 IconFile              = ..\..\..\..\windows\RaggieSoftApps\BookReader\Assets\BookReader.ico
 ArtworkPng            = ..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\raggiesoft-books\images\covers\og\pebble-borrow.jpg
 InstallButtonText     = &Install Book
-OfferLaunchOnFinish   = false
+FinishLaunchCheckbox  = &Open RaggieSoft Book Reader when finished
+OfferLaunchOnFinish   = true
 
 [Payload.Chapters]
 Source                = ..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\raggiesoft-books\books\pebble-borrow

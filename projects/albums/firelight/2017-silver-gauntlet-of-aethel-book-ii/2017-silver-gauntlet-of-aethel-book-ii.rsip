@@ -1,39 +1,54 @@
 ; ==============================================================================
 ; FILE: projects/albums/firelight/2017-silver-gauntlet-of-aethel-book-ii/2017-silver-gauntlet-of-aethel-book-ii.rsip
 ; ALBUM EDITION: The Silver Gauntlet of Aethel, Book II - The Shadow's (Firelight)
-; LAYOUT: 640x480 16:9 OpenGraph CD-Autorun Micro-Installer (Per-User Vault)
+; PROJECT TYPE: Host-Aware Add-On Installer (PackageKind = addon -> Listening Room)
 ; ==============================================================================
 
 @include "..\..\..\shared\raggiesoft-defaults.rsii"
 
 [Package]
+SchemaVersion         = 0.9
 Name                  = The Silver Gauntlet of Aethel, Book II - The Shadow's
 Tagline               = Firelight - Engine Room Records High-Quality Edition
 WebsiteLabel          = music.raggiesoft.com
 Version               = 1.0.0
 Manufacturer          = Engine Room Records
+PackageKind           = addon
 UpgradeCode           = {D0A990D3-21FD-522F-80F3-BFC1B5EC9797}
 Architecture          = $(ARCH)
 Scope                 = user
 OutputName            = raggiesoft-album-2017-silver-gauntlet-of-aethel-book-ii-$(ARCH)
 OutputDir             = out
-BuildBootstrapper     = true
 HideFromInstalledApps = true
 AboutUrl              = https://music.raggiesoft.com
 
-[Install]
-DefaultSubdir         = RaggieSoft\Music\firelight\2017-silver-gauntlet-of-aethel-book-ii
+[HostApp]
+Name                  = RaggieSoft The Listening Room
+UpgradeCode           = {E347B8ED-1588-5A46-A23E-441676EB4EC5}
+RegistryHive          = auto
+RegistryKey           = Software\RaggieSoft\The Listening Room
+RegistryValue         = Install Path
+FallbackSubdir        = RaggieSoft\The Listening Room
+Executable            = ListeningRoom.exe
+ContentTargetRoot     = LocalAppData
+ContentSubdir         = RaggieSoft\Music\firelight\2017-silver-gauntlet-of-aethel-book-ii
+RequireHostInstalled  = true
+DownloadUrl           = https://music.raggiesoft.com
+LaunchUri             = https://music.raggiesoft.com
+RefreshArgs           = --refresh-library
 
 [UI]
-WizardLayout          = autorun16x9
+WizardLayout          = simple
+AllowChangeFolder     = false
 AuthorOrArtist        = Firelight
-AccentPrimaryHex      = #06B6D4
+AccentPrimaryHex      = #0E7490
 AccentSecondaryHex    = #EC4899
 LicenseRtf            = License.rtf
 IconFile              = ..\..\..\..\..\windows\RaggieSoftApps\ListeningRoom\Assets\ListeningRoom.ico
 ArtworkPng            = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-assets\engine-room-records\artists\firelight\2017-silver-gauntlet-of-aethel-book-ii\social-preview.jpg
 InstallButtonText     = &Install Album
-OfferLaunchOnFinish   = false
+FinishLaunchCheckbox  = &Open The Listening Room when finished
+OfferLaunchOnFinish   = true
 
 [Payload.VaultMp3]
 Source                = ..\..\..\..\..\..\raggiesoft-servers\raggiesoft-vaults\engine-room-records\artists\firelight\2017-silver-gauntlet-of-aethel-book-ii\vault\mp3

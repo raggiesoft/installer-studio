@@ -1852,17 +1852,19 @@ inline bool RunSfxAndSimpleSetupAeroWizard(
 // ================================================================================
 struct SuiteWizardData {
     std::string suiteName             = "Sample Studio Suite";
-    std::string tagline               = "Unified Multi-Product Suite • Single UAC & Clean Installed Apps";
+    std::string tagline               = "Unified Multi-Product Suite \xE2\x80\xA2 Single UAC & Clean Installed Apps";
     std::string version               = "1.0.0";
     std::string manufacturer          = "Sample Studio";
     bool        perMachine            = true;
     int         execLevelIdx          = 0; // 0 = asInvoker, 1 = highestAvailable, 2 = requireAdministrator
+    int         deliveryIdx           = 0; // 0 = embedded, 1 = side-by-side (packages\), 2 = web (HTTPS Workload + SHA-256)
+    int         rollbackIdx           = 0; // 0 = keep_completed, 1 = rollback_new (LIFO Rollback)
     bool        buildUniversal        = true;
     bool        showCompProgressBar   = true;
     std::string child1Name            = "Core Desktop IDE";
     std::string child1Source          = "..\\core-ide\\out\\core-ide-$(ARCH).msi";
-    std::string child2Name            = "Companion Help & Docs";
-    std::string child2Source          = "..\\companion-docs\\out\\companion-docs-$(ARCH)-setup.exe";
+    std::string child2Name            = "Companion Content Pack";
+    std::string child2Source          = "..\\companion-pack\\out\\companion-pack-$(ARCH)-setup.exe";
     bool        autoValidate          = false; // Child paths may not be compiled yet on initial creation
     bool        completed             = false;
 };
@@ -1882,28 +1884,39 @@ inline INT_PTR CALLBACK SuiteProjectAeroPageProc(HWND hDlg, UINT msg, WPARAM wPa
         auto& d = *ctx->data;
 
         if (ctx->pageIndex == 0) {
-            b.AddLabel(L"Create a single-UAC Unified Suite Installer bundling multiple .msi & native apps:", 6, 4, 296, 14);
+            b.AddLabel(L"Create a single-UAC Unified Suite Installer bundling .msi, RaggieScript EXE, & Add-On packs:", 6, 4, 296, 14);
             b.AddLabel(L"&Suite Title:",       6, 26, 90); b.AddEdit(981, Utf8ToWide(d.suiteName),    98, 24, 204);
             b.AddLabel(L"&Subtitle / Tagline:",6, 50, 90); b.AddEdit(982, Utf8ToWide(d.tagline),      98, 48, 204);
             b.AddLabel(L"&Version (X.Y.Z):",   6, 74, 90); b.AddEdit(983, Utf8ToWide(d.version),      98, 72, 90);
             b.AddLabel(L"&Publisher:",         6, 98, 90); b.AddEdit(984, Utf8ToWide(d.manufacturer), 98, 96, 204);
         } else if (ctx->pageIndex == 1) {
-            b.AddLabel(L"Configure Suite UAC behavior, Universal x64+ARM64 output, & Dual Progress Bars:", 6, 4, 296, 14);
-            b.AddLabel(L"Install &Scope:", 6, 22, 296);
+            b.AddLabel(L"Configure Suite Scope, Workload Delivery, Rollback Policy, & Dual Progress Bars:", 6, 4, 296, 12);
+            b.AddLabel(L"Install &Scope:", 6, 18, 144);
             b.AddCombo(985, {
-                L"machine — All Users (Program Files, Single Unified UAC Prompt)",
-                L"user — Current User (%LOCALAPPDATA%, Zero UAC Required)"
-            }, d.perMachine ? 0 : 1, 6, 34, 296);
-            b.AddLabel(L"Outer &UAC Execution Level:", 6, 62, 296);
+                L"machine — All Users (Program Files)",
+                L"user — Current User (%LOCALAPPDATA%)"
+            }, d.perMachine ? 0 : 1, 6, 29, 144);
+            b.AddLabel(L"Outer &UAC Level:", 156, 18, 146);
             b.AddCombo(986, {
-                L"asInvoker — Open Suite checklist un-elevated; prompt UAC once on Install",
-                L"highestAvailable — Request elevation upfront for Admin accounts",
-                L"requireAdministrator — Require Administrator UAC immediately at launch"
-            }, d.execLevelIdx, 6, 74, 296);
-            b.AddCheck(987, L"Build &Universal Combined Installer (x64 + ARM64 in one EXE)", d.buildUniversal, 6, 104, 296);
-            b.AddCheck(988, L"Show &Component Progress Bar beneath monotonic Overall Suite Bar", d.showCompProgressBar, 6, 124, 296);
+                L"asInvoker (Elevate on Install)",
+                L"highestAvailable",
+                L"requireAdministrator"
+            }, d.execLevelIdx, 156, 29, 146);
+            b.AddLabel(L"Package &Delivery:", 6, 52, 144);
+            b.AddCombo(989, {
+                L"embedded — Single Offline EXE",
+                L"side-by-side — packages\\ Boxset",
+                L"web — HTTPS Workload + SHA-256"
+            }, d.deliveryIdx, 6, 63, 144);
+            b.AddLabel(L"&Rollback Policy:", 156, 52, 146);
+            b.AddCombo(990, {
+                L"keep_completed (Fast Resume)",
+                L"rollback_new (LIFO Undo)"
+            }, d.rollbackIdx, 156, 63, 146);
+            b.AddCheck(987, L"Build &Universal Combined Installer (x64 + ARM64 in one EXE)", d.buildUniversal, 6, 94, 296);
+            b.AddCheck(988, L"Show &Component Progress Bar beneath monotonic Overall Suite Bar", d.showCompProgressBar, 6, 114, 296);
         } else {
-            b.AddLabel(L"Add your first Suite member packages (.msi or RaggieScript EXE -setup.exe):", 6, 4, 296, 14);
+            b.AddLabel(L"Add your first Suite member packages (.msi, RaggieScript EXE, or Add-On -setup.exe):", 6, 4, 296, 14);
             b.AddLabel(L"Member &1 Title:", 6, 24, 86);  b.AddEdit(991, Utf8ToWide(d.child1Name),   94, 22, 208);
             b.AddLabel(L"Member 1 &Path:",  6, 46, 86);  b.AddEdit(992, Utf8ToWide(d.child1Source), 94, 44, 156);
             b.AddButton(993, L"&Browse...", 254, 43, 48);
@@ -1946,6 +1959,8 @@ inline INT_PTR CALLBACK SuiteProjectAeroPageProc(HWND hDlg, UINT msg, WPARAM wPa
             } else if (ctx->pageIndex == 1) {
                 d.perMachine          = (GetComboIndex(hDlg, 985) == 0);
                 d.execLevelIdx        = GetComboIndex(hDlg, 986);
+                d.deliveryIdx         = GetComboIndex(hDlg, 989);
+                d.rollbackIdx         = GetComboIndex(hDlg, 990);
                 d.buildUniversal      = IsDlgItemChecked(hDlg, 987);
                 d.showCompProgressBar = IsDlgItemChecked(hDlg, 988);
             } else {
@@ -1966,7 +1981,7 @@ inline bool RunUnifiedSuiteAeroWizard(HWND hOwner, std::string& outGeneratedRsip
     SuiteWizardData data{};
     const wchar_t* headers[3] = {
         L"Step 1 of 3 — Unified Suite Identity & Publisher",
-        L"Step 2 of 3 — Single-UAC Scope & Dual Progress Bars",
+        L"Step 2 of 3 — Delivery Mode, Rollback Policy & Progress Bars",
         L"Step 3 of 3 — Initial Suite Member Applications"
     };
     SuiteWizPageCtx ctxs[3]{};
@@ -1981,8 +1996,12 @@ inline bool RunUnifiedSuiteAeroWizard(HWND hOwner, std::string& outGeneratedRsip
         ui::GlassGlyph::Blocks, ui::brand::kRaggieBlue);
     if (!data.completed) return false;
 
-    const char* execToks[] = {"asInvoker", "highestAvailable", "requireAdministrator"};
-    const char* execLvl = execToks[std::clamp(data.execLevelIdx, 0, 2)];
+    const char* execToks[]  = {"asInvoker", "highestAvailable", "requireAdministrator"};
+    const char* delivToks[] = {"embedded", "side-by-side", "web"};
+    const char* rbToks[]    = {"keep_completed", "rollback_new"};
+    const char* execLvl     = execToks[std::clamp(data.execLevelIdx, 0, 2)];
+    const char* delivTok    = delivToks[std::clamp(data.deliveryIdx, 0, 2)];
+    const char* rbTok       = rbToks[std::clamp(data.rollbackIdx, 0, 1)];
 
     std::ostringstream s;
     s << "; ==============================================================================\r\n"
@@ -1996,6 +2015,7 @@ inline bool RunUnifiedSuiteAeroWizard(HWND hOwner, std::string& outGeneratedRsip
       << "Version                 = " << data.version << "\r\n"
       << "Manufacturer            = " << data.manufacturer << "\r\n"
       << "PackageKind             = suite\r\n"
+      << "SuiteRollbackPolicy     = " << rbTok << "\r\n"
       << "UpgradeCode             = " << GenerateRandomMsiGuid() << "\r\n"
       << "Architecture            = $(ARCH)\r\n"
       << "Scope                   = " << (data.perMachine ? "machine" : "user") << "\r\n"
@@ -2011,23 +2031,283 @@ inline bool RunUnifiedSuiteAeroWizard(HWND hOwner, std::string& outGeneratedRsip
         const bool isMsi1 = EqualsIgnoreCase(WideToUtf8(std::filesystem::path(Utf8ToWide(data.child1Source)).extension().wstring()), ".msi");
         s << "[SuitePackage.CoreApp]\r\n"
           << "Name                    = " << data.child1Name << "\r\n"
-          << "Source                  = " << data.child1Source << "\r\n"
-          << "Engine                  = " << (isMsi1 ? "msi" : "native") << "\r\n"
+          << "Delivery                = " << delivTok << "\r\n";
+        if (std::string_view(delivTok) == "web") {
+            s << "DownloadUrl             = " << data.child1Source << "\r\n"
+              << "Sha256                  = 0000000000000000000000000000000000000000000000000000000000000000\r\n";
+        } else {
+            s << "Source                  = " << data.child1Source << "\r\n";
+        }
+        s << "Engine                  = " << (isMsi1 ? "msi" : "raggiescript") << "\r\n"
           << "UpgradeCode             = " << GenerateRandomMsiGuid() << "\r\n"
           << "Required                = true\r\n"
+          << "RollbackBoundary        = true\r\n"
           << "AdoptStandalone         = true\r\n\r\n";
     }
     if (!data.child2Name.empty() && !data.child2Source.empty()) {
         const bool isMsi2 = EqualsIgnoreCase(WideToUtf8(std::filesystem::path(Utf8ToWide(data.child2Source)).extension().wstring()), ".msi");
         s << "[SuitePackage.CompanionTool]\r\n"
           << "Name                    = " << data.child2Name << "\r\n"
-          << "Source                  = " << data.child2Source << "\r\n"
-          << "Engine                  = " << (isMsi2 ? "msi" : "native") << "\r\n"
+          << "Delivery                = " << delivTok << "\r\n";
+        if (std::string_view(delivTok) == "web") {
+            s << "DownloadUrl             = " << data.child2Source << "\r\n"
+              << "Sha256                  = 0000000000000000000000000000000000000000000000000000000000000000\r\n";
+        } else {
+            s << "Source                  = " << data.child2Source << "\r\n";
+        }
+        s << "Engine                  = " << (isMsi2 ? "msi" : "raggiescript") << "\r\n"
           << "UpgradeCode             = " << GenerateRandomMsiGuid() << "\r\n"
           << "SelectedByDefault       = true\r\n"
           << "AdoptStandalone         = true\r\n";
     }
 
+    outGeneratedRsipUtf8 = s.str();
+    return true;
+}
+
+// ================================================================================
+// WIZARD 8: HOST-AWARE ADD-ON / CONTENT PACK AEROWIZARD (`PackageKind = addon`)
+//   First-class project type (`v0.9.0`) unlocked across ALL 4 Editions!
+//   Locates an installed parent application (`[HostApp]`) and places books, albums,
+//   level packs, themes, or plugins directly into the host's library folder!
+// ================================================================================
+struct AddOnWizardData {
+    std::string addonName           = "Cedar Run Illustrated Novel";
+    std::string tagline             = "Offline Add-On Content Pack";
+    std::string version             = "1.0.0";
+    std::string manufacturer        = "RaggieSoft Media";
+    std::string sourceFolder        = "..\\content";
+    int         presetIdx           = 1; // 0 = Custom Host, 1 = Book Reader, 2 = Listening Room, 3 = Host Plugins\ Dir
+    std::string hostName            = "RaggieSoft Book Reader";
+    std::string hostRegistryKey     = "Software\\RaggieSoft\\Book Reader";
+    std::string hostFallbackSubdir  = "RaggieSoft\\Book Reader";
+    std::string hostExe             = "BookReader.exe";
+    int         targetRootIdx       = 0; // 0 = LocalAppData, 1 = HostInstallDir, 2 = CommonAppData, 3 = AppData
+    std::string contentSubdir       = "RaggieSoft\\Books\\cedar-run";
+    std::string hostDownloadUrl     = "https://books.raggiesoft.com";
+    bool        requireHost         = true;
+    bool        autoValidate        = false;
+    bool        completed           = false;
+};
+
+struct AddOnWizPageCtx {
+    int              pageIndex = 0;
+    AddOnWizardData* data      = nullptr;
+};
+
+inline INT_PTR CALLBACK AddOnProjectAeroPageProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* ctx = reinterpret_cast<AddOnWizPageCtx*>(::GetWindowLongPtrW(hDlg, DWLP_USER));
+    if (msg == WM_INITDIALOG) {
+        const auto* psp = reinterpret_cast<const PROPSHEETPAGEW*>(lParam);
+        ctx = reinterpret_cast<AddOnWizPageCtx*>(psp->lParam);
+        ::SetWindowLongPtrW(hDlg, DWLP_USER, reinterpret_cast<LONG_PTR>(ctx));
+        AeroPageBuilder b(hDlg);
+        auto& d = *ctx->data;
+
+        if (ctx->pageIndex == 0) {
+            b.AddLabel(L"Create a Host-Aware Add-On / Content Pack Installer (PackageKind = addon):", 6, 4, 296, 14);
+            b.AddLabel(L"&Add-On Title:",     6, 24, 90); b.AddEdit(961, Utf8ToWide(d.addonName),    98, 22, 204);
+            b.AddLabel(L"&Subtitle / Note:",  6, 48, 90); b.AddEdit(962, Utf8ToWide(d.tagline),      98, 46, 204);
+            b.AddLabel(L"&Version (X.Y.Z):",  6, 72, 90); b.AddEdit(963, Utf8ToWide(d.version),      98, 70, 90);
+            b.AddLabel(L"&Publisher:",        6, 96, 90); b.AddEdit(964, Utf8ToWide(d.manufacturer), 98, 94, 204);
+            b.AddLabel(L"&Content Folder:",   6, 120, 90);b.AddEdit(965, Utf8ToWide(d.sourceFolder), 98, 118, 152);
+            b.AddButton(966, L"&Browse...", 254, 117, 48);
+        } else if (ctx->pageIndex == 1) {
+            b.AddLabel(L"Select or configure the parent Host Application this Add-On installs into:", 6, 4, 296, 14);
+            b.AddLabel(L"Host &Preset:", 6, 22, 86);
+            b.AddCombo(967, {
+                L"Custom Host Application (Registry / EXE)",
+                L"RaggieSoft Book Reader — Book Pack",
+                L"RaggieSoft The Listening Room — Album Pack",
+                L"Host Application Plugins\\ Subfolder"
+            }, d.presetIdx, 94, 20, 208);
+            b.AddLabel(L"&Host App Name:",    6, 48, 86); b.AddEdit(968, Utf8ToWide(d.hostName),           94, 46, 208);
+            b.AddLabel(L"Host &Reg Key:",     6, 72, 86); b.AddEdit(969, Utf8ToWide(d.hostRegistryKey),    94, 70, 208);
+            b.AddLabel(L"&Fallback Subdir:",  6, 96, 86); b.AddEdit(970, Utf8ToWide(d.hostFallbackSubdir), 94, 94, 208);
+            b.AddLabel(L"Host &Executable:",  6, 120, 86);b.AddEdit(971, Utf8ToWide(d.hostExe),            94, 118, 208);
+        } else {
+            b.AddLabel(L"Choose where the content files are placed once the Host Application is verified:", 6, 4, 296, 14);
+            b.AddLabel(L"Target &Root:", 6, 22, 296);
+            b.AddCombo(972, {
+                L"LocalAppData — Per-User %LOCALAPPDATA% (Zero UAC Prompt!)",
+                L"HostInstallDir — Inside Detected Host Folder (<HostDir>\\<Subdir>)",
+                L"CommonAppData — Shared All-Users %ProgramData%",
+                L"AppData — Roaming %APPDATA%"
+            }, d.targetRootIdx, 6, 34, 296);
+            b.AddLabel(L"Content &Subdir:", 6, 62, 88);   b.AddEdit(973, Utf8ToWide(d.contentSubdir),   96, 60, 206);
+            b.AddLabel(L"&Get Host URL:",   6, 86, 88);   b.AddEdit(974, Utf8ToWide(d.hostDownloadUrl), 96, 84, 206);
+            b.AddCheck(975, L"&Require Host Installed (blocks orphaned files & exits 1605 in /s)", d.requireHost, 6, 112, 296);
+            b.AddCheck(976, L"&Validate manifest immediately if Content Folder exists on disk", d.autoValidate, 6, 132, 296);
+        }
+        return TRUE;
+    }
+    if (!ctx || !ctx->data) return FALSE;
+    auto& d = *ctx->data;
+
+    if (msg == WM_COMMAND) {
+        const int id   = LOWORD(wParam);
+        const int code = HIWORD(wParam);
+        if (id == 966) {
+            std::wstring chosen;
+            if (BrowsePathModal(hDlg, true, L"All Files (*.*)\0*.*\0", chosen)) {
+                ::SetDlgItemTextW(hDlg, 965, chosen.c_str());
+            }
+            return TRUE;
+        }
+        if (id == 967 && code == CBN_SELCHANGE) {
+            const int sel = GetComboIndex(hDlg, 967);
+            if (sel == 1) {
+                ::SetDlgItemTextW(hDlg, 968, L"RaggieSoft Book Reader");
+                ::SetDlgItemTextW(hDlg, 969, L"Software\\RaggieSoft\\Book Reader");
+                ::SetDlgItemTextW(hDlg, 970, L"RaggieSoft\\Book Reader");
+                ::SetDlgItemTextW(hDlg, 971, L"BookReader.exe");
+                d.targetRootIdx   = 0;
+                d.contentSubdir   = "RaggieSoft\\Books\\" + SlugifyName(d.addonName);
+                d.hostDownloadUrl = "https://books.raggiesoft.com";
+            } else if (sel == 2) {
+                ::SetDlgItemTextW(hDlg, 968, L"RaggieSoft The Listening Room");
+                ::SetDlgItemTextW(hDlg, 969, L"Software\\RaggieSoft\\The Listening Room");
+                ::SetDlgItemTextW(hDlg, 970, L"RaggieSoft\\The Listening Room");
+                ::SetDlgItemTextW(hDlg, 971, L"ListeningRoom.exe");
+                d.targetRootIdx   = 0;
+                d.contentSubdir   = "RaggieSoft\\Music\\" + SlugifyName(d.addonName);
+                d.hostDownloadUrl = "https://music.raggiesoft.com";
+            } else if (sel == 3) {
+                ::SetDlgItemTextW(hDlg, 968, L"My Studio Host Application");
+                ::SetDlgItemTextW(hDlg, 969, L"Software\\Sample Studio\\My Host App");
+                ::SetDlgItemTextW(hDlg, 970, L"Sample Studio\\My Host App");
+                ::SetDlgItemTextW(hDlg, 971, L"MyHostApp.exe");
+                d.targetRootIdx   = 1; // `HostInstallDir`
+                d.contentSubdir   = "Plugins\\" + SlugifyName(d.addonName);
+                d.hostDownloadUrl = "";
+            }
+            return TRUE;
+        }
+    }
+    if (msg == WM_NOTIFY) {
+        const auto* nm = reinterpret_cast<const NMHDR*>(lParam);
+        if (nm->code == PSN_SETACTIVE) {
+            if (ctx->pageIndex == 2) {
+                ::SendDlgItemMessageW(hDlg, 972, CB_SETCURSEL, d.targetRootIdx, 0);
+                ::SetDlgItemTextW(hDlg, 973, Utf8ToWide(d.contentSubdir).c_str());
+                ::SetDlgItemTextW(hDlg, 974, Utf8ToWide(d.hostDownloadUrl).c_str());
+            }
+            DWORD btns = PSWIZB_BACK | PSWIZB_NEXT;
+            if (ctx->pageIndex == 0) btns = PSWIZB_NEXT;
+            if (ctx->pageIndex == 2) btns = PSWIZB_BACK | PSWIZB_FINISH;
+            PropSheet_SetWizButtons(::GetParent(hDlg), btns);
+            ::SetWindowLongPtrW(hDlg, DWLP_MSGRESULT, 0);
+            return TRUE;
+        }
+        if (nm->code == PSN_WIZNEXT || nm->code == PSN_WIZFINISH) {
+            if (ctx->pageIndex == 0) {
+                d.addonName    = ReadDlgItemUtf8(hDlg, 961);
+                d.tagline      = ReadDlgItemUtf8(hDlg, 962);
+                d.version      = ReadDlgItemUtf8(hDlg, 963);
+                d.manufacturer = ReadDlgItemUtf8(hDlg, 964);
+                d.sourceFolder = ReadDlgItemUtf8(hDlg, 965);
+            } else if (ctx->pageIndex == 1) {
+                d.presetIdx          = GetComboIndex(hDlg, 967);
+                d.hostName           = ReadDlgItemUtf8(hDlg, 968);
+                d.hostRegistryKey    = ReadDlgItemUtf8(hDlg, 969);
+                d.hostFallbackSubdir = ReadDlgItemUtf8(hDlg, 970);
+                d.hostExe            = ReadDlgItemUtf8(hDlg, 971);
+            } else {
+                d.targetRootIdx   = GetComboIndex(hDlg, 972);
+                d.contentSubdir   = ReadDlgItemUtf8(hDlg, 973);
+                d.hostDownloadUrl = ReadDlgItemUtf8(hDlg, 974);
+                d.requireHost     = IsDlgItemChecked(hDlg, 975);
+                d.autoValidate    = IsDlgItemChecked(hDlg, 976);
+                d.completed       = true;
+            }
+            ::SetWindowLongPtrW(hDlg, DWLP_MSGRESULT, 0);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+inline bool RunAddOnInstallerAeroWizard(HWND hOwner, std::string& outGeneratedRsipUtf8, bool& outAutoValidate) {
+    AddOnWizardData data{};
+    const wchar_t* headers[3] = {
+        L"Step 1 of 3 — Add-On / Content Pack Identity & Files",
+        L"Step 2 of 3 — Parent Host Application Discovery ([HostApp])",
+        L"Step 3 of 3 — Content Placement & Missing-Host Safeguards"
+    };
+    AddOnWizPageCtx ctxs[3]{};
+    LPARAM lParams[3]{};
+    for (int i = 0; i < 3; ++i) {
+        ctxs[i]    = {i, &data};
+        lParams[i] = reinterpret_cast<LPARAM>(&ctxs[i]);
+    }
+    RunThemedAeroWizard(
+        hOwner, L"Add-On / Content Pack Project Wizard",
+        3, headers, &AddOnProjectAeroPageProc, lParams,
+        ui::GlassGlyph::Folder, ui::brand::kEmeraldOk);
+    if (!data.completed) return false;
+
+    const char* rootToks[] = {"LocalAppData", "HostInstallDir", "CommonAppData", "AppData"};
+    const char* targetRoot = rootToks[std::clamp(data.targetRootIdx, 0, 3)];
+    const bool  perMachine = (data.targetRootIdx == 1 || data.targetRootIdx == 2);
+    const std::string slug = SlugifyName(data.addonName);
+
+    std::ostringstream s;
+    s << "; ==============================================================================\r\n"
+      << "; RaggieSoft Host-Aware Add-On / Content Pack Project (PackageKind = addon)\r\n"
+      << "; Unlocked across ALL 4 Editions (Community, Essentials, Developer, Architect)!\r\n"
+      << "; Locates '" << data.hostName << "' via [HostApp] and places content directly into\r\n"
+      << "; its library directory (exiting cleanly with 1605 if the host is missing!).\r\n"
+      << "; ==============================================================================\r\n\r\n"
+      << "[Package]\r\n"
+      << "Name                  = " << data.addonName << "\r\n"
+      << "Tagline               = " << data.tagline << "\r\n"
+      << "Version               = " << data.version << "\r\n"
+      << "Manufacturer          = " << data.manufacturer << "\r\n"
+      << "PackageKind           = addon\r\n"
+      << "UpgradeCode           = " << GenerateRandomMsiGuid() << "\r\n"
+      << "Architecture          = $(ARCH)\r\n"
+      << "Scope                 = " << (perMachine ? "machine" : "user") << "\r\n"
+      << "HideFromInstalledApps = true\r\n\r\n"
+      << "[HostApp]\r\n"
+      << "Name                  = " << data.hostName << "\r\n";
+    if (!data.hostRegistryKey.empty()) {
+        s << "RegistryKey           = " << data.hostRegistryKey << "\r\n";
+    }
+    if (!data.hostFallbackSubdir.empty()) {
+        s << "FallbackSubdir        = " << data.hostFallbackSubdir << "\r\n";
+    }
+    if (!data.hostExe.empty()) {
+        s << "Executable            = " << data.hostExe << "\r\n";
+    }
+    s << "ContentTargetRoot     = " << targetRoot << "\r\n"
+      << "ContentSubdir         = " << data.contentSubdir << "\r\n"
+      << "RequireHostInstalled  = " << (data.requireHost ? "true" : "false") << "\r\n";
+    if (!data.hostDownloadUrl.empty()) {
+        s << "DownloadUrl           = " << data.hostDownloadUrl << "\r\n";
+    }
+    s << "\r\n[UI]\r\n"
+      << "WizardLayout          = simple\r\n"
+      << "AllowChangeFolder     = false\r\n"
+      << "InstallButtonText     = &Install Add-On\r\n"
+      << "FinishLaunchCheckbox  = &Open " << data.hostName << " when finished\r\n\r\n"
+      << "[Payload.Content]\r\n"
+      << "Source                = " << data.sourceFolder << "\r\n";
+
+    if (data.presetIdx == 1) {
+        s << "\r\n[Registry.BookPackList]\r\n"
+          << "Root                  = HKCU\r\n"
+          << "Key                   = Software\\RaggieSoft\\Book Reader\\Books\\List\r\n"
+          << "Name                  = " << slug << "\r\n"
+          << "Value                 = [INSTALLDIR]\r\n";
+    } else if (data.presetIdx == 2) {
+        s << "\r\n[Registry.AlbumPackList]\r\n"
+          << "Root                  = HKCU\r\n"
+          << "Key                   = Software\\RaggieSoft\\The Listening Room\\Albums\\List\r\n"
+          << "Name                  = " << slug << "\r\n"
+          << "Value                 = [INSTALLDIR]\r\n";
+    }
+
+    outAutoValidate      = data.autoValidate;
     outGeneratedRsipUtf8 = s.str();
     return true;
 }

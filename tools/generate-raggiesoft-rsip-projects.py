@@ -20,16 +20,19 @@
 #          - `backstage`            (RaggieSoft Backstage + OfflineSeed)
 #          - `storetrainer`         (RaggieSoft StoreTrainer + .stfx ProgId)
 #       3. **All Visible Books** (`projects/books/<slug>/<slug>.rsip`):
-#          - `640x480` `16:9` OpenGraph CD-Autorun micro-installers (`Scope = user`).
+#          - Host-Aware Add-On Installers (`PackageKind = addon`, `[HostApp]` ->
+#            *RaggieSoft Book Reader*, zero-UAC `%LOCALAPPDATA%\RaggieSoft\Books\<slug>`).
 #       4. **All Vault HQ Albums** (`projects/albums/<artist>/<album>/<album>.rsip`):
-#          - `640x480` `16:9` OpenGraph CD-Autorun supporter micro-installers.
+#          - Host-Aware Add-On Installers (`PackageKind = addon`, `[HostApp]` ->
+#            *RaggieSoft The Listening Room*, `%LOCALAPPDATA%\RaggieSoft\Music\<artist>\<album>`).
 #       5. **Master Multi-Project Suite** (`RaggieSoft.rsis`):
-#          - Groups all 77 `.rsip` projects (just like Visual Studio `.slnx`!) with
+#          - Groups all App `.rsip` projects + Book Add-Ons + HQ Album Add-Ons with
 #            `Category` tags and `BuildOrder` stages for `instbuild.exe` & `InstallerStudio.exe`!
 # ================================================================================
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -446,33 +449,47 @@ def generate_book_micro_projects(shared_rsii: Path, suite_entries: list[tuple[st
             "; ==============================================================================",
             f"; FILE: projects/books/{slug}/{slug}.rsip",
             f"; BOOK EDITION: {title} ({imprint})",
-            "; LAYOUT: 640x480 16:9 OpenGraph CD-Autorun Micro-Installer (Per-User)",
+            "; PROJECT TYPE: Host-Aware Add-On Installer (PackageKind = addon -> Book Reader)",
             "; ==============================================================================",
             "",
             f'@include "{inc_rel}"',
             "",
             "[Package]",
+            "SchemaVersion         = 0.9",
             f"Name                  = {title}",
             f"Tagline               = {imprint} Offline Illustrated Edition",
             "WebsiteLabel          = books.raggiesoft.com",
             "Version               = 1.0.0",
             "Manufacturer          = RaggieSoft Media",
+            "PackageKind           = addon",
             f"UpgradeCode           = {det_guid(f'book:{slug}:upgrade')}",
             "Architecture          = $(ARCH)",
             "Scope                 = user",
             f"OutputName            = raggiesoft-book-{slug}-$(ARCH)",
             "OutputDir             = out",
-            "BuildBootstrapper     = true",
             "HideFromInstalledApps = true",
             "AboutUrl              = https://books.raggiesoft.com",
             "",
-            "[Install]",
-            f"DefaultSubdir         = RaggieSoft\\Books\\{slug}",
+            "[HostApp]",
+            "Name                  = RaggieSoft Book Reader",
+            "UpgradeCode           = {71EC9272-2D8E-5089-82E3-4D296C1D7CAC}",
+            "RegistryHive          = auto",
+            r"RegistryKey           = Software\RaggieSoft\Book Reader",
+            "RegistryValue         = Install Path",
+            r"FallbackSubdir        = RaggieSoft\Book Reader",
+            "Executable            = BookReader.exe",
+            "ContentTargetRoot     = LocalAppData",
+            f"ContentSubdir         = RaggieSoft\\Books\\{slug}",
+            "RequireHostInstalled  = true",
+            "DownloadUrl           = https://books.raggiesoft.com",
+            "LaunchUri             = https://books.raggiesoft.com",
+            "RefreshArgs           = --refresh-library",
             "",
             "[UI]",
-            "WizardLayout          = autorun16x9",
+            "WizardLayout          = simple",
+            "AllowChangeFolder     = false",
             f"AuthorOrArtist        = {imprint}",
-            "AccentPrimaryHex      = #14B8A6",
+            "AccentPrimaryHex      = #117A72",
             "AccentSecondaryHex    = #F59E0B",
             "LicenseRtf            = License.rtf",
         ]
@@ -484,7 +501,8 @@ def generate_book_micro_projects(shared_rsii: Path, suite_entries: list[tuple[st
             lines.append(f"ArtworkPng            = {to_win_rel_or_abs(p2x3_jpg, proj_dir)}")
         lines.extend([
             "InstallButtonText     = &Install Book",
-            "OfferLaunchOnFinish   = false",
+            "FinishLaunchCheckbox  = &Open RaggieSoft Book Reader when finished",
+            "OfferLaunchOnFinish   = true",
             "",
             "[Payload.Chapters]",
             f"Source                = {to_win_rel_or_abs(book_src, proj_dir)}",
@@ -600,33 +618,47 @@ def generate_album_micro_projects(shared_rsii: Path, suite_entries: list[tuple[s
             "; ==============================================================================",
             f"; FILE: projects/albums/{artist_slug}/{album_slug}/{album_slug}.rsip",
             f"; ALBUM EDITION: {disp_title} ({artist_name})",
-            "; LAYOUT: 640x480 16:9 OpenGraph CD-Autorun Micro-Installer (Per-User Vault)",
+            "; PROJECT TYPE: Host-Aware Add-On Installer (PackageKind = addon -> Listening Room)",
             "; ==============================================================================",
             "",
             f'@include "{inc_rel}"',
             "",
             "[Package]",
+            "SchemaVersion         = 0.9",
             f"Name                  = {disp_title}",
             f"Tagline               = {artist_name} - Engine Room Records High-Quality Edition",
             "WebsiteLabel          = music.raggiesoft.com",
             "Version               = 1.0.0",
             "Manufacturer          = Engine Room Records",
+            "PackageKind           = addon",
             f"UpgradeCode           = {det_guid(f'album:{artist_slug}/{album_slug}:upgrade')}",
             "Architecture          = $(ARCH)",
             "Scope                 = user",
             f"OutputName            = raggiesoft-album-{album_slug}-$(ARCH)",
             "OutputDir             = out",
-            "BuildBootstrapper     = true",
             "HideFromInstalledApps = true",
             "AboutUrl              = https://music.raggiesoft.com",
             "",
-            "[Install]",
-            f"DefaultSubdir         = RaggieSoft\\Music\\{artist_slug}\\{album_slug}",
+            "[HostApp]",
+            "Name                  = RaggieSoft The Listening Room",
+            "UpgradeCode           = {E347B8ED-1588-5A46-A23E-441676EB4EC5}",
+            "RegistryHive          = auto",
+            r"RegistryKey           = Software\RaggieSoft\The Listening Room",
+            "RegistryValue         = Install Path",
+            r"FallbackSubdir        = RaggieSoft\The Listening Room",
+            "Executable            = ListeningRoom.exe",
+            "ContentTargetRoot     = LocalAppData",
+            f"ContentSubdir         = RaggieSoft\\Music\\{artist_slug}\\{album_slug}",
+            "RequireHostInstalled  = true",
+            "DownloadUrl           = https://music.raggiesoft.com",
+            "LaunchUri             = https://music.raggiesoft.com",
+            "RefreshArgs           = --refresh-library",
             "",
             "[UI]",
-            "WizardLayout          = autorun16x9",
+            "WizardLayout          = simple",
+            "AllowChangeFolder     = false",
             f"AuthorOrArtist        = {artist_name}",
-            "AccentPrimaryHex      = #06B6D4",
+            "AccentPrimaryHex      = #0E7490",
             "AccentSecondaryHex    = #EC4899",
             "LicenseRtf            = License.rtf",
         ]
@@ -638,7 +670,8 @@ def generate_album_micro_projects(shared_rsii: Path, suite_entries: list[tuple[s
             lines.append(f"ArtworkPng            = {to_win_rel_or_abs(sq_jpg, proj_dir)}")
         lines.extend([
             "InstallButtonText     = &Install Album",
-            "OfferLaunchOnFinish   = false",
+            "FinishLaunchCheckbox  = &Open The Listening Room when finished",
+            "OfferLaunchOnFinish   = true",
             "",
             "[Payload.VaultMp3]",
             f"Source                = {to_win_rel_or_abs(vault_mp3_dir, proj_dir)}",
@@ -730,20 +763,66 @@ def write_master_suite(suite_entries: list[tuple[str, Path, str, int]]) -> Path:
     return suite_path
 
 
+def collect_existing_app_projects(suite_entries: list[tuple[str, Path, str, int]]) -> int:
+    """Preserves hand-authored `projects/apps/<slug>/<slug>.rsip` manifests while indexing them into `RaggieSoft.rsis`."""
+    apps_dir = PROJECTS_ROOT / "apps"
+    preferred_order = [
+        "installer-studio",
+        "accessibility-studio",
+        "training-studio",
+        "help-studio",
+        "showcase-studio",
+        "msi-prism",
+        "self-extractor",
+        "launcher",
+        "book-reader",
+        "listening-room",
+        "backstage",
+        "storetrainer",
+    ]
+    found: list[Path] = []
+    seen: set[str] = set()
+    for slug in preferred_order:
+        cand = apps_dir / slug / f"{slug}.rsip"
+        if cand.is_file():
+            found.append(cand)
+            seen.add(slug)
+    if apps_dir.is_dir():
+        for extra in sorted(apps_dir.glob("*/*.rsip")):
+            slug = extra.parent.name
+            if slug not in seen and slug != "raggiesoft-studio-suite":
+                found.append(extra)
+                seen.add(slug)
+    for idx, rsip_path in enumerate(found, 1):
+        slug = rsip_path.parent.name
+        suite_entries.append((f"App_{slug}", rsip_path, "CoreApps", 10 + idx))
+    return len(found)
+
+
 def main() -> None:
-    """Cleanly generates `projects/` + `RaggieSoft.rsis` across Apps, Books, and HQ Albums."""
-    if PROJECTS_ROOT.exists():
-        shutil.rmtree(PROJECTS_ROOT)
+    """Regenerates `projects/books/` + `projects/albums/` as `PackageKind = addon` projects + `RaggieSoft.rsis` without clobbering `projects/apps/`!"""
+    ap = argparse.ArgumentParser(description="Generate RaggieSoft Book & Album Add-On .rsip projects and RaggieSoft.rsis")
+    ap.add_argument("--overwrite-apps", action="store_true", help="Also overwrite projects/apps/* from legacy seed templates")
+    args = ap.parse_args()
+
+    for sub in ("books", "albums"):
+        target = PROJECTS_ROOT / sub
+        if target.exists():
+            shutil.rmtree(target)
+
     suite_entries: list[tuple[str, Path, str, int]] = []
     shared_rsii = write_shared_rsii_include()
-    n_apps = generate_core_app_projects(shared_rsii, suite_entries)
+    if args.overwrite_apps:
+        n_apps = generate_core_app_projects(shared_rsii, suite_entries)
+    else:
+        n_apps = collect_existing_app_projects(suite_entries)
     n_books = generate_book_micro_projects(shared_rsii, suite_entries)
     n_albums = generate_album_micro_projects(shared_rsii, suite_entries)
     suite_file = write_master_suite(suite_entries)
     print(
-        f"[OK] Generated {n_apps} Core App .rsip projects, "
-        f"{n_books} Book Autorun .rsip projects, and "
-        f"{n_albums} HQ Album Autorun .rsip projects + master suite {suite_file.name}"
+        f"[OK] Indexed {n_apps} Core App .rsip projects, generated "
+        f"{n_books} Book Add-On .rsip projects, and "
+        f"{n_albums} HQ Album Add-On .rsip projects + master suite {suite_file.name}"
     )
 
 

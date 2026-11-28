@@ -133,6 +133,7 @@ enum IdeId : int {
     IDM_SOURCE_FORMAT        = 2029,
     IDM_WIZ_ADD_PATH_ENV     = 2030,
     IDM_LAUNCH_RSUPDATE      = 2031,
+    IDM_WIZ_ADDON            = 2032,
 
     // Persistent Toolbar & Category Navigation Tree
     IDC_TB_WIZARD            = 2100,
@@ -825,6 +826,7 @@ public:
         HMENU hBar  = ::CreateMenu();
         HMENU hFile = ::CreatePopupMenu();
         ::AppendMenuW(hFile, MF_STRING, IDM_WIZ_PROJECT,    L"New Project &Wizard (Aero Project Assistant)...\tCtrl+W");
+        ::AppendMenuW(hFile, MF_STRING, IDM_WIZ_ADDON,      L"New &Add-On / Content Pack Wizard (.rsip)...");
         ::AppendMenuW(hFile, MF_STRING, IDM_WIZ_SUITE,      L"New Unified Multi-Product &Suite Wizard (.rsip)...");
         ::AppendMenuW(hFile, MF_STRING, IDM_WIZ_SFX_SIMPLE, L"New Self-Extracting .E&XE / RaggieScript EXE Setup Wizard...");
         ::AppendMenuW(hFile, MF_STRING, IDM_FILE_NEW,       L"&New Starter .rsip Project\tCtrl+N");
@@ -836,6 +838,7 @@ public:
 
         HMENU hWiz = ::CreatePopupMenu();
         ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_PROJECT,       L"&New Project AeroWizard (Project Assistant)...\tCtrl+W");
+        ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_ADDON,         L"&Add-On / Content Pack AeroWizard ([HostApp] Book/Album/Plugin)...");
         ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_SUITE,         L"&Unified Multi-Product Suite AeroWizard (Dual-Bar Progress)...");
         ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_SFX_SIMPLE,    L"&Self-Extracting .EXE && RaggieScript EXE Setup AeroWizard...");
         ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_PREREQ_MSM,    L"&Runtime Prerequisite (.NET 11 / 10) & .MSM AeroWizard...");
@@ -2772,13 +2775,14 @@ public:
             activeSuite = std::move(sw);
             hasActiveSuite = true;
             ::SendMessageW(hSuiteCombo, CB_RESETCONTENT, 0, 0);
+            ::SendMessageW(hSuiteCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"[Build Entire .rsis Suite]"));
             for (const auto& pe : activeSuite.projects) {
                 std::wstring item = rsw::Utf8ToWide("[" + pe.category + "] " + pe.id);
                 ::SendMessageW(hSuiteCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(item.c_str()));
             }
-            ::SendMessageW(hSuiteCombo, CB_SETCURSEL, 0, 0);
+            ::SendMessageW(hSuiteCombo, CB_SETCURSEL, activeSuite.projects.empty() ? 0 : 1, 0);
             AppendConsole(L"[SUITE] Opened '" + rsw::Utf8ToWide(activeSuite.name) + L"' (" +
-                          std::to_wstring(activeSuite.projects.size()) + L" member .rsip projects).\r\n");
+                          std::to_wstring(activeSuite.projects.size()) + L" member .rsip projects). Select '[Build Entire .rsis Suite]' and press F5 to build the full Suite!\r\n");
             if (!activeSuite.projects.empty()) {
                 rsw::RswManifestDocument firstProj;
                 if (rsw::LoadManifestFile(activeSuite.projects[0].resolvedPath, firstProj, err)) {
@@ -3029,12 +3033,18 @@ public:
         const std::wstring licArg = explicitCliLicenseFile.empty()
             ? L""
             : (L" --license-file=\"" + rsw::Utf8ToWide(explicitCliLicenseFile) + L"\"");
-        const bool buildUniv = (!mergeModule && !isRsscMode) && ResolvedEffectiveDoc().GetBool("Package", "", "BuildUniversal", false);
+        const bool buildWholeRsisSuite =
+            (!mergeModule && hasActiveSuite && !activeSuite.suiteFilePath.empty() &&
+             ::SendMessageW(hSuiteCombo, CB_GETCURSEL, 0, 0) == 0);
+        const bool buildUniv = (!mergeModule && !isRsscMode && !buildWholeRsisSuite) &&
+                               ResolvedEffectiveDoc().GetBool("Package", "", "BuildUniversal", false);
         std::wstring cmd = L"\"" + cliExe.wstring() + L"\" ";
         if (mergeModule) {
             const auto msmOut = currentFilePath.parent_path() / L"out" /
                                 (currentFilePath.stem().wstring() + L"-" + arch + L".msm");
             cmd += L"--emit-msm \"" + currentFilePath.wstring() + L"\" \"" + msmOut.wstring() + L"\" --arch=" + arch + licArg;
+        } else if (buildWholeRsisSuite) {
+            cmd += L"\"" + activeSuite.suiteFilePath.wstring() + L"\" --arch=" + arch + licArg;
         } else if (buildUniv) {
             cmd += L"\"" + currentFilePath.wstring() + L"\" --universal" + licArg;
         } else {
@@ -4392,8 +4402,15 @@ public:
                 }
                 if (id == IDC_SUITE_COMBO && code == CBN_SELCHANGE && self->hasActiveSuite) {
                     const LRESULT sel = ::SendMessageW(self->hSuiteCombo, CB_GETCURSEL, 0, 0);
-                    if (sel != CB_ERR && static_cast<std::size_t>(sel) < self->activeSuite.projects.size()) {
-                        const auto& target = self->activeSuite.projects[static_cast<std::size_t>(sel)];
+                    if (sel == 0 && !self->activeSuite.suiteFilePath.empty()) {
+                        rsw::RswManifestDocument sd;
+                        std::string err;
+                        if (rsw::LoadManifestFile(self->activeSuite.suiteFilePath, sd, err)) {
+                            self->LoadProjectText(sd.Serialize(), self->activeSuite.suiteFilePath, true);
+                            self->SelectIdeView(VIEW_SOURCE);
+                        }
+                    } else if (sel >= 1 && static_cast<std::size_t>(sel - 1) < self->activeSuite.projects.size()) {
+                        const auto& target = self->activeSuite.projects[static_cast<std::size_t>(sel - 1)];
                         rsw::RswManifestDocument d;
                         std::string err;
                         if (rsw::LoadManifestFile(target.resolvedPath, d, err)) {
@@ -4473,7 +4490,17 @@ public:
                         return 0;
                     }
 
-                    // --- 7 Guided Native Win32 AeroWizards (`PSH_AEROWIZARD`)! ---
+                    // --- 8 Guided Native Win32 AeroWizards (`PSH_AEROWIZARD`)! ---
+                    case IDM_WIZ_ADDON: {
+                        std::string genText;
+                        bool autoVal = false;
+                        if (rsw::ide_wizards::RunAddOnInstallerAeroWizard(hWnd, genText, autoVal)) {
+                            self->LoadProjectText(genText, {});
+                            self->AppendConsole(L"[AEROWIZARD] Generated Host-Aware Add-On / Content Pack (PackageKind = addon) .rsip manifest.\r\n");
+                            if (autoVal) self->RunValidation();
+                        }
+                        return 0;
+                    }
                     case IDM_WIZ_SUITE: {
                         std::string genText;
                         if (rsw::ide_wizards::RunUnifiedSuiteAeroWizard(hWnd, genText)) {

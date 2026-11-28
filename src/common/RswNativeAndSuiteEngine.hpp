@@ -1047,6 +1047,7 @@ inline HostAppResolution ResolveHostApplicationForAddOn(const NativeOrSfxManifes
 // ================================================================================
 struct NativeExecutionOptions {
     std::filesystem::path targetDir;
+    std::filesystem::path detectedHostDir;           // Resolved `[HostApp]` directory for `[HOSTDIR]` token expansion (`addon`)
     std::string           startMenuFolderOverride;
     bool                  createDesktopShortcuts = true;
     bool                  registerFileAssocs     = true;
@@ -1212,6 +1213,9 @@ inline bool ExecuteNativeOrSfxTransaction(
         }
         const std::string rootTok = archiveRelPath.substr(0, slash);
         const std::string remRel  = archiveRelPath.substr(slash + 1);
+        if (EqualsIgnoreCase(rootTok, "HOSTDIR") && !opts.detectedHostDir.empty()) {
+            return (opts.detectedHostDir / Utf8ToWide(remRel)).lexically_normal();
+        }
         const auto rootDir = native_detail::ResolveSystemRootFolder(
             rootTok, opts.targetDir, effStartMenu, manifest.perMachine);
         return (rootDir / Utf8ToWide(remRel)).lexically_normal();
@@ -1399,7 +1403,7 @@ inline bool ExecuteNativeOrSfxTransaction(
 
     auto setRegValueTracked = [&](HKEY hRoot, const std::string& rootCode, const std::wstring& subKey,
                                   const std::wstring& valName, const std::string& typeStr, const std::string& rawVal) -> bool {
-        const std::string expanded = native_detail::ExpandInstallTokens(rawVal, opts.targetDir, manifest.version);
+        const std::string expanded = native_detail::ExpandInstallTokens(rawVal, opts.targetDir, manifest.version, opts.detectedHostDir);
         if (!virtRegRoot.empty()) {
             bool createdNew = false;
             if (!native_detail::VirtualRegWriteValue(virtRegRoot, rootCode, subKey, valName, expanded, createdNew)) {
@@ -1482,7 +1486,7 @@ inline bool ExecuteNativeOrSfxTransaction(
         const std::string act  = AsciiLower(TrimAscii(ini.action));
         const std::wstring wSec = Utf8ToWide(ini.section);
         const std::wstring wKey = Utf8ToWide(ini.key);
-        const std::string expVal = native_detail::ExpandInstallTokens(ini.value, opts.targetDir, manifest.version);
+        const std::string expVal = native_detail::ExpandInstallTokens(ini.value, opts.targetDir, manifest.version, opts.detectedHostDir);
         if (act == "remove_key") {
             ::WritePrivateProfileStringW(wSec.c_str(), wKey.c_str(), nullptr, iniPath.wstring().c_str());
         } else if (act == "create_only" || act == "create_line") {
@@ -1524,7 +1528,7 @@ inline bool ExecuteNativeOrSfxTransaction(
         const bool machScope = (sc == "machine") ? true : ((sc == "user") ? false : manifest.perMachine);
         const std::string act = AsciiLower(TrimAscii(env.action));
         const bool removeOnUninst = !EqualsIgnoreCase(TrimAscii(env.onUninstall), "keep");
-        std::string expVal = native_detail::ExpandInstallTokens(env.value, opts.targetDir, manifest.version);
+        std::string expVal = native_detail::ExpandInstallTokens(env.value, opts.targetDir, manifest.version, opts.detectedHostDir);
         while ((act == "append_path" || act == "prepend_path") && expVal.size() > 3 &&
                (expVal.back() == '\\' || expVal.back() == '/')) {
             expVal.pop_back();
@@ -2058,7 +2062,7 @@ inline SuiteChainerManifest ParseSuiteChainerManifestIni(std::string_view text) 
     s.installBtnText           = getS("InstallButtonText", s.installBtnText);
     s.showComponentProgressBar = !EqualsIgnoreCase(getS("ShowComponentProgressBar", "true"), "false");
 
-    const int count = std::clamp(std::atoi(kv["ChildCount"].c_str()), 0, 128);
+    const int count = std::clamp(std::atoi(kv["ChildCount"].c_str()), 0, 512);
     for (int i = 0; i < count; ++i) {
         const std::string p = "Child_" + std::to_string(i) + "_";
         SuiteChildSpec c{};

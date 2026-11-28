@@ -1549,7 +1549,9 @@ inline bool PackageNativeOrSfxExecutable(
     nm.postExtractArgs     = ExpandArchToken(doc.GetString("SFX", "", "PostExtractArgs"), arch);
     nm.postExtractOpen     = ExpandArchToken(doc.GetString("SFX", "", "PostExtractOpen"), arch);
     nm.extractToTemp       = doc.GetBool("SFX", "", "ExtractToTemp", false);
-    nm.allowChangeFolder   = doc.GetBool("SFX", "", "AllowChangeFolder", !isAddon);
+    nm.allowChangeFolder   = doc.HasKey("UI", "", "AllowChangeFolder")
+        ? doc.GetBool("UI", "", "AllowChangeFolder", !isAddon)
+        : doc.GetBool("SFX", "", "AllowChangeFolder", !isAddon);
     nm.silentOverwrite     = doc.GetBool("SFX", "", "SilentOverwrite", true);
     nm.cleanupTempAfterRun = doc.GetBool("SFX", "", "CleanupTempAfterRun", false);
     nm.waitMode            = doc.GetString("SFX", "", "WaitMode", "auto");
@@ -1782,6 +1784,15 @@ inline bool PackageUnifiedSuiteExecutable(
     sm.installBtnText           = doc.GetString("UI", "", "InstallButtonText", "&Install Selected");
     sm.showComponentProgressBar = doc.GetBool("UI", "", "ShowComponentProgressBar", true);
 
+    const std::string rawOutName = ExpandArchToken(doc.GetString("Package", "", "OutputName"), arch);
+    const std::string outStem    = rawOutName.empty()
+        ? (SlugifyName(sm.suiteName) + "-" + arch)
+        : rawOutName;
+    const std::filesystem::path outDir = resolvePath(doc.GetString("Package", "", "OutputDir", "out"));
+    std::error_code ec;
+    std::filesystem::create_directories(outDir, ec);
+    outSuiteExePath = outDir / Utf8ToWide(outStem + "-setup.exe");
+
     struct EmbeddedSuiteBlob {
         int                       resId = 0;
         std::vector<std::uint8_t> compBytes;
@@ -1790,17 +1801,31 @@ inline bool PackageUnifiedSuiteExecutable(
 
     const auto spIds = doc.GetNamedSectionIds("SuitePackage");
     for (std::size_t i = 0; i < spIds.size(); ++i) {
-        const auto& spId    = spIds[i];
+        const auto& spId        = spIds[i];
         const std::string deliv = AsciiLower(TrimAscii(doc.GetString("SuitePackage", spId, "Delivery", "embedded")));
         const bool isWebChild   = (deliv == "web");
+        const bool isSideChild  = (deliv == "side-by-side");
         const auto srcPath      = resolvePath(doc.GetString("SuitePackage", spId, "Source"));
 
         std::vector<std::uint8_t> rawBytes;
+        std::uint64_t srcDiskBytes = 0;
         std::string shaHex;
-        if (!isWebChild) {
+        if (isSideChild) {
+            std::error_code fEc;
+            if (!std::filesystem::is_regular_file(srcPath, fEc)) {
+                outError = "SuitePackage '" + spId + "' Source file does not exist: " + WideToUtf8(srcPath.wstring());
+                return false;
+            }
+            srcDiskBytes = static_cast<std::uint64_t>(std::filesystem::file_size(srcPath, fEc));
+            if (!ComputeFileSha256Hex(srcPath, shaHex)) {
+                outError = "Failed computing SHA-256 for SuitePackage '" + spId + "'.";
+                return false;
+            }
+        } else if (!isWebChild) {
             if (!ReadBinaryFileBytes(srcPath, rawBytes, outError)) {
                 return false;
             }
+            srcDiskBytes = static_cast<std::uint64_t>(rawBytes.size());
             if (!ComputeFileSha256Hex(srcPath, shaHex)) {
                 outError = "Failed computing SHA-256 for SuitePackage '" + spId + "'.";
                 return false;
@@ -1813,6 +1838,7 @@ inline bool PackageUnifiedSuiteExecutable(
             std::error_code sEc;
             if (shaHex.empty() && !srcPath.empty() && std::filesystem::is_regular_file(srcPath, sEc)) {
                 ComputeFileSha256Hex(srcPath, shaHex);
+                srcDiskBytes = static_cast<std::uint64_t>(std::filesystem::file_size(srcPath, sEc));
             }
         }
 
@@ -1822,7 +1848,7 @@ inline bool PackageUnifiedSuiteExecutable(
         ch.description = ExpandArchToken(doc.GetString("SuitePackage", spId, "Description"), arch);
         ch.category    = ExpandArchToken(doc.GetString("SuitePackage", spId, "Category", "Suite"), arch);
         ch.version     = ExpandArchToken(doc.GetString("SuitePackage", spId, "Version"), arch);
-        ch.delivery    = isWebChild ? "web" : "embedded";
+        ch.delivery    = isWebChild ? "web" : (isSideChild ? "side-by-side" : "embedded");
         ch.downloadUrl = ExpandArchToken(doc.GetString("SuitePackage", spId, "DownloadUrl"), arch);
 
         std::string explicitFn = ExpandArchToken(doc.GetString("SuitePackage", spId, "FileName"), arch);
@@ -1835,6 +1861,18 @@ inline bool PackageUnifiedSuiteExecutable(
             ch.fileName = (slash != std::string::npos) ? ch.downloadUrl.substr(slash + 1) : (spId + "-setup.exe");
         }
 
+        if (isSideChild) {
+            const auto pkgDir = outDir / L"packages";
+            std::filesystem::create_directories(pkgDir, ec);
+            const auto sideDest = pkgDir / Utf8ToWide(ch.fileName);
+            if (_wcsicmp(srcPath.wstring().c_str(), sideDest.wstring().c_str()) != 0) {
+                if (!std::filesystem::copy_file(srcPath, sideDest, std::filesystem::copy_options::overwrite_existing, ec)) {
+                    outError = "Failed copying side-by-side SuitePackage '" + spId + "' to '" + WideToUtf8(sideDest.wstring()) + "'.";
+                    return false;
+                }
+            }
+        }
+
         const std::string rawChUpg = doc.GetString("SuitePackage", spId, "UpgradeCode");
         if (!rawChUpg.empty()) NormalizeMsiGuid(rawChUpg, ch.upgradeCode);
         const bool looksMsi  = EqualsIgnoreCase(WideToUtf8(std::filesystem::path(Utf8ToWide(ch.fileName)).extension().wstring()), ".msi");
@@ -1844,8 +1882,8 @@ inline bool PackageUnifiedSuiteExecutable(
         const int estKb      = doc.GetInt("SuitePackage", spId, "EstimatedSizeKB", 0);
         ch.uncompressedBytes = (estKb > 0)
             ? (static_cast<std::uint64_t>(estKb) * 1024ull)
-            : (rawBytes.empty() ? (1024ull * 1024ull) : static_cast<std::uint64_t>(rawBytes.size()));
-        ch.embeddedResId     = isWebChild ? 0 : (kResIdSuiteChildBase + static_cast<int>(i));
+            : ((srcDiskBytes > 0) ? srcDiskBytes : (1024ull * 1024ull));
+        ch.embeddedResId     = (isWebChild || isSideChild) ? 0 : (kResIdSuiteChildBase + static_cast<int>(i));
         ch.required          = doc.GetBool("SuitePackage", spId, "Required", false);
         ch.selectedByDefault = doc.GetBool("SuitePackage", spId, "SelectedByDefault", true);
         ch.adoptStandalone   = doc.GetBool("SuitePackage", spId, "AdoptStandalone", true);
@@ -1853,19 +1891,10 @@ inline bool PackageUnifiedSuiteExecutable(
         ch.forwardInstallDir = doc.GetBool("SuitePackage", spId, "ForwardInstallDir", false);
 
         sm.children.push_back(std::move(ch));
-        if (!isWebChild) {
+        if (!isWebChild && !isSideChild) {
             childBlobs.push_back({kResIdSuiteChildBase + static_cast<int>(i), CompressWithLzmsIfSmaller(rawBytes)});
         }
     }
-
-    const std::string rawOutName = ExpandArchToken(doc.GetString("Package", "", "OutputName"), arch);
-    const std::string outStem    = rawOutName.empty()
-        ? (SlugifyName(sm.suiteName) + "-" + arch)
-        : rawOutName;
-    const std::filesystem::path outDir = resolvePath(doc.GetString("Package", "", "OutputDir", "out"));
-    std::error_code ec;
-    std::filesystem::create_directories(outDir, ec);
-    outSuiteExePath = outDir / Utf8ToWide(outStem + "-setup.exe");
 
     const auto iconPath = resolvePath(doc.GetString("UI", "", "IconFile"));
     outSummary.msiPath         = outSuiteExePath;

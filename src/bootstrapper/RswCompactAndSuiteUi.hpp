@@ -69,8 +69,12 @@ inline bool GetRcDataViewLocal(int resourceId, const std::uint8_t*& outPtr, std:
 }
 
 /// Computes the default destination path for `NativeOrSfxManifest` (`%TEMP%`, `<ExeDir>\<Stem>`,
-/// `%ProgramW6432%\<Subdir>`, or `%LOCALAPPDATA%\<Subdir>`).
+/// `[HostApp]` content target for `addon`, `%ProgramW6432%\<Subdir>`, or `%LOCALAPPDATA%\<Subdir>`).
 inline std::filesystem::path ComputeDefaultNativeOrSfxPath(const NativeOrSfxManifest& m) {
+    if (m.mode == "addon") {
+        return ResolveHostApplicationForAddOn(m).resolvedContentDir;
+    }
+
     std::error_code ec;
     wchar_t selfBuf[MAX_PATH * 4]{};
     ::GetModuleFileNameW(nullptr, selfBuf, static_cast<DWORD>(std::size(selfBuf)));
@@ -152,6 +156,9 @@ inline int RunElevatedNativeWorkerJob(const std::filesystem::path& jobFilePath) 
 
     NativeExecutionOptions opts{};
     opts.targetDir              = std::filesystem::path(Utf8ToWide(kv["TargetDir"]));
+    if (manifest.mode == "addon") {
+        opts.detectedHostDir = ResolveHostApplicationForAddOn(manifest).hostInstallDir;
+    }
     opts.createDesktopShortcuts = !EqualsIgnoreCase(kv["DesktopShortcuts"], "false");
     opts.registerFileAssocs     = !EqualsIgnoreCase(kv["RegisterAssocs"], "false");
     opts.suiteManagedFlag       = kv["SuiteManaged"].empty() ? -1 : std::atoi(kv["SuiteManaged"].c_str());
@@ -184,6 +191,7 @@ public:
     static constexpr int  IDC_SMP_CLOSE   = 1508;
 
     NativeOrSfxManifest                  manifest{};
+    HostAppResolution                    hostRes{};
     const std::uint8_t*                  pakPtr = nullptr;
     std::size_t                          pakSize = 0;
     std::vector<FeaturePackRuntimeEntry> featurePacks;
@@ -234,8 +242,19 @@ public:
 
     bool NeedsAdminElevation() const noexcept {
         if (manifest.mode == "sfx") return false;
-        if (!manifest.perMachine) return false;
+        if (manifest.mode == "addon" && !manifest.perMachine &&
+            !EqualsIgnoreCase(manifest.contentTargetRoot, "HostInstallDir") &&
+            !EqualsIgnoreCase(manifest.contentTargetRoot, "CommonAppData")) {
+            return false;
+        }
+        if (!manifest.perMachine && !(manifest.mode == "addon" && EqualsIgnoreCase(manifest.contentTargetRoot, "CommonAppData"))) {
+            return false;
+        }
         return !QueryProcessPrivilegeState().HasEffectiveAdminRights();
+    }
+
+    bool IsBlockedByMissingRequiredHost() const noexcept {
+        return manifest.mode == "addon" && manifest.requireHostInstalled && !hostRes.found;
     }
 
     bool HasPostAction() const noexcept {
@@ -245,6 +264,10 @@ public:
         }
         if (manifest.mode == "sfx") {
             return !manifest.postExtractRun.empty() || !manifest.postExtractOpen.empty();
+        }
+        if (manifest.mode == "addon") {
+            return manifest.offerLaunchOnFinish &&
+                   (!manifest.hostLaunchUri.empty() || !manifest.mainExecutable.empty() || !hostRes.hostExePath.empty());
         }
         return manifest.offerLaunchOnFinish && !manifest.mainExecutable.empty();
     }
@@ -375,6 +398,7 @@ public:
 
             NativeExecutionOptions opts{};
             opts.targetDir              = targetDir;
+            opts.detectedHostDir        = hostRes.hostInstallDir;
             opts.createDesktopShortcuts = true;
             opts.registerFileAssocs     = true;
             opts.suiteManagedFlag       = suiteManagedFlag;
@@ -392,6 +416,16 @@ public:
                     ::PostMessageW(hWnd, WM_SMP_PROGRESS, static_cast<WPARAM>(perm), 0);
                 },
                 err);
+
+            if (ok && manifest.mode == "addon" && !manifest.hostRefreshArgs.empty() && !hostRes.hostExePath.empty()) {
+                std::wstring runningName;
+                const std::vector<std::wstring> hostPats{hostRes.hostExePath.filename().wstring()};
+                if (sfx_wait_detail::FindActiveCompanionOrTempProcess({}, hostPats, false, runningName)) {
+                    ::ShellExecuteW(nullptr, L"open", hostRes.hostExePath.wstring().c_str(),
+                                    Utf8ToWide(manifest.hostRefreshArgs).c_str(),
+                                    hostRes.hostInstallDir.wstring().c_str(), SW_SHOWNOACTIVATE);
+                }
+            }
 
             if (ok && IsTempSoftwareInstallerMode() && !cancelFlag.load()) {
                 ok = ExecuteSfxLaunchWaitAndCleanup(
@@ -457,7 +491,11 @@ public:
         ::SetTextColor(dc, theme.isHighContrast ? theme.textSecondary : RGB(203, 213, 225));
         const std::wstring sub = !manifest.tagline.empty()
             ? Utf8ToWide(manifest.tagline)
-            : ((manifest.mode == "sfx") ? L"Self-Extracting Archive (LZMS)" : Utf8ToWide(manifest.manufacturer + " Quick Setup"));
+            : ((manifest.mode == "sfx")
+                   ? L"Self-Extracting Archive (LZMS)"
+                   : ((manifest.mode == "addon")
+                          ? (L"Add-On Pack for " + Utf8ToWide(manifest.hostName))
+                          : Utf8ToWide(manifest.manufacturer + " Quick Setup")));
         RECT sRc{S(54), S(28), W - S(16), S(48)};
         ::DrawTextW(dc, sub.c_str(), -1, &sRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
@@ -482,13 +520,20 @@ public:
         switch (msg) {
             case WM_CREATE: {
                 HINSTANCE hInst = ::GetModuleHandleW(nullptr);
-                const bool isSfx   = (self->manifest.mode == "sfx");
+                const bool isSfx    = (self->manifest.mode == "sfx");
+                const bool isAddon  = (self->manifest.mode == "addon");
                 const bool tempInst = self->IsTempSoftwareInstallerMode();
-                const wchar_t* dirCaption = tempInst
+                const std::wstring dirCaptionW = tempInst
                     ? L"Temporary staging folder (cleaned up automatically after setup):"
-                    : (isSfx ? L"E&xtract to folder:" : L"&Destination folder:");
+                    : (isSfx
+                           ? L"E&xtract to folder:"
+                           : (isAddon
+                                  ? (self->hostRes.found
+                                         ? (L"Verified Host: " + Utf8ToWide(self->manifest.hostName) + L" \u2014 Content folder:")
+                                         : (L"Host Not Installed: Please install " + Utf8ToWide(self->manifest.hostName) + L" first:"))
+                                  : L"&Destination folder:"));
                 self->hDirLbl = ::CreateWindowExW(
-                    0, L"STATIC", dirCaption, WS_CHILD | WS_VISIBLE,
+                    0, L"STATIC", dirCaptionW.c_str(), WS_CHILD | WS_VISIBLE | SS_NOPREFIX,
                     0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SMP_DIR_LBL)), hInst, nullptr);
                 self->hDirEdit = ::CreateWindowExW(
                     WS_EX_CLIENTEDGE, L"EDIT", self->targetDir.wstring().c_str(),
@@ -499,9 +544,15 @@ public:
                     0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SMP_BROWSE)), hInst, nullptr);
                 ::EnableWindow(self->hBtnBrowse, self->manifest.allowChangeFolder ? TRUE : FALSE);
 
-                const wchar_t* initStatus = isSfx ? L"Click Extract to unpack files." : L"Click Install to begin setup.";
+                const std::wstring initStatusW = isSfx
+                    ? L"Click Extract to unpack files."
+                    : (self->IsBlockedByMissingRequiredHost()
+                           ? (L"Required application '" + Utf8ToWide(self->manifest.hostName) + L"' was not found on this PC.")
+                           : (isAddon
+                                  ? (L"Ready to install content into " + Utf8ToWide(self->manifest.hostName) + L".")
+                                  : L"Click Install to begin setup."));
                 self->hStatusLbl = ::CreateWindowExW(
-                    0, L"STATIC", initStatus, WS_CHILD | WS_VISIBLE | SS_NOPREFIX,
+                    0, L"STATIC", initStatusW.c_str(), WS_CHILD | WS_VISIBLE | SS_NOPREFIX,
                     0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SMP_STATUS)), hInst, nullptr);
                 self->hProgBar = ::CreateWindowExW(
                     0, PROGRESS_CLASSW, L"Setup Progress", WS_CHILD | WS_VISIBLE | PBS_SMOOTH,
@@ -510,16 +561,24 @@ public:
 
                 const std::wstring launchLbl = isSfx
                     ? (!self->manifest.postExtractRun.empty() ? L"&Run program after extraction" : L"&Open document after extraction")
-                    : Utf8ToWide(self->manifest.finishLaunchText);
+                    : ((isAddon && self->manifest.finishLaunchText == "&Launch application when finished")
+                           ? (L"&Open " + Utf8ToWide(self->manifest.hostName) + L" when finished")
+                           : Utf8ToWide(self->manifest.finishLaunchText));
                 self->hChkLaunch = ::CreateWindowExW(
                     0, L"BUTTON", launchLbl.c_str(), WS_CHILD | WS_TABSTOP | BS_AUTOCHECKBOX,
                     0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SMP_LAUNCH)), hInst, nullptr);
                 ::SendMessageW(self->hChkLaunch, BM_SETCHECK, self->HasPostAction() ? BST_CHECKED : BST_UNCHECKED, 0);
 
-                const std::wstring cta = Utf8ToWide(self->manifest.installBtnText);
+                const bool missingHost = self->IsBlockedByMissingRequiredHost();
+                const std::wstring cta = (missingHost && !self->manifest.hostDownloadUrl.empty())
+                    ? L"&Get Host App..."
+                    : Utf8ToWide(self->manifest.installBtnText);
                 self->hBtnPrimary = ::CreateWindowExW(
                     0, L"BUTTON", cta.c_str(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
                     0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SMP_PRIMARY)), hInst, nullptr);
+                if (missingHost && self->manifest.hostDownloadUrl.empty()) {
+                    ::EnableWindow(self->hBtnPrimary, FALSE);
+                }
                 self->hBtnClose = ::CreateWindowExW(
                     0, L"BUTTON", L"Close", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                     0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SMP_CLOSE)), hInst, nullptr);
@@ -650,9 +709,20 @@ public:
                 if (id == IDC_SMP_PRIMARY || id == IDOK) {
                     if (self->finished.load()) {
                         if (self->HasPostAction() && ::SendMessageW(self->hChkLaunch, BM_GETCHECK, 0, 0) == BST_CHECKED) {
-                            ExecutePostExtractOrFinishActions(self->manifest, self->targetDir);
+                            if (self->manifest.mode == "addon" && !self->manifest.hostLaunchUri.empty()) {
+                                ::ShellExecuteW(hWnd, L"open", Utf8ToWide(self->manifest.hostLaunchUri).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                            } else if (self->manifest.mode == "addon" && !self->hostRes.hostExePath.empty() && self->manifest.mainExecutable.empty()) {
+                                ::ShellExecuteW(hWnd, L"open", self->hostRes.hostExePath.wstring().c_str(), nullptr,
+                                                self->hostRes.hostInstallDir.wstring().c_str(), SW_SHOWNORMAL);
+                            } else {
+                                ExecutePostExtractOrFinishActions(self->manifest, self->targetDir);
+                            }
                         }
                         ::DestroyWindow(hWnd);
+                    } else if (self->IsBlockedByMissingRequiredHost()) {
+                        if (!self->manifest.hostDownloadUrl.empty()) {
+                            ::ShellExecuteW(hWnd, L"open", Utf8ToWide(self->manifest.hostDownloadUrl).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                        }
                     } else {
                         self->StartExtractionOrInstall();
                     }
@@ -710,8 +780,16 @@ inline int RunNativeOrSfxEntrypoint(
 
     bool silentMode     = false;
     bool runPostActions = false;
+    bool explicitCliDir = false;
     int  suiteManaged   = -1;
-    std::filesystem::path targetDir = ComputeDefaultNativeOrSfxPath(manifest);
+    HostAppResolution hostRes{};
+    if (manifest.mode == "addon") {
+        hostRes = ResolveHostApplicationForAddOn(manifest);
+    }
+    std::filesystem::path targetDir = (manifest.mode == "addon")
+        ? hostRes.resolvedContentDir
+        : ComputeDefaultNativeOrSfxPath(manifest);
+    std::filesystem::path suiteForwardedDir;
     std::filesystem::path exportShotDir;
     std::filesystem::path progressStateFile;
     {
@@ -727,15 +805,20 @@ inline int RunNativeOrSfxEntrypoint(
         if (a == L"/s" || a == L"/S" || a == L"/qn" || a == L"/quiet" || a == L"--silent") {
             silentMode = true;
         } else if ((a == L"--extract-to" || a == L"--install-dir") && i + 1 < args.size()) {
-            targetDir  = args[++i];
-            silentMode = true;
+            targetDir      = args[++i];
+            explicitCliDir = true;
+            silentMode     = true;
         } else if (a == L"--progress-state-file" && i + 1 < args.size()) {
             progressStateFile = args[++i];
         } else if (a.rfind(L"-o", 0) == 0 && a.size() > 2) {
-            targetDir  = a.substr(2);
-            silentMode = true;
+            targetDir      = a.substr(2);
+            explicitCliDir = true;
+            silentMode     = true;
         } else if (a.rfind(L"INSTALLDIR=", 0) == 0) {
-            targetDir = a.substr(11);
+            targetDir      = a.substr(11);
+            explicitCliDir = true;
+        } else if (a.rfind(L"SUITE_INSTALLDIR=", 0) == 0) {
+            suiteForwardedDir = a.substr(17);
         } else if (a == L"RS_SUITE_MANAGED=1") {
             suiteManaged = 1;
         } else if (a == L"RS_SUITE_MANAGED=0") {
@@ -746,6 +829,10 @@ inline int RunNativeOrSfxEntrypoint(
             exportShotDir = args[++i];
             ui::ForcedThemeOverride() = 1;
         }
+    }
+
+    if (!explicitCliDir && !suiteForwardedDir.empty() && manifest.mode != "sfx" && manifest.mode != "addon") {
+        targetDir = (suiteForwardedDir / Utf8ToWide(SlugifyName(manifest.productName))).lexically_normal();
     }
 
     if (!MeetsWindowsBuildFloor(manifest.minWindowsBuild)) {
@@ -769,8 +856,13 @@ inline int RunNativeOrSfxEntrypoint(
     const std::filesystem::path selfPath(selfBuf);
 
     if (silentMode) {
+        if (manifest.mode == "addon" && manifest.requireHostInstalled && !hostRes.found) {
+            return ERROR_UNKNOWN_PRODUCT; // `1605` — Required host application not installed; never dump orphaned content!
+        }
+
         NativeExecutionOptions opts{};
         opts.targetDir              = targetDir;
+        opts.detectedHostDir        = hostRes.hostInstallDir;
         opts.createDesktopShortcuts = true;
         opts.registerFileAssocs     = true;
         opts.suiteManagedFlag       = suiteManaged;
@@ -791,6 +883,15 @@ inline int RunNativeOrSfxEntrypoint(
         std::string err;
         if (!ExecuteNativeOrSfxTransaction(manifest, pakPtr, pakSz, featurePacks, {}, opts, nullptr, silentProgCb, err)) {
             return ERROR_INSTALL_FAILURE;
+        }
+        if (manifest.mode == "addon" && !manifest.hostRefreshArgs.empty() && !hostRes.hostExePath.empty()) {
+            std::wstring runningName;
+            const std::vector<std::wstring> hostPats{hostRes.hostExePath.filename().wstring()};
+            if (sfx_wait_detail::FindActiveCompanionOrTempProcess({}, hostPats, false, runningName)) {
+                ::ShellExecuteW(nullptr, L"open", hostRes.hostExePath.wstring().c_str(),
+                                Utf8ToWide(manifest.hostRefreshArgs).c_str(),
+                                hostRes.hostInstallDir.wstring().c_str(), SW_SHOWNOACTIVATE);
+            }
         }
         const bool isTempInstallerWrapper =
             (manifest.mode == "sfx" && manifest.extractToTemp && manifest.cleanupTempAfterRun && !manifest.postExtractRun.empty());
@@ -813,6 +914,7 @@ inline int RunNativeOrSfxEntrypoint(
 
         SimpleCompactDialogApp app{};
         app.manifest         = manifest;
+        app.hostRes          = hostRes;
         app.pakPtr           = pakPtr;
         app.pakSize          = pakSz;
         app.featurePacks     = featurePacks;
@@ -855,7 +957,9 @@ inline int RunNativeOrSfxEntrypoint(
         const int wY = std::max(0, (::GetSystemMetrics(SM_CYSCREEN) - wH) / 2);
 
         const std::wstring wTitle = Utf8ToWide(manifest.productName) +
-                                    ((manifest.mode == "sfx") ? L" — Self-Extractor" : L" Setup");
+                                    ((manifest.mode == "sfx")
+                                         ? L" \u2014 Self-Extractor"
+                                         : ((manifest.mode == "addon") ? L" \u2014 Add-On Setup" : L" Setup"));
         HWND hWnd = ::CreateWindowExW(kExStyle, kCls, wTitle.c_str(), kStyle, wX, wY, wW, wH, nullptr, nullptr, hInstance, &app);
         if (!hWnd) {
             exitRc = 1;
@@ -1111,37 +1215,6 @@ inline int ExecuteSuiteChainerOperationDetailed(
                         (L"rsw-suite-" + std::to_wstring(::GetCurrentProcessId()));
     std::filesystem::create_directories(tmpDir, ec);
 
-    auto extractSuiteChildBinary = [&](const SuiteChildSpec& ch, std::filesystem::path& outPath) -> bool {
-        const std::uint8_t* ptr = nullptr;
-        std::size_t sz = 0;
-        if (!GetRcDataViewLocal(ch.embeddedResId, ptr, sz)) {
-            outError = "Missing embedded resource (#" + std::to_string(ch.embeddedResId) + ") for suite package '" + ch.name + "'.";
-            return false;
-        }
-        std::vector<std::uint8_t> rawBytes;
-        if (!DecompressLzmsOrCopyRaw(ptr, sz, rawBytes, outError)) return false;
-
-        outPath = tmpDir / Utf8ToWide(ch.fileName);
-        std::ofstream out(outPath, std::ios::binary | std::ios::trunc);
-        if (!out) {
-            outError = "Could not stage suite child binary: " + ch.fileName;
-            return false;
-        }
-        if (!rawBytes.empty()) {
-            out.write(reinterpret_cast<const char*>(rawBytes.data()), static_cast<std::streamsize>(rawBytes.size()));
-        }
-        out.close();
-
-        if (!ch.sha256Hex.empty()) {
-            std::string actualSha;
-            if (!ComputeFileSha256Hex(outPath, actualSha) || !EqualsIgnoreCase(actualSha, ch.sha256Hex)) {
-                outError = "SHA-256 verification failed for suite child package '" + ch.name + "'.";
-                return false;
-            }
-        }
-        return true;
-    };
-
     // Build deterministic active execution plan BEFORE starting so byte weights & step counts are exact!
     struct PlannedSuiteStep {
         std::size_t childIdx          = 0;
@@ -1184,6 +1257,91 @@ inline int ExecuteSuiteChainerOperationDetailed(
         snap.componentName     = compName;
         snap.detailStatus      = detail;
         onSuiteProgress(snap);
+    };
+
+    auto extractSuiteChildBinary = [&](std::size_t stepIdx, const SuiteChildSpec& ch, std::filesystem::path& outPath) -> bool {
+        const std::wstring wName = Utf8ToWide(ch.name);
+        auto verifyChildSha = [&](const std::filesystem::path& p) -> bool {
+            if (ch.sha256Hex.empty()) return true;
+            std::string actualSha;
+            if (!ComputeFileSha256Hex(p, actualSha) || !EqualsIgnoreCase(actualSha, ch.sha256Hex)) {
+                outError = "SHA-256 verification failed for suite child package '" + ch.name + "'.";
+                return false;
+            }
+            return true;
+        };
+
+        if (ch.delivery == "side-by-side") {
+            const auto candPkg = selfPath.parent_path() / L"packages" / Utf8ToWide(ch.fileName);
+            const auto candSib = selfPath.parent_path() / Utf8ToWide(ch.fileName);
+            if (std::filesystem::is_regular_file(candPkg, ec)) outPath = candPkg;
+            else if (std::filesystem::is_regular_file(candSib, ec)) outPath = candSib;
+            else {
+                outError = "Missing side-by-side suite package 'packages\\" + ch.fileName + "' for '" + ch.name + "'.";
+                return false;
+            }
+            return verifyChildSha(outPath);
+        }
+
+        if (ch.delivery == "web") {
+            outPath = tmpDir / Utf8ToWide(ch.fileName.empty() ? (ch.id + "-setup.exe") : ch.fileName);
+            if (ch.downloadUrl.rfind("file://", 0) == 0 || ch.downloadUrl.rfind("FILE://", 0) == 0) {
+                std::string localPart = ch.downloadUrl.substr(7);
+                if (!localPart.empty() && localPart.front() == '/' && localPart.size() > 2 && localPart[2] == ':') {
+                    localPart.erase(localPart.begin());
+                }
+                for (char& c : localPart) if (c == '/') c = '\\';
+                const std::filesystem::path localSrc(Utf8ToWide(localPart));
+                emitProgress(stepIdx, 180, wName, L"Fetching workload package: " + Utf8ToWide(ch.fileName));
+                if (!std::filesystem::copy_file(localSrc, outPath, std::filesystem::copy_options::overwrite_existing, ec)) {
+                    outError = "Failed copying file:// workload '" + ch.downloadUrl + "' for '" + ch.name + "'.";
+                    return false;
+                }
+            } else {
+                emitProgress(stepIdx, 50, wName, L"Downloading workload: " + Utf8ToWide(ch.fileName) + L"...");
+                if (!DownloadFileViaWinHttp(
+                        ch.downloadUrl,
+                        outPath,
+                        cancelFlag,
+                        [&](std::uint64_t gotBytes, std::uint64_t totalBytes) {
+                            const int dlPerm = (totalBytes > 0)
+                                ? static_cast<int>(std::clamp<std::uint64_t>((gotBytes * 420ull) / totalBytes, 20ull, 420ull))
+                                : 220;
+                            emitProgress(stepIdx, dlPerm, wName,
+                                         L"Downloading " + Utf8ToWide(ch.fileName) + L" (" + suite_detail::FormatSuiteBytesShort(gotBytes) + L")...");
+                        },
+                        outError)) {
+                    return false;
+                }
+            }
+            if (!verifyChildSha(outPath)) {
+                std::filesystem::remove(outPath, ec);
+                return false;
+            }
+            emitProgress(stepIdx, 440, wName, L"Verified SHA-256 signature; starting installer...");
+            return true;
+        }
+
+        const std::uint8_t* ptr = nullptr;
+        std::size_t sz = 0;
+        if (!GetRcDataViewLocal(ch.embeddedResId, ptr, sz)) {
+            outError = "Missing embedded resource (#" + std::to_string(ch.embeddedResId) + ") for suite package '" + ch.name + "'.";
+            return false;
+        }
+        std::vector<std::uint8_t> rawBytes;
+        if (!DecompressLzmsOrCopyRaw(ptr, sz, rawBytes, outError)) return false;
+
+        outPath = tmpDir / Utf8ToWide(ch.fileName);
+        std::ofstream out(outPath, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            outError = "Could not stage suite child binary: " + ch.fileName;
+            return false;
+        }
+        if (!rawBytes.empty()) {
+            out.write(reinterpret_cast<const char*>(rawBytes.data()), static_cast<std::streamsize>(rawBytes.size()));
+        }
+        out.close();
+        return verifyChildSha(outPath);
     };
 
     auto runMsiWithLiveTelemetry = [&](std::size_t stepIdx,
@@ -1296,7 +1454,7 @@ inline int ExecuteSuiteChainerOperationDetailed(
 
             if (!step.msiProductCode.empty()) {
                 std::filesystem::path stagedMsi;
-                if (extractSuiteChildBinary(ch, stagedMsi)) {
+                if (extractSuiteChildBinary(sIdx, ch, stagedMsi)) {
                     std::string dummyErr;
                     runMsiWithLiveTelemetry(sIdx, wName, [&]() {
                         return ::MsiInstallProductW(stagedMsi.wstring().c_str(), L"REINSTALL=ALL REINSTALLMODE=vomus RS_SUITE_MANAGED=0");
@@ -1361,9 +1519,42 @@ inline int ExecuteSuiteChainerOperationDetailed(
     }
 
     // `SuiteOperationKind::InstallOrModify`:
+    struct NewlyInstalledSuiteChild {
+        std::size_t  childIdx = 0;
+        std::wstring name;
+        std::string  engine;
+        std::wstring msiProductCode;
+    };
+    std::vector<NewlyInstalledSuiteChild> rollbackStack;
+    const bool enableSuiteLifoRollback = EqualsIgnoreCase(suite.rollbackPolicy, "rollback_new");
+
+    auto performSuiteLifoRollback = [&](std::size_t failedStepIdx) {
+        if (!enableSuiteLifoRollback || rollbackStack.empty()) return;
+        for (auto it = rollbackStack.rbegin(); it != rollbackStack.rend(); ++it) {
+            emitProgress(failedStepIdx, 0, it->name, L"Rolling back newly installed package: " + it->name + L"...");
+            if (it->engine == "msi" && !it->msiProductCode.empty()) {
+                ::MsiConfigureProductExW(it->msiProductCode.c_str(), INSTALLLEVEL_DEFAULT, INSTALLSTATE_ABSENT, L"");
+            } else {
+                std::wstring dummyMsi, quietUninst;
+                if (IsSuiteChildCurrentlyInstalled(suite.children[it->childIdx], dummyMsi, quietUninst) && !quietUninst.empty()) {
+                    STARTUPINFOW si{sizeof(si)};
+                    PROCESS_INFORMATION pi{};
+                    std::wstring mutCmd = quietUninst;
+                    if (::CreateProcessW(nullptr, mutCmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+                        ::WaitForSingleObject(pi.hProcess, 120000);
+                        ::CloseHandle(pi.hThread);
+                        ::CloseHandle(pi.hProcess);
+                    }
+                }
+            }
+        }
+        rollbackStack.clear();
+    };
+
     bool anyReboot = false;
     for (std::size_t sIdx = 0; sIdx < plan.size(); ++sIdx) {
         if (cancelFlag && cancelFlag->load()) {
+            performSuiteLifoRollback(sIdx);
             std::filesystem::remove_all(tmpDir, ec);
             outError = "Suite installation canceled by user.";
             return ERROR_INSTALL_USEREXIT;
@@ -1389,7 +1580,8 @@ inline int ExecuteSuiteChainerOperationDetailed(
 
         emitProgress(sIdx, 0, wName, L"Staging verified package payload...");
         std::filesystem::path stagedChild;
-        if (!extractSuiteChildBinary(ch, stagedChild)) {
+        if (!extractSuiteChildBinary(sIdx, ch, stagedChild)) {
+            performSuiteLifoRollback(sIdx);
             std::filesystem::remove_all(tmpDir, ec);
             return ERROR_INSTALL_PACKAGE_OPEN_FAILED;
         }
@@ -1397,12 +1589,16 @@ inline int ExecuteSuiteChainerOperationDetailed(
         const std::wstring verb = step.alreadyInstalled
             ? (L"Adopting standalone installation into Suite: " + wName)
             : (L"Installing " + wName + L"...");
-        emitProgress(sIdx, 35, wName, verb);
+        emitProgress(sIdx, (ch.delivery == "web") ? 450 : 35, wName, verb);
 
+        std::wstring installedMsiProdCode;
         if (ch.engine == "msi") {
             std::wstring props = (step.alreadyInstalled && ch.adoptStandalone)
                 ? L"REINSTALL=ALL REINSTALLMODE=vomus RS_SUITE_MANAGED=1"
                 : L"RS_SUITE_MANAGED=1";
+            if (ch.forwardInstallDir) {
+                props += L" SUITE_INSTALLDIR=\"" + suiteInstallDir.wstring() + L"\"";
+            }
             if (!ch.installArgs.empty()) {
                 props += L" " + Utf8ToWide(ch.installArgs);
             }
@@ -1411,12 +1607,14 @@ inline int ExecuteSuiteChainerOperationDetailed(
                 return ::MsiInstallProductW(stagedChild.wstring().c_str(), props.c_str());
             }, msiErr);
             if (rc == ERROR_INSTALL_USEREXIT) {
+                performSuiteLifoRollback(sIdx);
                 outError = "Installation canceled by user.";
                 std::filesystem::remove_all(tmpDir, ec);
                 return ERROR_INSTALL_USEREXIT;
             } else if (rc == ERROR_SUCCESS_REBOOT_REQUIRED) {
                 anyReboot = true;
             } else if (rc != ERROR_SUCCESS && rc != ERROR_INSTALL_SERVICE_FAILURE) {
+                performSuiteLifoRollback(sIdx);
                 outError = "MSI installation failed on '" + ch.name + "' (code " + std::to_string(rc) + ")" +
                            (msiErr.empty() ? "." : (": " + msiErr));
                 std::filesystem::remove_all(tmpDir, ec);
@@ -1425,24 +1623,31 @@ inline int ExecuteSuiteChainerOperationDetailed(
             wchar_t newProdBuf[39]{};
             if (!ch.upgradeCode.empty() &&
                 ::MsiEnumRelatedProductsW(Utf8ToWide(ch.upgradeCode).c_str(), 0, 0, newProdBuf) == ERROR_SUCCESS) {
+                installedMsiProdCode = newProdBuf;
                 SetInstalledAppsSystemComponentFlag(newProdBuf, true);
             }
         } else {
             std::wstring cmd = L"\"" + stagedChild.wstring() + L"\" /s RS_SUITE_MANAGED=1";
+            if (ch.forwardInstallDir) {
+                cmd += L" SUITE_INSTALLDIR=\"" + suiteInstallDir.wstring() + L"\"";
+            }
             if (!ch.installArgs.empty()) cmd += L" " + Utf8ToWide(ch.installArgs);
             DWORD code = 1;
             if (!runNativeProcessWithLiveTelemetry(sIdx, wName, cmd, verb, code)) {
+                performSuiteLifoRollback(sIdx);
                 outError = "Failed launching child setup '" + ch.name + "'.";
                 std::filesystem::remove_all(tmpDir, ec);
                 return ERROR_INSTALL_FAILURE;
             }
             if (code == ERROR_INSTALL_USEREXIT) {
+                performSuiteLifoRollback(sIdx);
                 outError = "Suite installation canceled by user.";
                 std::filesystem::remove_all(tmpDir, ec);
                 return ERROR_INSTALL_USEREXIT;
             }
             if (code == 3010 || code == 1641) anyReboot = true;
             else if (code != 0) {
+                performSuiteLifoRollback(sIdx);
                 outError = "Child setup '" + ch.name + "' exited with code " + std::to_string(code) + ".";
                 std::filesystem::remove_all(tmpDir, ec);
                 return static_cast<int>(code);
@@ -1450,6 +1655,13 @@ inline int ExecuteSuiteChainerOperationDetailed(
             if (!ch.upgradeCode.empty()) {
                 SetInstalledAppsSystemComponentFlag(Utf8ToWide(ch.upgradeCode), true);
             }
+        }
+
+        if (!step.alreadyInstalled) {
+            rollbackStack.push_back({step.childIdx, wName, ch.engine, installedMsiProdCode});
+        }
+        if (ch.rollbackBoundary) {
+            rollbackStack.clear(); // Commit savepoint!
         }
 
         // Complete this component's bar at `100%` (`1000` permille) before advancing to the next component!
@@ -1756,7 +1968,14 @@ public:
             lvi.lParam  = static_cast<LPARAM>(i);
             const int row = ListView_InsertItem(hList, &lvi);
 
-            std::wstring colEng = EqualsIgnoreCase(ch.engine, "msi") ? L"MSI" : L"Native";
+            std::wstring colEng;
+            if (EqualsIgnoreCase(ch.engine, "addon")) {
+                colEng = (ch.delivery == "web") ? L"Web Add-On" : L"Add-On";
+            } else if (EqualsIgnoreCase(ch.engine, "msi")) {
+                colEng = (ch.delivery == "web") ? L"Web MSI" : L"MSI";
+            } else {
+                colEng = (ch.delivery == "web") ? L"Web EXE" : L"RaggieScript";
+            }
             ListView_SetItemText(hList, row, 1, colEng.data());
 
             std::wstring colSz = suite_detail::FormatSuiteBytesShort(ch.uncompressedBytes);

@@ -16,11 +16,11 @@
 @include "..\..\shared\raggiesoft-defaults.rsii"
 
 [Package]
-SchemaVersion            = 0.8
+SchemaVersion            = 0.9
 Name                     = RaggieSoft Self-Extractor
 Tagline                  = Standalone LZMS Folder & .ZIP Self-Extractor with %TEMP% Setup Wrapper
 WebsiteLabel             = raggiesoftstudio.com
-Version                  = 0.8.0
+Version                  = 0.9.0
 Manufacturer             = RaggieSoft
 UpgradeCode              = {7C48E1A5-62D4-4B9E-8F13-524147534658}
 Architecture             = $(ARCH)

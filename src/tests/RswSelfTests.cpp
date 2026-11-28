@@ -3030,6 +3030,283 @@ int wmain() {
                       "v0.8.0 RsUpdate.exe DRY Launcher apps-manifest.json auto-selects .rswpatch delta vs full installer, verifies SHA-256, & applies cleanly",
                       "c070=" + std::to_string(chk070Rc) + " c060=" + std::to_string(chk060Rc) + " app=" + std::to_string(applyUpdRc) + " c080=" + std::to_string(chk080Rc));
             }
+
+            // =========================================================================
+            // 16. v0.9.0 Test A — Host-Aware Add-On / Content Pack Installer (`PackageKind = addon` + `[HostApp]`):
+            //     Verifies `RSW067` missing-host validator gate, `Essentials` edition unlock,
+            //     `1605` (`ERROR_UNKNOWN_PRODUCT`) zero-orphan exit when host is absent, AND
+            //     automatic `[HOSTDIR]` + `ContentSubdir` placement + clean uninstall when host IS installed!
+            // =========================================================================
+            {
+                const auto addonDir     = rsscWorkDir / L"v090-addon-test";
+                const auto addonOut     = addonDir / L"out";
+                const auto bookContent  = addonDir / L"cedar-run-src";
+                const auto fakeHostRoot = addonDir / L"fake-program-files";
+                const auto fakeDataRoot = addonDir / L"fake-localappdata";
+                const auto addonVirtReg = addonDir / L"virt-reg";
+                std::filesystem::create_directories(bookContent, ec);
+                std::filesystem::create_directories(fakeHostRoot, ec);
+                std::filesystem::create_directories(fakeDataRoot, ec);
+                std::filesystem::create_directories(addonVirtReg, ec);
+                { std::ofstream f(bookContent / L"chapter-01.md", std::ios::binary); f << "# Chapter 1 — Cedar Run"; }
+                { std::ofstream f(bookContent / L"cover.jpg",     std::ios::binary); f << "JPEG_MOCK_BYTES"; }
+
+                // 1) Missing `[HostApp]` on `PackageKind = addon` MUST fail validation (`RSW067`)!
+                const auto badAddonRsip = addonDir / L"bad-addon.rsip";
+                {
+                    std::ofstream o(badAddonRsip, std::ios::binary | std::ios::trunc);
+                    o << "[Package]\r\nName = Broken AddOn\r\nVersion = 1.0.0\r\nManufacturer = RaggieSoft\r\nPackageKind = addon\r\n"
+                      << "[UI]\r\nWizardLayout = simple\r\n[Payload.Files]\r\nSource = " << rsw::WideToUtf8(bookContent.wstring()) << "\r\n";
+                }
+                rsw::RswManifestDocument badRaw, badRes;
+                std::string aErr;
+                rsw::LoadManifestFile(badAddonRsip, badRaw, aErr);
+                rsw::ResolveManifestIncludesAndVars(badRaw, {}, badRes, aErr);
+                const auto badAddonRep = rsw::ValidateManifestDocument(badRes, hostArch, rsw::RswIdeEdition::Essentials);
+
+                // 2) Valid `PackageKind = addon` MUST pass `Essentials` edition validation & compile `<stem>-setup.exe`!
+                const auto goodAddonRsip = addonDir / L"cedar-run-addon.rsip";
+                {
+                    std::ofstream o(goodAddonRsip, std::ios::binary | std::ios::trunc);
+                    o << "[Package]\r\n"
+                      << "Name = Cedar Run Book Pack\r\n"
+                      << "Version = 1.0.0\r\n"
+                      << "Manufacturer = RaggieSoft Media\r\n"
+                      << "PackageKind = addon\r\n"
+                      << "UpgradeCode = {91A2B3C4-5D6E-4F70-8A91-524147414401}\r\n"
+                      << "Architecture = " << hostArch << "\r\n"
+                      << "Scope = user\r\n\r\n"
+                      << "[HostApp]\r\n"
+                      << "Name = RaggieSoft Book Reader\r\n"
+                      << "RegistryKey = Software\\RaggieSoft\\Book Reader\r\n"
+                      << "RegistryValue = Install Path\r\n"
+                      << "FallbackSubdir = RaggieSoft\\Book Reader\r\n"
+                      << "Executable = BookReader.exe\r\n"
+                      << "ContentTargetRoot = LocalAppData\r\n"
+                      << "ContentSubdir = RaggieSoft\\Books\\cedar-run\r\n"
+                      << "RequireHostInstalled = true\r\n\r\n"
+                      << "[UI]\r\n"
+                      << "WizardLayout = simple\r\n"
+                      << "InstallButtonText = &Install Book\r\n\r\n"
+                      << "[Payload.Book]\r\n"
+                      << "Source = " << rsw::WideToUtf8(bookContent.wstring()) << "\r\n\r\n"
+                      << "[Registry.BookList]\r\n"
+                      << "Root = HKCU\r\n"
+                      << "Key = Software\\RaggieSoft\\Book Reader\\Books\\List\r\n"
+                      << "Name = cedar-run\r\n"
+                      << "Value = [INSTALLDIR]\r\n\r\n"
+                      << "[Registry.HostBinding]\r\n"
+                      << "Root = HKCU\r\n"
+                      << "Key = Software\\RaggieSoft\\Book Reader\\Books\\cedar-run\r\n"
+                      << "Name = VerifiedHostDir\r\n"
+                      << "Value = [HOSTDIR]\r\n";
+                }
+                rsw::RswManifestDocument goodRaw, goodRes;
+                rsw::LoadManifestFile(goodAddonRsip, goodRaw, aErr);
+                rsw::ResolveManifestIncludesAndVars(goodRaw, {}, goodRes, aErr);
+                const auto goodEssRep = rsw::ValidateManifestDocument(goodRes, hostArch, rsw::RswIdeEdition::Essentials);
+                const DWORD bldAddonRc = runCli(
+                    instbuildExe,
+                    L"\"" + goodAddonRsip.wstring() + L"\" --out-dir=\"" + addonOut.wstring() + L"\" --output-name=raggiesoft-book-cedar-run");
+                const auto addonExe = addonOut / L"raggiesoft-book-cedar-run-setup.exe";
+
+                wchar_t prevVReg[MAX_PATH * 4]{};
+                const DWORD prevVLen = ::GetEnvironmentVariableW(L"RSW_TEST_REG_STORE_DIR", prevVReg, static_cast<DWORD>(std::size(prevVReg)));
+                ::SetEnvironmentVariableW(L"RSW_TEST_REG_STORE_DIR", addonVirtReg.wstring().c_str());
+                ::SetEnvironmentVariableW(L"RSW_TEST_HOST_ROOT_DIR", fakeHostRoot.wstring().c_str());
+                ::SetEnvironmentVariableW(L"RSW_TEST_ADDON_DATA_ROOT", fakeDataRoot.wstring().c_str());
+
+                const auto expectedBookDest = fakeDataRoot / L"RaggieSoft" / L"Books" / L"cedar-run";
+
+                // 3) Host NOT installed yet -> `/s` MUST return `1605` (`ERROR_UNKNOWN_PRODUCT`) and write ZERO files!
+                const DWORD missingHostRc = (bldAddonRc == 0) ? runCli(addonExe, L"/s") : 1u;
+                const bool zeroOrphansWhenHostMissing = !std::filesystem::exists(expectedBookDest / L"chapter-01.md", ec);
+
+                // 4) Now install simulated Host (`BookReader.exe`) -> Add-On MUST detect it, drop book into `expectedBookDest`,
+                //    expand `[HOSTDIR]` in virtual registry, and cleanly uninstall via `Uninstall.exe --native-uninstall /s`!
+                const auto hostReaderDir = fakeHostRoot / L"RaggieSoft" / L"Book Reader";
+                std::filesystem::create_directories(hostReaderDir, ec);
+                std::filesystem::copy_file(binDir / L"HelloRaggieSoft.exe", hostReaderDir / L"BookReader.exe",
+                                           std::filesystem::copy_options::overwrite_existing, ec);
+
+                const DWORD okHostRc = (bldAddonRc == 0) ? runCli(addonExe, L"/s") : 1u;
+                const bool placedChapter = std::filesystem::exists(expectedBookDest / L"chapter-01.md", ec);
+                std::string recordedHostDirVal;
+                rsw::native_detail::VirtualRegReadValue(
+                    addonVirtReg, "HKCU", L"Software\\RaggieSoft\\Book Reader\\Books\\cedar-run", L"VerifiedHostDir", recordedHostDirVal);
+                const DWORD uninstAddonRc = placedChapter
+                    ? runCli(expectedBookDest / L"Uninstall.exe", L"--native-uninstall /s")
+                    : 1u;
+                const bool removedCleanly = !std::filesystem::exists(expectedBookDest / L"chapter-01.md", ec);
+
+                ::SetEnvironmentVariableW(L"RSW_TEST_HOST_ROOT_DIR", nullptr);
+                ::SetEnvironmentVariableW(L"RSW_TEST_ADDON_DATA_ROOT", nullptr);
+                ::SetEnvironmentVariableW(L"RSW_TEST_REG_STORE_DIR", (prevVLen > 0) ? prevVReg : nullptr);
+
+                Check(!badAddonRep.IsOk() && goodEssRep.IsOk() && bldAddonRc == 0 &&
+                      missingHostRc == ERROR_UNKNOWN_PRODUCT && zeroOrphansWhenHostMissing &&
+                      okHostRc == 0 && placedChapter &&
+                      recordedHostDirVal.find("Book Reader") != std::string::npos &&
+                      uninstAddonRc == 0 && removedCleanly,
+                      "v0.9.0 PackageKind=addon [HostApp] enforces RSW067, unlocks in Essentials, returns 1605 with zero orphans when host missing, & places/uninstalls content cleanly when host is present",
+                      "missRc=" + std::to_string(missingHostRc) + " okRc=" + std::to_string(okHostRc) + " hostDir=" + recordedHostDirVal);
+            }
+
+            // =========================================================================
+            // 17. v0.9.0 Test B — Unified Suite Project (`PackageKind = suite`):
+            //     Verifies `Delivery = web` (`file://` + `Sha256`), tamper rejection,
+            //     `SuiteRollbackPolicy = rollback_new` + `RollbackBoundary = true` LIFO
+            //     rollback on child failure, AND chaining Host App + `addon` Pack in one Suite!
+            // =========================================================================
+            {
+                const auto suiteTestDir = rsscWorkDir / L"v090-suite-test";
+                const auto stOut        = suiteTestDir / L"out";
+                const auto stVirtReg    = suiteTestDir / L"virt-reg";
+                const auto stInstall    = suiteTestDir / L"install-root";
+                const auto stAddonData  = suiteTestDir / L"addon-data";
+                const auto payHost      = suiteTestDir / L"pay-host";
+                const auto payTool      = suiteTestDir / L"pay-tool";
+                const auto payBook      = suiteTestDir / L"pay-book";
+                for (const auto& d : {stOut, stVirtReg, stInstall, stAddonData, payHost, payTool, payBook}) {
+                    std::filesystem::create_directories(d, ec);
+                }
+                std::filesystem::copy_file(binDir / L"HelloRaggieSoft.exe", payHost / L"BookReader.exe", std::filesystem::copy_options::overwrite_existing, ec);
+                { std::ofstream f(payTool / L"CompanionTool.txt", std::ios::binary); f << "Companion Tool Payload"; }
+                { std::ofstream f(payBook / L"ad-astra.md",       std::ios::binary); f << "# Escape Velocity: Ad Astra"; }
+
+                // Build Child 1: Host App (`Engine = raggiescript`, registers `Software\RaggieSoft\Book Reader`)
+                const auto hostRsip = suiteTestDir / L"host-reader.rsip";
+                {
+                    std::ofstream o(hostRsip, std::ios::binary | std::ios::trunc);
+                    o << "[Package]\r\nName = Suite Book Reader\r\nVersion = 1.0.0\r\nManufacturer = RaggieSoft\r\n"
+                      << "UpgradeCode = {A1112222-3333-4444-8555-666677778801}\r\nArchitecture = " << hostArch << "\r\n"
+                      << "Scope = user\r\nEngine = raggiescript\r\n\r\n"
+                      << "[Install]\r\nDefaultSubdir = RaggieSoft\\Book Reader\r\nMainExecutable = BookReader.exe\r\n\r\n"
+                      << "[UI]\r\nWizardLayout = simple\r\n\r\n"
+                      << "[Payload.App]\r\nSource = " << rsw::WideToUtf8(payHost.wstring()) << "\r\n\r\n"
+                      << "[Registry.InstallPath]\r\nRoot = HKCU\r\nKey = Software\\RaggieSoft\\Book Reader\r\nName = Install Path\r\nValue = [INSTALLDIR]\r\n";
+                }
+                // Build Child 2: Transient Companion App (`Engine = raggiescript` — will be rolled back when Child 3 fails!)
+                const auto compRsip = suiteTestDir / L"companion-app.rsip";
+                {
+                    std::ofstream o(compRsip, std::ios::binary | std::ios::trunc);
+                    o << "[Package]\r\nName = Suite Companion Tool\r\nVersion = 1.0.0\r\nManufacturer = RaggieSoft\r\n"
+                      << "UpgradeCode = {A1112222-3333-4444-8555-666677778802}\r\nArchitecture = " << hostArch << "\r\n"
+                      << "Scope = user\r\nEngine = raggiescript\r\n\r\n"
+                      << "[Install]\r\nDefaultSubdir = RaggieSoft\\Companion Tool\r\nMainExecutable = CompanionTool.txt\r\n\r\n"
+                      << "[UI]\r\nWizardLayout = simple\r\n\r\n"
+                      << "[Payload.Tool]\r\nSource = " << rsw::WideToUtf8(payTool.wstring()) << "\r\n";
+                }
+                // Build Child 3: Book Add-On (`PackageKind = addon` requiring `Suite Book Reader`!)
+                const auto bookAddonRsip = suiteTestDir / L"ad-astra-addon.rsip";
+                {
+                    std::ofstream o(bookAddonRsip, std::ios::binary | std::ios::trunc);
+                    o << "[Package]\r\nName = Ad Astra Book Add-On\r\nVersion = 1.0.0\r\nManufacturer = RaggieSoft Media\r\n"
+                      << "PackageKind = addon\r\nUpgradeCode = {A1112222-3333-4444-8555-666677778803}\r\nArchitecture = " << hostArch << "\r\nScope = user\r\n\r\n"
+                      << "[HostApp]\r\nName = Suite Book Reader\r\nRegistryKey = Software\\RaggieSoft\\Book Reader\r\n"
+                      << "RegistryValue = Install Path\r\nExecutable = BookReader.exe\r\n"
+                      << "ContentTargetRoot = LocalAppData\r\nContentSubdir = RaggieSoft\\Books\\ad-astra\r\nRequireHostInstalled = true\r\n\r\n"
+                      << "[UI]\r\nWizardLayout = simple\r\nInstallButtonText = &Install Book\r\n\r\n"
+                      << "[Payload.Book]\r\nSource = " << rsw::WideToUtf8(payBook.wstring()) << "\r\n";
+                }
+
+                runCli(instbuildExe, L"\"" + hostRsip.wstring()      + L"\" --out-dir=\"" + stOut.wstring() + L"\" --output-name=child-host");
+                runCli(instbuildExe, L"\"" + compRsip.wstring()      + L"\" --out-dir=\"" + stOut.wstring() + L"\" --output-name=child-comp");
+                runCli(instbuildExe, L"\"" + bookAddonRsip.wstring() + L"\" --out-dir=\"" + stOut.wstring() + L"\" --output-name=child-book-addon");
+
+                const auto hostSetupExe = stOut / L"child-host-setup.exe";
+                const auto compSetupExe = stOut / L"child-comp-setup.exe";
+                const auto bookSetupExe = stOut / L"child-book-addon-setup.exe";
+                std::string hostSha, compSha, bookSha;
+                rsw::ComputeFileSha256Hex(hostSetupExe, hostSha);
+                rsw::ComputeFileSha256Hex(compSetupExe, compSha);
+                rsw::ComputeFileSha256Hex(bookSetupExe, bookSha);
+
+                // Part 1: Build a `SuiteRollbackPolicy = rollback_new` Web Suite where:
+                //   - Step 1 (`Host`, `RollbackBoundary = true`) installs & commits savepoint!
+                //   - Step 2 (`Comp`, `RollbackBoundary = false`) installs!
+                //   - Step 3 (`BadBrokenWebPkg`) has a deliberately wrong `Sha256` -> fails verification!
+                //   Expected: `Comp` IS automatically uninstalled via LIFO rollback, while `Host` (behind `RollbackBoundary = true`) STAYS installed!
+                const auto rbSuiteRsip = suiteTestDir / L"rollback-suite.rsip";
+                const std::filesystem::path hostInstDir = stInstall / L"BookReader";
+                const std::filesystem::path compInstDir = stInstall / L"CompanionTool";
+                {
+                    std::ofstream o(rbSuiteRsip, std::ios::binary | std::ios::trunc);
+                    o << "[Package]\r\nName = Rollback Boundary Test Suite\r\nVersion = 1.0.0\r\nManufacturer = RaggieSoft\r\n"
+                      << "PackageKind = suite\r\nSuiteRollbackPolicy = rollback_new\r\n"
+                      << "UpgradeCode = {A1112222-3333-4444-8555-666677778890}\r\nArchitecture = " << hostArch << "\r\nScope = user\r\n\r\n"
+                      << "[Install]\r\nDefaultSubdir = RaggieSoft\\RbSuite\r\n\r\n"
+                      << "[UI]\r\nInstallButtonText = &Install Suite\r\n\r\n"
+                      << "[SuitePackage.HostReader]\r\nName = Suite Book Reader\r\nDelivery = web\r\n"
+                      << "DownloadUrl = file:///" << rsw::WideToUtf8(hostSetupExe.generic_wstring()) << "\r\n"
+                      << "Sha256 = " << hostSha << "\r\nEngine = raggiescript\r\n"
+                      << "UpgradeCode = {A1112222-3333-4444-8555-666677778801}\r\n"
+                      << "InstallArgs = INSTALLDIR=\"" << rsw::WideToUtf8(hostInstDir.wstring()) << "\"\r\n"
+                      << "RollbackBoundary = true\r\n\r\n"
+                      << "[SuitePackage.Companion]\r\nName = Suite Companion Tool\r\nDelivery = web\r\n"
+                      << "DownloadUrl = file:///" << rsw::WideToUtf8(compSetupExe.generic_wstring()) << "\r\n"
+                      << "Sha256 = " << compSha << "\r\nEngine = raggiescript\r\n"
+                      << "UpgradeCode = {A1112222-3333-4444-8555-666677778802}\r\n"
+                      << "InstallArgs = INSTALLDIR=\"" << rsw::WideToUtf8(compInstDir.wstring()) << "\"\r\n\r\n"
+                      << "[SuitePackage.TamperedStep]\r\nName = Tampered Workload\r\nDelivery = web\r\n"
+                      << "DownloadUrl = file:///" << rsw::WideToUtf8(bookSetupExe.generic_wstring()) << "\r\n"
+                      << "Sha256 = ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\r\n"
+                      << "Engine = addon\r\n";
+                }
+
+                // Part 2: Build a valid `side-by-side` (`packages\`) Suite chaining `HostReader` + `Companion` + `AdAstraAddon`!
+                const auto okSuiteRsip = suiteTestDir / L"boxset-suite.rsip";
+                {
+                    std::ofstream o(okSuiteRsip, std::ios::binary | std::ios::trunc);
+                    o << "[Package]\r\nName = Boxset App and Add-On Suite\r\nVersion = 1.0.0\r\nManufacturer = RaggieSoft\r\n"
+                      << "PackageKind = suite\r\nSuiteRollbackPolicy = rollback_new\r\n"
+                      << "UpgradeCode = {A1112222-3333-4444-8555-666677778891}\r\nArchitecture = " << hostArch << "\r\nScope = user\r\n\r\n"
+                      << "[Install]\r\nDefaultSubdir = RaggieSoft\\BoxsetSuite\r\n\r\n"
+                      << "[UI]\r\nInstallButtonText = &Install Suite\r\n\r\n"
+                      << "[SuitePackage.HostReader]\r\nName = Suite Book Reader\r\nDelivery = side-by-side\r\n"
+                      << "Source = " << rsw::WideToUtf8(hostSetupExe.wstring()) << "\r\nEngine = raggiescript\r\n"
+                      << "UpgradeCode = {A1112222-3333-4444-8555-666677778801}\r\n"
+                      << "InstallArgs = INSTALLDIR=\"" << rsw::WideToUtf8(hostInstDir.wstring()) << "\"\r\n"
+                      << "RollbackBoundary = true\r\n\r\n"
+                      << "[SuitePackage.Companion]\r\nName = Suite Companion Tool\r\nDelivery = side-by-side\r\n"
+                      << "Source = " << rsw::WideToUtf8(compSetupExe.wstring()) << "\r\nEngine = raggiescript\r\n"
+                      << "UpgradeCode = {A1112222-3333-4444-8555-666677778802}\r\n"
+                      << "InstallArgs = INSTALLDIR=\"" << rsw::WideToUtf8(compInstDir.wstring()) << "\"\r\n\r\n"
+                      << "[SuitePackage.AdAstraBook]\r\nName = Ad Astra Book Add-On\r\nDelivery = side-by-side\r\n"
+                      << "Source = " << rsw::WideToUtf8(bookSetupExe.wstring()) << "\r\nEngine = addon\r\n"
+                      << "UpgradeCode = {A1112222-3333-4444-8555-666677778803}\r\n";
+                }
+
+                const DWORD bldRbSuiteRc = runCli(instbuildExe, L"\"" + rbSuiteRsip.wstring() + L"\" --out-dir=\"" + stOut.wstring() + L"\" --output-name=rb-suite");
+                const DWORD bldOkSuiteRc = runCli(instbuildExe, L"\"" + okSuiteRsip.wstring() + L"\" --out-dir=\"" + stOut.wstring() + L"\" --output-name=ok-suite");
+
+                wchar_t prevVReg[MAX_PATH * 4]{};
+                const DWORD prevVLen = ::GetEnvironmentVariableW(L"RSW_TEST_REG_STORE_DIR", prevVReg, static_cast<DWORD>(std::size(prevVReg)));
+                ::SetEnvironmentVariableW(L"RSW_TEST_REG_STORE_DIR", stVirtReg.wstring().c_str());
+                ::SetEnvironmentVariableW(L"RSW_TEST_ADDON_DATA_ROOT", stAddonData.wstring().c_str());
+
+                // Run `rb-suite-setup.exe /s` -> Step 3 SHA-256 mismatch MUST fail, roll back `CompanionTool`, and preserve `BookReader` (`RollbackBoundary = true`)!
+                const DWORD runRbRc = (bldRbSuiteRc == 0) ? runCli(stOut / L"rb-suite-setup.exe", L"/s --install-dir \"" + (stInstall / L"SuiteHub1").wstring() + L"\"") : 0u;
+                const bool hostKeptAtBoundary   = std::filesystem::exists(hostInstDir / L"BookReader.exe", ec);
+                const bool compRolledBackClean  = !std::filesystem::exists(compInstDir / L"CompanionTool.txt", ec);
+
+                // Now run `ok-suite-setup.exe /s` -> adopts `BookReader`, installs `CompanionTool`, AND installs `AdAstraBook` add-on into `stAddonData\RaggieSoft\Books\ad-astra`!
+                const DWORD runOkRc = (bldOkSuiteRc == 0) ? runCli(stOut / L"ok-suite-setup.exe", L"/s --install-dir \"" + (stInstall / L"SuiteHub2").wstring() + L"\"") : 1u;
+                const bool allThreeInstalled =
+                    std::filesystem::exists(hostInstDir / L"BookReader.exe", ec) &&
+                    std::filesystem::exists(compInstDir / L"CompanionTool.txt", ec) &&
+                    std::filesystem::exists(stAddonData / L"RaggieSoft" / L"Books" / L"ad-astra" / L"ad-astra.md", ec) &&
+                    std::filesystem::exists(stOut / L"packages" / L"child-book-addon-setup.exe", ec);
+
+                ::SetEnvironmentVariableW(L"RSW_TEST_ADDON_DATA_ROOT", nullptr);
+                ::SetEnvironmentVariableW(L"RSW_TEST_REG_STORE_DIR", (prevVLen > 0) ? prevVReg : nullptr);
+
+                Check(bldRbSuiteRc == 0 && bldOkSuiteRc == 0 &&
+                      runRbRc != 0 && hostKeptAtBoundary && compRolledBackClean &&
+                      runOkRc == 0 && allThreeInstalled,
+                      "v0.9.0 Unified Suite Delivery=web/side-by-side SHA-256 verification, RollbackBoundary + rollback_new LIFO undo, & Host+Add-On Suite chaining verified",
+                      "rbRc=" + std::to_string(runRbRc) + " hostKept=" + std::to_string(hostKeptAtBoundary) + " compRb=" + std::to_string(compRolledBackClean) + " okRc=" + std::to_string(runOkRc));
+            }
         }
 
         if (rsscVirtReg) {
