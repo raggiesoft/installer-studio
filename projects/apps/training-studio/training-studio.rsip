@@ -1,14 +1,15 @@
 ; ==============================================================================
 ; FILE: projects/apps/training-studio/training-studio.rsip
-; APPLICATION: RaggieSoft Training Studio (v0.5.0)
+; APPLICATION: RaggieSoft Training Studio (v0.7.0)
 ; COMPILER: RaggieSoft Installer Studio v0.5.1 (AeroWizard + 4 Setup Types!)
 ; ==============================================================================
 ; PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
-;   Packages RaggieSoft Training Studio (`TrainingStudio.exe` Visual Courseware
-;   IDE, `rstbuild.exe` Headless SCORM 1.2 & 2004 Compiler, `< 50 KB` Learner
-;   Runtime, Auto-VPAT 2.5 Emitter, Hostile Enterprise LMS Simulator, and native
-;   `RaggieSoftHelp.exe` F1 Manual) as native Windows 11 `x64` & `ARM64` `.msi`
-;   and Universal `Setup.exe` installers!
+;   Packages RaggieSoft Training Studio v0.7.0 (`TrainingStudio.exe` Visual
+;   Courseware IDE with Split Live Preview & PowerPoint `.pptx` Importer,
+;   `rstbuild.exe` Headless SCORM 1.2 / 2004 / xAPI / cmi5 Compiler, `< 50 KB`
+;   Learner Runtime, Question Banks, Role Branching, `RaggieScript`, Auto-VPAT
+;   2.5 Emitter, Hostile Enterprise LMS Simulator, and native `RaggieSoftHelp.exe`
+;   F1 Manual) as native Windows 11 `x64` & `ARM64` `.msi` and `Setup.exe`!
 ; ==============================================================================
 
 @include "..\..\shared\raggiesoft-defaults.rsii"
@@ -16,9 +17,9 @@
 [Package]
 SchemaVersion            = 0.8
 Name                     = RaggieSoft Training Studio
-Tagline                  = Bandwidth-Resilient WCAG 2.2 AA SCORM 1.2 & 2004 Courseware IDE
+Tagline                  = WCAG 2.2 AA SCORM 1.2, 2004, xAPI & cmi5 Courseware IDE + .pptx Importer
 WebsiteLabel             = raggiesoftstudio.com/training-studio
-Version                  = 0.5.1
+Version                  = 0.7.0
 Manufacturer             = RaggieSoft
 UpgradeCode              = {8A41F27B-6C3D-48E9-A11B-9F5C22D04E81}
 Architecture             = $(ARCH)
