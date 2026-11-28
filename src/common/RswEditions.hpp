@@ -152,7 +152,7 @@ inline std::wstring BuildLicenseStatusSummaryText(const RswLicenseStatus& status
             << L"Issued Date   : " << Utf8ToWide(status.cert.issuedDate)
             << (status.cert.maintenanceThru.empty() ? L"" : (L"  •  Maintenance Thru: " + Utf8ToWide(status.cert.maintenanceThru))) << L"\n"
             << L"License File  : " << Utf8ToWide(status.sourceDescription) << L"\n\n"
-            << L"Zero-Telemetry Guarantee: Verified 100% offline via Windows System32\\bcrypt.dll with zero activation servers and zero hardware fingerprinting.";
+            << L"Zero-Activation & Zero-Phone-Home Guarantee: Verified 100% offline via Windows System32\\bcrypt.dll — zero product activation servers, zero network calls, and zero hardware fingerprinting.";
     } else {
         oss << L"License State : No .rswlic commercial license file found — running Community Edition\n\n"
             << L"Community Edition Eligibility & Full Architect Parity:\n"

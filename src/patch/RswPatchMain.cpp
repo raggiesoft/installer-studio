@@ -144,7 +144,8 @@ int wmain(int argc, wchar_t* argv[]) {
     rsw::RswLicenseStatus licStatus{};
     {
         std::string licErr;
-        if (!rsw::ResolveActiveProductLicense(cliLicenseFile, std::filesystem::path(exePathBuf).parent_path(), licStatus, licErr)) {
+        if (!rsw::ResolveActiveProductLicense(cliLicenseFile, std::filesystem::path(exePathBuf).parent_path(), licStatus, licErr) ||
+            !rsw::VerifyCommercialCiAgentRights(licStatus, licErr)) {
             std::cerr << licErr << "\n";
             return 2;
         }

@@ -82,10 +82,11 @@ int ProcessSingleProject(
     bool validateOnly,
     bool jsonDiagnostics,
     bool emitVpatAlongside,
-    rsw::RswIdeEdition activeEdition,
+    const rsw::RswLicenseStatus& licenseStatus,
     const CliPackageOverrides& pkgOverrides,
     const std::filesystem::path& compilerExeDir)
 {
+    const rsw::RswIdeEdition activeEdition = licenseStatus.edition;
     rsw::RswManifestDocument rawDoc;
     std::string parseError;
     if (!rsw::LoadManifestFile(manifestPath, rawDoc, parseError)) {
@@ -205,7 +206,7 @@ int ProcessSingleProject(
         }
         if (emitVpatAlongside) {
             std::filesystem::path vpatHtml;
-            if (rsw::EmitProjectInstallerVpatHtml(doc, x64Sum.msiPath.parent_path(), vpatHtml, buildErr)) {
+            if (rsw::EmitProjectInstallerVpatHtml(doc, x64Sum.msiPath.parent_path(), vpatHtml, buildErr, &licenseStatus)) {
                 std::cout << "     VPAT            : " << rsw::WideToUtf8(vpatHtml.wstring()) << "\n";
             }
         }
@@ -255,7 +256,7 @@ int ProcessSingleProject(
         }
         if (emitVpatAlongside) {
             std::filesystem::path vpatHtml;
-            if (rsw::EmitProjectInstallerVpatHtml(doc, outExe.parent_path(), vpatHtml, buildErr)) {
+            if (rsw::EmitProjectInstallerVpatHtml(doc, outExe.parent_path(), vpatHtml, buildErr, &licenseStatus)) {
                 std::cout << "     VPAT : " << rsw::WideToUtf8(vpatHtml.wstring()) << "\n";
             }
         }
@@ -296,7 +297,7 @@ int ProcessSingleProject(
 
     if (emitVpatAlongside) {
         std::filesystem::path vpatHtml;
-        if (rsw::EmitProjectInstallerVpatHtml(doc, summary.msiPath.parent_path(), vpatHtml, buildErr)) {
+        if (rsw::EmitProjectInstallerVpatHtml(doc, summary.msiPath.parent_path(), vpatHtml, buildErr, &licenseStatus)) {
             std::cout << "     VPAT : " << rsw::WideToUtf8(vpatHtml.wstring()) << "\n";
         }
     }
@@ -351,6 +352,17 @@ int wmain(int argc, wchar_t* argv[]) {
     {
         std::string licErr;
         if (!rsw::ResolveActiveProductLicense(cliLicenseFile, compilerExeDir, licenseStatus, licErr)) {
+            std::cerr << licErr << "\n";
+            return 2;
+        }
+        bool isLicenseStatusOnly = false;
+        for (const auto& a : args) {
+            if (a == "--license-status" || a == "--help" || a == "-h" || a == "/?" || a == "--version" || a == "-v") {
+                isLicenseStatusOnly = true;
+                break;
+            }
+        }
+        if (!isLicenseStatusOnly && !rsw::VerifyCommercialCiAgentRights(licenseStatus, licErr)) {
             std::cerr << licErr << "\n";
             return 2;
         }
@@ -420,7 +432,7 @@ int wmain(int argc, wchar_t* argv[]) {
                 return 1;
             }
             std::filesystem::path vpatHtml;
-            if (!rsw::EmitProjectInstallerVpatHtml(vpatDoc, std::filesystem::path(rsw::Utf8ToWide(args[i + 2])), vpatHtml, err)) {
+            if (!rsw::EmitProjectInstallerVpatHtml(vpatDoc, std::filesystem::path(rsw::Utf8ToWide(args[i + 2])), vpatHtml, err, &licenseStatus)) {
                 std::cerr << "[ERROR] " << err << "\n";
                 return 1;
             }
@@ -791,13 +803,13 @@ int wmain(int argc, wchar_t* argv[]) {
             if (projWantsUniv) {
                 const int rc = ProcessSingleProject(
                     proj.resolvedPath, suite.variables, "", true,
-                    false, false, emitVpatFlag, activeEdition, pkgOverrides, compilerExeDir);
+                    false, false, emitVpatFlag, licenseStatus, pkgOverrides, compilerExeDir);
                 if (rc != 0) return rc;
             } else {
                 for (const auto& arch : archList) {
                     const int rc = ProcessSingleProject(
                         proj.resolvedPath, suite.variables, arch, false,
-                        validateOnly, false, emitVpatFlag, activeEdition, pkgOverrides, compilerExeDir);
+                        validateOnly, false, emitVpatFlag, licenseStatus, pkgOverrides, compilerExeDir);
                     if (rc != 0) {
                         return rc;
                     }
@@ -914,7 +926,11 @@ int wmain(int argc, wchar_t* argv[]) {
         return 0;
     }
 
+    if (!validateOnly && !jsonDiagnostics && licenseStatus.isCommercialLicensed) {
+        std::cout << "[LICENSE] " << rsw::WideToUtf8(rsw::EditionDisplayName(activeEdition))
+                  << " — " << rsw::FormatCommercialLicenseAttribution(licenseStatus) << "\n";
+    }
     return ProcessSingleProject(
         inputPath, cliVariables, archOverride, universalFlag,
-        validateOnly, jsonDiagnostics, emitVpatFlag, activeEdition, pkgOverrides, compilerExeDir);
+        validateOnly, jsonDiagnostics, emitVpatFlag, licenseStatus, pkgOverrides, compilerExeDir);
 }

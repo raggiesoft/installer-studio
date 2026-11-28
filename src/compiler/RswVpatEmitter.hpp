@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include "../common/RswLicensing.hpp"
 #include "../common/RswManifestAst.hpp"
 #include "../common/RswPlatform.hpp"
 #include "../common/RswVersion.hpp"
@@ -90,7 +91,8 @@ inline bool EmitProjectInstallerVpatHtml(
     const RswManifestDocument& doc,
     const std::filesystem::path& outDir,
     std::filesystem::path& outHtmlPath,
-    std::string& outError)
+    std::string& outError,
+    const RswLicenseStatus* licenseStatus = nullptr)
 {
     std::error_code ec;
     std::filesystem::create_directories(outDir, ec);
@@ -124,6 +126,12 @@ inline bool EmitProjectInstallerVpatHtml(
         std::snprintf(buf, sizeof(buf), "%.1f:1", r);
         return std::string(buf);
     };
+
+    const std::string provenanceLabel = (licenseStatus && licenseStatus->isCommercialLicensed)
+        ? ("RaggieSoft Installer Studio v" + std::string(kVersionString) + " (" +
+           WideToUtf8(EditionDisplayName(licenseStatus->edition)) + " — " +
+           FormatCommercialLicenseAttribution(*licenseStatus) + ")")
+        : ("RaggieSoft Installer Studio v" + std::string(kVersionString) + " (Community Edition)");
 
     const std::string slug = SlugifyName(prodName);
     outHtmlPath = outDir / (slug + "-installer-vpat-2.5.html");
@@ -164,6 +172,7 @@ inline bool EmitProjectInstallerVpatHtml(
       << "    <div class=\"meta-box\"><strong>Vendor / Publisher:</strong><br>" << EscapeHtmlText(publisher) << "</div>\n"
       << "    <div class=\"meta-box\"><strong>Installer Runtime Engine:</strong><br>RaggieSoft Setup Wizard (" << EscapeHtmlText(layout) << " layout) + Windows Installer 5.0 (<code>.msi</code>)</div>\n"
       << "    <div class=\"meta-box\"><strong>Evaluation Methods Used:</strong><br>Deterministic WCAG 2.2 Luminance Math, Keyboard Mnemonic Static Analysis, Per-Monitor V2 DPI &amp; Contrast-Theme Inspection, UI Automation / Narrator / NVDA Verification</div>\n"
+      << "    <div class=\"meta-box\"><strong>Compliance Tooling Provenance:</strong><br>" << EscapeHtmlText(provenanceLabel) << "</div>\n"
       << "  </div>\n\n"
       << "  <h2>1. Automated Contrast &amp; Keyboard Mnemonic Verification Summary</h2>\n"
       << "  <table>\n"

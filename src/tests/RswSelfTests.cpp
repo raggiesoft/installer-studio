@@ -2180,13 +2180,13 @@ int wmain() {
                         std::memcpy(testPubQxQy.data(), pubBlob.data() + sizeof(BCRYPT_ECCKEY_BLOB), 64);
                     }
 
-                    auto makeSignedCert = [&](const std::string& prod, const std::string& ed) -> std::string {
+                    auto makeSignedCert = [&](const std::string& prod, const std::string& ed, const std::string& licId = "RSW-UNITTEST-001") -> std::string {
                         std::map<std::string, std::string> f{
                             {"edition",    ed},
                             {"format",     "RSWLIC1"},
                             {"issueddate", "2026-11-27"},
                             {"licensee",   "Unit Test Studio Team"},
-                            {"licenseid",  "RSW-UNITTEST-001"},
+                            {"licenseid",  licId},
                             {"product",    prod},
                             {"seats",      "3"}
                         };
@@ -2201,7 +2201,7 @@ int wmain() {
                         std::ostringstream doc;
                         doc << "-----BEGIN RAGGIESOFT LICENSE-----\r\n"
                             << "Format     = RSWLIC1\r\n"
-                            << "LicenseId  = RSW-UNITTEST-001\r\n"
+                            << "LicenseId  = " << licId << "\r\n"
                             << "Product    = " << prod << "\r\n"
                             << "Edition    = " << ed << "\r\n"
                             << "Licensee   = Unit Test Studio Team\r\n"
@@ -2212,13 +2212,23 @@ int wmain() {
                         return doc.str();
                     };
 
-                    rsw::RswLicenseCertificate cEss{}, cDev{}, cArc{}, cSuite{}, cTamper{};
-                    std::string lErr;
+                    rsw::RswLicenseCertificate cEss{}, cDev{}, cArc{}, cSuite{}, cTamper{}, cRevoked{};
+                    std::string lErr, revErr, ciErr;
                     const std::string validEssTxt = makeSignedCert("installer-studio",  "essentials");
                     const std::string validDevTxt = makeSignedCert("installer-studio",  "developer");
                     const std::string validArcTxt = makeSignedCert("installer-studio",  "architect");
                     const std::string validSteTxt = makeSignedCert("raggiesoft-studio", "architect");
+                    const std::string revokedTxt  = makeSignedCert("installer-studio",  "architect", "RSW-REVOKED-PUBLIC-LEAK-0000");
 
+                    const bool revokedBlockedOk =
+                        !rsw::VerifyRswLicenseTextWithPublicKey(revokedTxt, "installer-studio", testPubQxQy, cRevoked, revErr) &&
+                        (revErr.find("[RSW098]") != std::string::npos);
+
+                    // Offline CI/CD scope check (`RSW099`): `Essentials` blocked in CI, `Developer` & `Architect` allowed!
+                    ::SetEnvironmentVariableW(L"RSW_SIMULATE_CI_ENV", L"1");
+                    rsw::RswLicenseStatus stEss{true, rsw::RswIdeEdition::Essentials, cEss, {}, "test"};
+                    rsw::RswLicenseStatus stDev{true, rsw::RswIdeEdition::Developer,  cDev, {}, "test"};
+                    rsw::RswLicenseStatus stCom{false, rsw::RswIdeEdition::Community, {},   {}, "community"};
                     ecdsaSignVerifyOk =
                         rsw::VerifyRswLicenseTextWithPublicKey(validEssTxt, "installer-studio", testPubQxQy, cEss, lErr) &&
                         cEss.edition == rsw::RswIdeEdition::Essentials &&
@@ -2228,6 +2238,33 @@ int wmain() {
                         cArc.edition == rsw::RswIdeEdition::Architect &&
                         rsw::VerifyRswLicenseTextWithPublicKey(validSteTxt, "installer-studio", testPubQxQy, cSuite, lErr) &&
                         cSuite.edition == rsw::RswIdeEdition::Architect;
+                    stEss.cert = cEss;
+                    stDev.cert = cDev;
+                    const bool ciScopeOk =
+                        !rsw::VerifyCommercialCiAgentRights(stEss, ciErr) &&
+                        (ciErr.find("[RSW099]") != std::string::npos) &&
+                        rsw::VerifyCommercialCiAgentRights(stDev, ciErr) &&
+                        rsw::VerifyCommercialCiAgentRights(stCom, ciErr);
+                    ::SetEnvironmentVariableW(L"RSW_SIMULATE_CI_ENV", nullptr);
+
+                    // Verify VPAT 2.5 provenance stamps `Licensed to Unit Test Studio Team` when commercial `.rswlic` is active!
+                    rsw::RswLicenseStatus stArc{true, rsw::RswIdeEdition::Architect, cArc, {}, "test"};
+                    rsw::RswManifestDocument vpatTestDoc;
+                    vpatTestDoc.SetString("Package", "", "Name", "Provenance Check App");
+                    vpatTestDoc.SetString("Package", "", "Version", "1.0.0");
+                    vpatTestDoc.SetString("Package", "", "Manufacturer", "RaggieSoft");
+                    std::filesystem::path vpatOutHtml;
+                    std::string vpatErr;
+                    const bool vpatProvWritten = rsw::EmitProjectInstallerVpatHtml(
+                        vpatTestDoc, rsscWorkDir / L"vpat-prov", vpatOutHtml, vpatErr, &stArc);
+                    std::vector<std::uint8_t> vpatBytes;
+                    rsw::ReadBinaryFileBytes(vpatOutHtml, vpatBytes, surgErr);
+                    const std::string vpatHtmlStr(reinterpret_cast<const char*>(vpatBytes.data()), vpatBytes.size());
+                    const bool vpatProvOk = vpatProvWritten &&
+                        (vpatHtmlStr.find("Licensed to Unit Test Studio Team") != std::string::npos) &&
+                        (vpatHtmlStr.find("RSW-UNITTEST-001") != std::string::npos);
+
+                    ecdsaSignVerifyOk = ecdsaSignVerifyOk && revokedBlockedOk && ciScopeOk && vpatProvOk;
 
                     // Tamper `Edition = essentials` -> `Edition = architect` without private key -> MUST fail with `RSW098`!
                     std::string forgedTxt = validEssTxt;

@@ -87,6 +87,11 @@ inline constexpr std::array<std::uint8_t, 64> kRaggieSoftLicensePubKeyP256 = {
     0xFC, 0x51, 0xEE, 0xDF
 };
 
+/// Static compile-time blocklist of publicly leaked `LicenseId` identifiers (checked 100% offline — ZERO phone-home!).
+inline constexpr std::array<std::string_view, 1> kRevokedLicenseIds = {
+    "RSW-REVOKED-PUBLIC-LEAK-0000"
+};
+
 /// Parsed and cryptographically verified `.rswlic` certificate attributes.
 struct RswLicenseCertificate {
     std::string   licenseId;
@@ -315,6 +320,13 @@ inline bool VerifyRswLicenseTextWithPublicKey(
         return false;
     }
 
+    for (std::string_view revokedId : kRevokedLicenseIds) {
+        if (EqualsIgnoreCase(fields["licenseid"], revokedId)) {
+            outError = "[RSW098] License ID '" + fields["licenseid"] + "' has been retired due to public credential leak.";
+            return false;
+        }
+    }
+
     const std::string prodLow = AsciiLower(fields["product"]);
     if (prodLow != AsciiLower(expectedProductSlug) && prodLow != "raggiesoft-studio") {
         outError = "[RSW098] License Product '" + fields["product"] + "' does not cover '" + std::string(expectedProductSlug) + "'.";
@@ -489,6 +501,44 @@ inline bool ImportAndInstallUserLicenseFile(
     outNewStatus.cert                 = std::move(cert);
     outNewStatus.sourceFilePath       = destPath;
     outNewStatus.sourceDescription    = WideToUtf8(destPath.wstring());
+    return true;
+}
+
+/// Formats concise human-readable attribution (`"Licensed to Jane Doe (1-Seat License, RSW-2026-DEV-0001)"`).
+inline std::string FormatCommercialLicenseAttribution(const RswLicenseStatus& status) {
+    if (!status.isCommercialLicensed || status.cert.licensee.empty()) return {};
+    return "Licensed to " + status.cert.licensee + " (" +
+           std::to_string(std::max(1, status.cert.seats)) + "-Seat License, " +
+           status.cert.licenseId + ")";
+}
+
+/// Detects headless CI/CD build server environments 100% locally via standard CI environment variables (ZERO network calls!).
+inline bool IsRunningInHeadlessCiEnvironment() noexcept {
+    auto hasNonEmptyEnv = [](const wchar_t* name) -> bool {
+        wchar_t buf[64]{};
+        const DWORD n = ::GetEnvironmentVariableW(name, buf, static_cast<DWORD>(std::size(buf)));
+        return n > 0 && buf[0] != L'0';
+    };
+    return hasNonEmptyEnv(L"RSW_SIMULATE_CI_ENV") ||
+           hasNonEmptyEnv(L"GITHUB_ACTIONS") ||
+           hasNonEmptyEnv(L"TF_BUILD") ||
+           hasNonEmptyEnv(L"GITLAB_CI") ||
+           hasNonEmptyEnv(L"JENKINS_URL") ||
+           hasNonEmptyEnv(L"CIRCLECI") ||
+           hasNonEmptyEnv(L"TEAMCITY_VERSION") ||
+           hasNonEmptyEnv(L"BUILDKITE");
+}
+
+/// Enforces 100% offline workstation-vs-CI/CD build-agent scope (`Essentials` = 1 developer workstation; `Developer`/`Architect` = CI/CD included!).
+inline bool VerifyCommercialCiAgentRights(const RswLicenseStatus& status, std::string& outError) {
+    if (status.isCommercialLicensed &&
+        status.edition == RswIdeEdition::Essentials &&
+        IsRunningInHeadlessCiEnvironment()) {
+        outError = "[RSW099] Essentials Edition (.rswlic '" + status.cert.licenseId + "' licensed to " +
+                   status.cert.licensee + ") covers 1 developer workstation; commercial CI/CD build server agents "
+                   "(GitHub Actions, Azure DevOps, GitLab CI, Jenkins) require Developer or Architect Edition.";
+        return false;
+    }
     return true;
 }
 

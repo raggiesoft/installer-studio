@@ -2700,8 +2700,13 @@ public:
     }
 
     void UpdateWindowCaptionWithEdition() {
+        std::wstring edPart = std::wstring(rsw::EditionDisplayName(activeEdition));
+        if (licenseStatus.isCommercialLicensed && !licenseStatus.cert.licensee.empty()) {
+            edPart += L" — Licensed to " + rsw::Utf8ToWide(licenseStatus.cert.licensee) +
+                      L" (" + std::to_wstring(std::max(1, licenseStatus.cert.seats)) + L"-Seat License)";
+        }
         std::wstring title = L"RaggieSoft Installer Studio v" + std::wstring(rsw::kVersionStringWide) +
-                             L" [" + std::wstring(rsw::EditionDisplayName(activeEdition)) + L"] — ";
+                             L" [" + edPart + L"] — ";
         if (hasActiveSuite) {
             title += rsw::Utf8ToWide(activeSuite.name) + L" / ";
         }
@@ -3060,7 +3065,7 @@ public:
         }
         const auto outDir = currentFilePath.empty() ? (ideExeDir / L"vpat") : (currentFilePath.parent_path() / L"out");
         std::filesystem::path htmlPath;
-        if (!rsw::EmitProjectInstallerVpatHtml(resolvedDoc, outDir, htmlPath, err)) {
+        if (!rsw::EmitProjectInstallerVpatHtml(resolvedDoc, outDir, htmlPath, err, &licenseStatus)) {
             AppendConsole(L"[ERROR] " + rsw::Utf8ToWide(err) + L"\r\n");
             return;
         }
@@ -4453,11 +4458,15 @@ public:
                     case IDM_HELP_ABOUT: {
                         const std::wstring head = L"RaggieSoft Installer Studio v" + std::wstring(rsw::kVersionStringWide) +
                                                   L" (" + std::wstring(rsw::EditionDisplayName(self->activeEdition)) + L")";
+                        const std::wstring licLine = self->licenseStatus.isCommercialLicensed
+                            ? (L"\n\n• " + rsw::Utf8ToWide(rsw::FormatCommercialLicenseAttribution(self->licenseStatus)))
+                            : L"\n\n• License: Community Edition (No .rswlic commercial license file installed)";
                         const std::wstring body =
                             std::wstring(rsw::EditionSummary(self->activeEdition)) +
-                            L"\n\n• Zero-dependency static /MT Win32 C++20 suite (x64 & ARM64)"
-                            L"\n• 12-View Tree-First Visual IDE: Category Nav, Features Tree, RegEdit Registry Tree & Dual Folder Trees"
-                            L"\n• Enterprise .MSI, .MSM Merge Modules, .MST Transforms, .MSP Patches & LZMS Setup.exe"
+                            licLine +
+                            L"\n• Zero Product Activation & Zero Phone-Home: 100% offline ECDSA P-256 verification (bcrypt.dll)"
+                            L"\n• Zero-dependency static /MT Win32 C++20 suite (x64 & ARM64)"
+                            L"\n• Enterprise .MSI, .MSM, .MST, .MSP, RaggieScript EXE, RsPatch & DRY RsUpdate"
                             L"\n\nFictitious Persons & Entities Disclaimer: All narrative characters, bands, universities, and corporations across RaggieSoft creative works are fictitious.";
                         ::TaskDialog(hWnd, ::GetModuleHandleW(nullptr), L"About RaggieSoft Installer Studio",
                                      head.c_str(), body.c_str(), TDCBF_OK_BUTTON, TD_INFORMATION_ICON, nullptr);
@@ -5429,6 +5438,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     ide.ApplyEditionUiState();
     if (!startupLicErr.empty()) {
         ide.AppendConsole(L"[LICENSE ERROR] " + rsw::Utf8ToWide(startupLicErr) + L" — presenting Community Edition.\r\n");
+    } else if (ide.licenseStatus.isCommercialLicensed) {
+        ide.AppendConsole(L"[LICENSE] " + rsw::Utf8ToWide(rsw::FormatCommercialLicenseAttribution(ide.licenseStatus)) + L" (verified 100% offline).\r\n");
     }
     ide.AppendConsole(L"RaggieSoft Installer Studio v" + std::wstring(rsw::kVersionStringWide) +
                       L" [" + std::wstring(rsw::EditionDisplayName(ide.activeEdition)) +
