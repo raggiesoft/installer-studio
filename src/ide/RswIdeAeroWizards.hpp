@@ -740,6 +740,8 @@ struct NewProjectWizardData {
     std::string websiteLabel     = "";
     std::string version          = "1.0.0";
     bool        perUserScope     = false;
+    int         engineIdx        = 0; // `0` = msi, `1` = raggiescript-msi, `2` = raggiescript
+    std::string scriptPath       = "";
 
     std::string payloadSource    = "..\\..\\bin\\$(ARCH)\\HelloRaggieSoft.exe";
     std::string defaultSubdir    = "Sample Studio\\My Desktop Application";
@@ -779,14 +781,17 @@ inline INT_PTR CALLBACK NewProjectAeroPageProc(HWND hDlg, UINT msg, WPARAM wPara
         auto& d = *ctx->data;
         switch (ctx->pageIndex) {
             case 0: // Identity
-                b.AddLabel(L"Enter your product identity and Windows Installer scope:", 6, 4, 296, 12);
-                b.AddLabel(L"&Product Name:",      6, 22, 92); b.AddEdit(101, Utf8ToWide(d.productName),  102, 20, 198);
-                b.AddLabel(L"&Tagline / Subtitle:",6, 42, 92); b.AddEdit(102, Utf8ToWide(d.tagline),      102, 40, 198);
-                b.AddLabel(L"&Manufacturer:",      6, 62, 92); b.AddEdit(103, Utf8ToWide(d.manufacturer), 102, 60, 198);
-                b.AddLabel(L"MSI &Version (X.Y.Z):",6,82, 92); b.AddEdit(104, Utf8ToWide(d.version),      102, 80, 90);
-                b.AddLabel(L"&Footer Website:",    6, 102,92); b.AddEdit(105, Utf8ToWide(d.websiteLabel), 102, 100,198);
-                b.AddLabel(L"Install &Scope:",     6, 124,92);
-                b.AddCombo(106, {L"machine — Per-Machine (Program Files, UAC)", L"user — Current User (LocalAppData, Zero UAC)"}, d.perUserScope ? 1 : 0, 102, 122, 198);
+                b.AddLabel(L"Enter your product identity, packaging engine, and install scope:", 6, 2, 296, 11);
+                b.AddLabel(L"&Product Name:",      6, 17, 92); b.AddEdit(101, Utf8ToWide(d.productName),  102, 15, 198);
+                b.AddLabel(L"&Tagline / Subtitle:",6, 34, 92); b.AddEdit(102, Utf8ToWide(d.tagline),      102, 32, 198);
+                b.AddLabel(L"&Manufacturer:",      6, 51, 92); b.AddEdit(103, Utf8ToWide(d.manufacturer), 102, 49, 198);
+                b.AddLabel(L"MSI &Version (X.Y.Z):",6,68, 92); b.AddEdit(104, Utf8ToWide(d.version),      102, 66, 90);
+                b.AddLabel(L"&Footer Website:",    6, 85, 92); b.AddEdit(105, Utf8ToWide(d.websiteLabel), 102, 83, 198);
+                b.AddLabel(L"Install &Scope:",     6, 102,92);
+                b.AddCombo(106, {L"machine — Per-Machine (Program Files, UAC)", L"user — Current User (LocalAppData, Zero UAC)"}, d.perUserScope ? 1 : 0, 102, 100, 198);
+                b.AddLabel(L"Packaging &Engine:",  6, 120,92);
+                b.AddCombo(107, {L"msi — Standard Windows Installer (.MSI + Setup.exe)", L"raggiescript-msi — RaggieScript MSI Hybrid (.MSI + .rssc)", L"raggiescript — RaggieScript EXE (Zero-msi.dll)"}, d.engineIdx, 102, 118, 198);
+                b.AddLabel(L"&Script (.rssc):",    6, 138,92); b.AddEdit(108, Utf8ToWide(d.scriptPath), 102, 136, 198);
                 break;
 
             case 1: // Payload & Destination
@@ -869,6 +874,8 @@ inline INT_PTR CALLBACK NewProjectAeroPageProc(HWND hDlg, UINT msg, WPARAM wPara
                 d.version      = ReadDlgItemUtf8(hDlg, 104);
                 d.websiteLabel = ReadDlgItemUtf8(hDlg, 105);
                 d.perUserScope = (GetComboIndex(hDlg, 106) == 1);
+                d.engineIdx    = GetComboIndex(hDlg, 107);
+                d.scriptPath   = ReadDlgItemUtf8(hDlg, 108);
                 if (!d.manufacturer.empty() && !d.productName.empty()) {
                     d.defaultSubdir   = d.manufacturer + "\\" + d.productName;
                     d.startMenuFolder = d.manufacturer;
@@ -947,8 +954,14 @@ inline bool RunNewProjectAeroWizard(
       << "Manufacturer      = " << data.manufacturer << "\r\n"
       << "UpgradeCode       = " << GenerateRandomMsiGuid() << " ; Permanent UpgradeCode across releases\r\n"
       << "Architecture      = $(ARCH)\r\n"
-      << "Scope             = " << (data.perUserScope ? "user" : "machine") << "\r\n"
-      << "BuildBootstrapper = true\r\n\r\n"
+      << "Scope             = " << (data.perUserScope ? "user" : "machine") << "\r\n";
+    if (data.engineIdx == 1) {
+        s << "Engine            = raggiescript-msi\r\n"
+          << "Script            = " << (data.scriptPath.empty() ? "setup.rssc" : data.scriptPath) << "\r\n";
+    } else if (data.engineIdx == 2) {
+        s << "Engine            = raggiescript\r\n";
+    }
+    s << "BuildBootstrapper = true\r\n\r\n"
       << "[Requirements]\r\n"
       << "MinWindowsBuild   = 22000\r\n\r\n"
       << "[Install]\r\n"

@@ -34,6 +34,7 @@
 #include "../common/RswCryptoAndPe.hpp"
 #include "../common/RswManifestAst.hpp"
 #include "../common/RswPlatform.hpp"
+#include "../common/RswRaggieScript.hpp"
 #include "../common/RswVersion.hpp"
 #include "../common/RswZipAndPak.hpp"
 #include "RswCabBuilder.hpp"
@@ -2088,6 +2089,321 @@ inline bool CompileManifestToMsi(
     }
 
     // -------------------------------------------------------------------------
+    // STEP 5B: RaggieScript MSI (`Engine = raggiescript-msi` & `[CustomAction.*]`)!
+    //   1. Registers script `param` names & `msi.setSessionProperty` keys in
+    //      `Property` + `SecureCustomProperties` so un-elevated Wizard UI and
+    //      `msiexec /qn KEY=VAL` CLI overrides flow cleanly into elevated sequence!
+    //   2. When `[CustomAction.<id>]` rows are present, compiles `.rssc` to `RSWBC2`
+    //      via sibling `raggiescript.exe`, embeds static `/MT` `RsscMsiCa.dll` (`RsscCaDll`)
+    //      and `RsscBytecode` into `Binary`, creates `_RswScriptCa`, and schedules
+    //      `RswStageScriptCa` + Immediate / Deferred / Rollback / Commit Custom Actions!
+    // -------------------------------------------------------------------------
+    struct PendingRsscSeqRow {
+        std::string action;
+        std::string condition;
+        int         sequence = 0;
+    };
+    std::vector<PendingRsscSeqRow> rsscCustomActionSeqRows;
+    {
+        std::string rawScriptRel = TrimAscii(doc.GetString("Package", "", "Script"));
+        if (rawScriptRel.empty()) rawScriptRel = TrimAscii(doc.GetString("RaggieScript", "", "Source"));
+        const auto customActionIds = doc.GetNamedSectionIds("CustomAction");
+
+        if (!rawScriptRel.empty()) {
+            const auto absScript = resolvePath(rawScriptRel);
+            rssc::ScriptProgram rsProg{};
+            std::vector<rssc::ScriptDiagnostic> rsDiags;
+            if (!rssc::CompileRaggieScriptFile(absScript, rsProg, rsDiags, {{"ARCH", arch}, {"VERSION", outSummary.productVersion}})) {
+                std::filesystem::remove_all(scratchDir, ec);
+                outError = rsDiags.empty()
+                    ? ("Failed compiling RaggieScript source: " + WideToUtf8(absScript.wstring()))
+                    : ("[" + rsDiags.front().code + " Line " + std::to_string(rsDiags.front().line) + "] " + rsDiags.front().message);
+                return false;
+            }
+
+            auto paramToPublicMsiKey = [](std::string_view raw) -> std::string {
+                bool hasLow = false;
+                for (char c : raw) if (c >= 'a' && c <= 'z') hasLow = true;
+                if (!hasLow) return std::string(raw);
+                std::string out;
+                for (std::size_t i = 0; i < raw.size(); ++i) {
+                    const char c = raw[i];
+                    if (c >= 'A' && c <= 'Z' && i > 0 && raw[i - 1] >= 'a' && raw[i - 1] <= 'z') out.push_back('_');
+                    out.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
+                }
+                return out;
+            };
+
+            // Seed default `Property` values & `SecureCustomProperties` entries for script `param`s
+            for (const auto& p : rsProg.params) {
+                if (EqualsIgnoreCase(p.name, "installDir")) continue;
+                const std::string pubKey = paramToPublicMsiKey(p.name);
+                if (pubKey.empty()) continue;
+                secureCustomProps.insert(pubKey);
+                if (p.defaultExpr) {
+                    std::string defVal;
+                    if (p.defaultExpr->kind == rssc::ExprKind::StrLit)  defVal = p.defaultExpr->strVal;
+                    else if (p.defaultExpr->kind == rssc::ExprKind::IntLit)  defVal = std::to_string(p.defaultExpr->intVal);
+                    else if (p.defaultExpr->kind == rssc::ExprKind::BoolLit) defVal = p.defaultExpr->boolVal ? "1" : "0";
+                    if (!defVal.empty()) {
+                        addProp(pubKey, defVal);
+                    }
+                }
+            }
+
+            // Harvest string-literal property keys passed to `msi.setSessionProperty("KEY", ...)` or `msi.session.setProperty("KEY", ...)`
+            auto harvestSessionPropsExpr = [&](auto& self, const rssc::ExprPtr& e) -> void {
+                if (!e) return;
+                self(self, e->lhs);
+                self(self, e->rhs);
+                self(self, e->cond);
+                for (const auto& it : e->items) self(self, it);
+                for (const auto& kv : e->mapEntries) self(self, kv.second);
+                for (const auto& ca : e->callArgs) self(self, ca.value);
+                if (e->kind == rssc::ExprKind::Call && e->lhs && e->lhs->kind == rssc::ExprKind::Member &&
+                    !e->callArgs.empty() && e->callArgs[0].value && e->callArgs[0].value->kind == rssc::ExprKind::StrLit) {
+                    const std::string mName = e->lhs->strVal;
+                    const bool isSetSess =
+                        (e->lhs->lhs && e->lhs->lhs->kind == rssc::ExprKind::Ident &&
+                         e->lhs->lhs->strVal == "msi" && mName == "setSessionProperty") ||
+                        (e->lhs->lhs && e->lhs->lhs->kind == rssc::ExprKind::Member &&
+                         e->lhs->lhs->lhs && e->lhs->lhs->lhs->kind == rssc::ExprKind::Ident &&
+                         e->lhs->lhs->lhs->strVal == "msi" && e->lhs->lhs->strVal == "session" && mName == "setProperty");
+                    if (isSetSess) {
+                        const std::string k = TrimAscii(e->callArgs[0].value->strVal);
+                        bool allPub = !k.empty();
+                        for (char c : k) if (c >= 'a' && c <= 'z') allPub = false;
+                        if (allPub) secureCustomProps.insert(k);
+                    }
+                }
+            };
+            auto harvestSessionPropsStmt = [&](auto& self, const rssc::StmtPtr& s) -> void {
+                if (!s) return;
+                harvestSessionPropsExpr(harvestSessionPropsExpr, s->target);
+                harvestSessionPropsExpr(harvestSessionPropsExpr, s->expr);
+                self(self, s->body);
+                self(self, s->elseBody);
+                for (const auto& ch : s->children) self(self, ch);
+            };
+            for (const auto& st : rsProg.topStatements) harvestSessionPropsStmt(harvestSessionPropsStmt, st);
+            harvestSessionPropsStmt(harvestSessionPropsStmt, rsProg.wizardBlock);
+            for (const auto& fn : rsProg.functions) harvestSessionPropsStmt(harvestSessionPropsStmt, fn.body);
+
+            if (!customActionIds.empty()) {
+                wchar_t selfExeBuf[MAX_PATH * 4]{};
+                ::GetModuleFileNameW(nullptr, selfExeBuf, static_cast<DWORD>(std::size(selfExeBuf)));
+                const std::filesystem::path selfDir = std::filesystem::path(selfExeBuf).parent_path();
+
+                // 1. Locate `RsscMsiCa.dll` matching target MSI `arch` (`x64` vs `arm64`)!
+                const std::uint16_t expectedMachine = (arch == "arm64") ? IMAGE_FILE_MACHINE_ARM64 : IMAGE_FILE_MACHINE_AMD64;
+                const std::vector<std::filesystem::path> caDllCandidates = {
+                    selfDir.parent_path() / Utf8ToWide(arch) / L"RsscMsiCa.dll",
+                    selfDir / Utf8ToWide(arch) / L"RsscMsiCa.dll",
+                    selfDir / L"RsscMsiCa.dll"
+                };
+                auto queryPeMachine = [](const std::filesystem::path& peFile) -> std::uint16_t {
+                    std::ifstream pf(peFile, std::ios::binary);
+                    if (!pf) return 0;
+                    IMAGE_DOS_HEADER dos{};
+                    if (!pf.read(reinterpret_cast<char*>(&dos), sizeof(dos)) || dos.e_magic != IMAGE_DOS_SIGNATURE) return 0;
+                    if (dos.e_lfanew <= 0 || dos.e_lfanew > 16 * 1024 * 1024) return 0;
+                    pf.seekg(dos.e_lfanew, std::ios::beg);
+                    DWORD sig = 0;
+                    IMAGE_FILE_HEADER fh{};
+                    if (!pf.read(reinterpret_cast<char*>(&sig), sizeof(sig)) || sig != IMAGE_NT_SIGNATURE) return 0;
+                    if (!pf.read(reinterpret_cast<char*>(&fh), sizeof(fh))) return 0;
+                    return fh.Machine;
+                };
+                std::filesystem::path caDllPath;
+                for (const auto& c : caDllCandidates) {
+                    if (std::filesystem::exists(c, ec) && queryPeMachine(c) == expectedMachine) {
+                        caDllPath = c;
+                        break;
+                    }
+                }
+                if (caDllPath.empty()) {
+                    std::filesystem::remove_all(scratchDir, ec);
+                    outError = "Could not locate native Custom Action runner 'RsscMsiCa.dll' for architecture '" + arch + "'.";
+                    return false;
+                }
+
+                // 2. Compile `.rssc` -> `RSWBC2` (`RsscBytecode.rswbc`) using sibling `raggiescript.exe`!
+                const std::vector<std::filesystem::path> rsscCliCandidates = {
+                    selfDir / L"raggiescript.exe",
+                    selfDir.parent_path() / Utf8ToWide(QueryHostPlatform().NativeArchSlug()) / L"raggiescript.exe"
+                };
+                std::filesystem::path rsscCliPath;
+                for (const auto& c : rsscCliCandidates) {
+                    if (std::filesystem::exists(c, ec)) { rsscCliPath = c; break; }
+                }
+                if (rsscCliPath.empty()) {
+                    std::filesystem::remove_all(scratchDir, ec);
+                    outError = "Could not locate 'raggiescript.exe' next to compiler to emit RSWBC2 Custom Action stream.";
+                    return false;
+                }
+
+                const std::filesystem::path bcStreamPath = scratchDir / L"RsscBytecode.rswbc";
+                {
+                    std::wstring cmd = L"\"" + rsscCliPath.wstring() + L"\" compile \"" + absScript.wstring() +
+                                       L"\" \"" + bcStreamPath.wstring() + L"\" -DARCH=" + Utf8ToWide(arch) +
+                                       L" -DVERSION=" + Utf8ToWide(outSummary.productVersion);
+                    STARTUPINFOW si{sizeof(si)};
+                    PROCESS_INFORMATION pi{};
+                    if (!::CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+                        std::filesystem::remove_all(scratchDir, ec);
+                        outError = "Failed invoking raggiescript.exe compile for MSI Custom Actions.";
+                        return false;
+                    }
+                    ::WaitForSingleObject(pi.hProcess, 20000);
+                    DWORD compRc = 1;
+                    ::GetExitCodeProcess(pi.hProcess, &compRc);
+                    ::CloseHandle(pi.hThread);
+                    ::CloseHandle(pi.hProcess);
+                    if (compRc != 0 || !std::filesystem::exists(bcStreamPath, ec)) {
+                        std::filesystem::remove_all(scratchDir, ec);
+                        outError = "raggiescript.exe compile returned exit code " + std::to_string(compRc) + " on '" + WideToUtf8(absScript.wstring()) + "'.";
+                        return false;
+                    }
+                }
+
+                // 3. Create `_RswScriptCa` metadata table & embed `RsscCaDll` + `RsscBytecode` into `Binary`!
+                if (!msi_sql::ExecuteDdl(
+                        hDb.Get(),
+                        "CREATE TABLE `_RswScriptCa` (`Action` CHAR(72) NOT NULL, `Mode` CHAR(24) NOT NULL, "
+                        "`Function` CHAR(128) NOT NULL, `RollbackFn` CHAR(128), `Sequence` SHORT NOT NULL PRIMARY KEY `Action`)",
+                        outError) ||
+                    !msi_sql::InsertBinaryStreamRow(hDb.Get(), "Binary", "Name", "Data", "RsscCaDll",    caDllPath,    outError) ||
+                    !msi_sql::InsertBinaryStreamRow(hDb.Get(), "Binary", "Name", "Data", "RsscBytecode", bcStreamPath, outError)) {
+                    std::filesystem::remove_all(scratchDir, ec);
+                    return false;
+                }
+
+                msi_sql::InsertRow(
+                    hDb.Get(), "CustomAction", {"Action", "Type", "Source", "Target"},
+                    {std::string("RswStageScriptCa"), 1, std::string("RsscCaDll"), std::string("StageRaggieScriptCa")},
+                    outError);
+                rsscCustomActionSeqRows.push_back({"RswStageScriptCa", "", 1480});
+
+                auto resolveAnchorSeq = [](std::string_view act) -> int {
+                    if (EqualsIgnoreCase(act, "FindRelatedProducts"))  return 100;
+                    if (EqualsIgnoreCase(act, "AppSearch"))            return 200;
+                    if (EqualsIgnoreCase(act, "LaunchConditions"))     return 400;
+                    if (EqualsIgnoreCase(act, "ValidateProductID"))    return 700;
+                    if (EqualsIgnoreCase(act, "CostInitialize"))       return 800;
+                    if (EqualsIgnoreCase(act, "FileCost"))             return 900;
+                    if (EqualsIgnoreCase(act, "CostFinalize"))         return 1000;
+                    if (EqualsIgnoreCase(act, "InstallValidate"))      return 1400;
+                    if (EqualsIgnoreCase(act, "InstallInitialize"))    return 1500;
+                    if (EqualsIgnoreCase(act, "ProcessComponents"))    return 1600;
+                    if (EqualsIgnoreCase(act, "RemoveFiles"))          return 3500;
+                    if (EqualsIgnoreCase(act, "CreateFolders"))        return 3700;
+                    if (EqualsIgnoreCase(act, "InstallFiles"))         return 4000;
+                    if (EqualsIgnoreCase(act, "CreateShortcuts"))      return 4500;
+                    if (EqualsIgnoreCase(act, "WriteRegistryValues"))  return 5000;
+                    if (EqualsIgnoreCase(act, "WriteIniValues"))       return 5100;
+                    if (EqualsIgnoreCase(act, "WriteEnvironmentStrings")) return 5200;
+                    if (EqualsIgnoreCase(act, "RegisterProduct"))      return 6100;
+                    if (EqualsIgnoreCase(act, "PublishFeatures"))      return 6300;
+                    if (EqualsIgnoreCase(act, "PublishProduct"))       return 6400;
+                    if (EqualsIgnoreCase(act, "InstallFinalize"))      return 6600;
+                    return 4000;
+                };
+
+                std::set<int> usedSeqs{100, 200, 400, 450, 451, 700, 800, 900, 1000, 1050, 1400, 1480, 1500, 1525,
+                                       1600, 1800, 2600, 3100, 3200, 3300, 3400, 3500, 3600, 3700, 4000, 4500,
+                                       4700, 4800, 4900, 5000, 5100, 5200, 5300, 6000, 6100, 6300, 6400, 6550, 6600};
+                auto allocSeqBlock = [&](int desiredBase) -> int {
+                    int s = std::clamp(desiredBase, 50, 6585);
+                    while (usedSeqs.count(s - 2) || usedSeqs.count(s - 1) || usedSeqs.count(s) || usedSeqs.count(s + 1)) {
+                        s += 5;
+                    }
+                    usedSeqs.insert(s - 2);
+                    usedSeqs.insert(s - 1);
+                    usedSeqs.insert(s);
+                    usedSeqs.insert(s + 1);
+                    return s;
+                };
+
+                for (const auto& caId : customActionIds) {
+                    const std::string fnName = TrimAscii(doc.GetString("CustomAction", caId, "Function"));
+                    const std::string rbName = TrimAscii(doc.GetString("CustomAction", caId, "RollbackFunction"));
+                    const std::string exec   = AsciiLower(TrimAscii(doc.GetString("CustomAction", caId, "Execution", "immediate")));
+                    const bool impersonate   = doc.GetBool("CustomAction", caId, "Impersonate", exec == "immediate");
+                    const std::string before = TrimAscii(doc.GetString("CustomAction", caId, "Before"));
+                    const std::string after  = TrimAscii(doc.GetString("CustomAction", caId, "After", "InstallFiles"));
+                    const int explicitSeq    = doc.GetInt("CustomAction", caId, "Sequence", 0);
+                    std::string cond         = TrimAscii(doc.GetString("CustomAction", caId, "Condition", "NOT REMOVE~=\"ALL\""));
+                    if (cond == "1") cond.clear();
+
+                    const int desiredSeq = (explicitSeq > 0)
+                        ? explicitSeq
+                        : (!before.empty() ? (resolveAnchorSeq(before) - 12) : (resolveAnchorSeq(after) + 12));
+                    const int seq = allocSeqBlock(desiredSeq);
+
+                    msi_sql::InsertRow(
+                        hDb.Get(), "_RswScriptCa",
+                        {"Action", "Mode", "Function", "RollbackFn", "Sequence"},
+                        {caId, exec, fnName, rbName.empty() ? SqlParam{std::monostate{}} : SqlParam{rbName}, seq},
+                        outError);
+
+                    msi_sql::InsertRow(
+                        hDb.Get(), "ActionText", {"Action", "Description", "Template"},
+                        {caId, "Configuring " + outSummary.productName + " (" + caId + ")...", SqlParam{std::monostate{}}},
+                        outError);
+
+                    if (exec == "immediate") {
+                        const std::string setActId = caId + "_SetAct";
+                        msi_sql::InsertRow(
+                            hDb.Get(), "CustomAction", {"Action", "Type", "Source", "Target"},
+                            {setActId, 51, std::string("RSW_ACTIVE_IMMEDIATE_CA"), caId + "|" + fnName},
+                            outError);
+                        msi_sql::InsertRow(
+                            hDb.Get(), "CustomAction", {"Action", "Type", "Source", "Target"},
+                            {caId, 1, std::string("RsscCaDll"), std::string("RunRaggieScriptCa")},
+                            outError);
+                        rsscCustomActionSeqRows.push_back({setActId, cond, seq - 1});
+                        rsscCustomActionSeqRows.push_back({caId,     cond, seq});
+                    } else if (exec == "deferred") {
+                        const int noImp = impersonate ? 0 : 2048; // `msidbCustomActionTypeNoImpersonate`
+                        const std::string rbId = caId + "_Rollback";
+                        const std::string cmId = caId + "_Commit";
+                        secureCustomProps.insert(caId);
+                        secureCustomProps.insert(rbId);
+                        secureCustomProps.insert(cmId);
+
+                        msi_sql::InsertRow(
+                            hDb.Get(), "CustomAction", {"Action", "Type", "Source", "Target"},
+                            {rbId, 1 | 1024 | 256 | noImp, std::string("RsscCaDll"), std::string("RunRaggieScriptCa")},
+                            outError);
+                        msi_sql::InsertRow(
+                            hDb.Get(), "CustomAction", {"Action", "Type", "Source", "Target"},
+                            {caId, 1 | 1024 | noImp, std::string("RsscCaDll"), std::string("RunRaggieScriptCa")},
+                            outError);
+                        msi_sql::InsertRow(
+                            hDb.Get(), "CustomAction", {"Action", "Type", "Source", "Target"},
+                            {cmId, 1 | 1024 | 512 | noImp, std::string("RsscCaDll"), std::string("RunRaggieScriptCa")},
+                            outError);
+
+                        // Windows Installer rule: Rollback CA MUST be scheduled in the script BEFORE its Deferred CA!
+                        rsscCustomActionSeqRows.push_back({rbId, cond, seq - 2});
+                        rsscCustomActionSeqRows.push_back({caId, cond, seq});
+                        rsscCustomActionSeqRows.push_back({cmId, cond, seq + 1});
+                    } else {
+                        const int modeBit = (exec == "rollback") ? 256 : 512;
+                        const int noImp   = impersonate ? 0 : 2048;
+                        secureCustomProps.insert(caId);
+                        msi_sql::InsertRow(
+                            hDb.Get(), "CustomAction", {"Action", "Type", "Source", "Target"},
+                            {caId, 1 | 1024 | modeBit | noImp, std::string("RsscCaDll"), std::string("RunRaggieScriptCa")},
+                            outError);
+                        rsscCustomActionSeqRows.push_back({caId, cond, seq});
+                    }
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // STEP 6: Populate Internal `MSI.DLL` UI Tables (`RswMsiDialogBuilder.hpp`)!
     // -------------------------------------------------------------------------
     MsiUiBuildOptions uiOpt{};
@@ -2267,6 +2583,12 @@ inline bool CompileManifestToMsi(
         msi_sql::InsertRow(
             hDb.Get(), "InstallExecuteSequence", {"Action", "Condition", "Sequence"},
             {std::string(s.action), s.cond ? SqlParam{std::string(s.cond)} : SqlParam{std::monostate{}}, s.seq},
+            outError);
+    }
+    for (const auto& rca : rsscCustomActionSeqRows) {
+        msi_sql::InsertRow(
+            hDb.Get(), "InstallExecuteSequence", {"Action", "Condition", "Sequence"},
+            {rca.action, rca.condition.empty() ? SqlParam{std::monostate{}} : SqlParam{rca.condition}, rca.sequence},
             outError);
     }
 

@@ -138,6 +138,7 @@ int ProcessSingleProject(
     const std::string pkgKind = rsw::AsciiLower(rsw::TrimAscii(doc.GetString("Package", "", "PackageKind", "msi")));
     const std::string engine  = rsw::AsciiLower(rsw::TrimAscii(doc.GetString("Package", "", "Engine", "msi")));
     const bool isRsscExeEng   = (engine == "raggiescript" || engine == "native");
+    const bool isRsscMsiEng   = (engine == "raggiescript-msi");
     const bool buildUniversal = archOverride.empty() &&
                                 pkgKind != "msm" &&
                                 (forceUniversal || doc.GetBool("Package", "", "BuildUniversal", false));
@@ -291,7 +292,8 @@ int ProcessSingleProject(
         return 1;
     }
 
-    std::cout << "[OK] Compiled Enterprise MSI (" << summary.architecture << ", "
+    std::cout << "[OK] Compiled " << (isRsscMsiEng ? "RaggieScript MSI Hybrid Package" : "Enterprise MSI")
+              << " (" << summary.architecture << ", "
               << summary.fileCount << " file(s), " << summary.componentCount << " component(s)):\n"
               << "     MSI  : " << rsw::WideToUtf8(summary.msiPath.wstring()) << "\n";
     if (!setupExePath.empty()) {

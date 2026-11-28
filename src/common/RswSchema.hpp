@@ -88,11 +88,15 @@ inline constexpr std::string_view kAllowedWizardLayouts =
     "standard|wizard95|wizard97|aerowizard|fluentmica|oneclick|passivetoast|fullscreenblue|fullscreenteal|autorun16x9|simple";
 
 // ================================================================================
-// 1. CANONICAL `.RSIP` SECTION DESCRIPTOR TABLE (`27` SECTIONS)
+// 1. CANONICAL `.RSIP` SECTION DESCRIPTOR TABLE (`29` SECTIONS)
 // ================================================================================
-inline constexpr std::array<SectionDescriptor, 27> kSectionDescriptors{{
+inline constexpr std::array<SectionDescriptor, 29> kSectionDescriptors{{
     {"Package",         SectionCardinality::SingletonRequired, true,
-     "Core product identity, PackageKind (msi/msm/sfx/addon/suite), Engine (msi/raggiescript), UAC execution level, SuiteRollbackPolicy, target CPU architecture (x64/arm64), and universal output settings."},
+     "Core product identity, PackageKind (msi/msm/sfx/addon/suite), Engine (msi/raggiescript-msi/raggiescript), Script (.rssc), UAC execution level, SuiteRollbackPolicy, target CPU architecture (x64/arm64), and universal output settings."},
+    {"RaggieScript",    SectionCardinality::SingletonOptional, false,
+     "Optional RaggieScript (.rssc) configuration ([RaggieScript] Source = setup.rssc) for RaggieScript MSI (Engine = raggiescript-msi) wizard orchestration and inside-the-MSI Custom Actions."},
+    {"CustomAction",    SectionCardinality::NamedRepeatable,   false,
+     "Declares a native inside-the-MSI RaggieScript Custom Action ([CustomAction.<id>]: immediate, deferred, rollback, or commit) executed via embedded static /MT RsscMsiCa.dll with full msiexec /qn GPO parity and atomic rollback."},
     {"HostApp",         SectionCardinality::SingletonOptional, false,
      "Host application discovery & automatic content placement rules ([HostApp]) for PackageKind = addon (locates an installed Host App such as Book Reader or Listening Room via UpgradeCode/Registry/Executable and places books, albums, plugins, or DLC into the right directory with zero full-installer ceremony)."},
     {"Requirements",    SectionCardinality::SingletonOptional, false,
@@ -271,8 +275,30 @@ inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>
      "`msi` builds an Enterprise `.msi` (+ optional `-setup.exe`), `msm` builds a Merge Module (`.msm`), `sfx` builds a lightweight LZMS Self-Extracting `.exe`, `addon` builds a Host-Aware Add-On / Content Pack Installer (`[HostApp]` locates the parent app and drops books/albums/plugins directly into its library directory), and `suite` builds a single-UAC Unified Suite / Web Workload Chainer."},
     {"Package",  "SuiteRollbackPolicy",  FieldValueKind::EnumChoice,  false, "rollback_new",      "keep_completed|rollback_new",
      "Controls failure & cancel recovery in `PackageKind = suite`: `rollback_new` (default) automatically uninstalls packages newly added in the current Suite session (up to the last `RollbackBoundary = true` savepoint on unexpected error, or 100% of session additions when the user confirms Cancel); `keep_completed` leaves already-finished member packages installed for fast resume."},
-    {"Package",  "Engine",               FieldValueKind::EnumChoice,  false, "msi",               "msi|raggiescript|native",
-     "`msi` uses Microsoft Windows Installer (`msi.dll`); `raggiescript` (alias `native`) builds a **RaggieScript EXE** zero-`msi.dll` transactional LZMS installer with rollback journal, `.lnk` shortcuts, `Uninstall` registry registration, and signed `Uninstall.exe`."},
+    {"Package",  "Engine",               FieldValueKind::EnumChoice,  false, "msi",               "msi|raggiescript-msi|raggiescript|native",
+     "`msi` uses Microsoft Windows Installer (`msi.dll`); `raggiescript-msi` builds a **RaggieScript MSI** hybrid installer combining a relational `Product.msi` (+ static `/MT` `RsscMsiCa.dll` inside-the-MSI Custom Actions for `msiexec /qn` GPO/Intune parity) with RaggieScript `.rssc` wizard & property/feature orchestration; `raggiescript` (alias `native`) builds a **RaggieScript EXE** zero-`msi.dll` transactional LZMS installer."},
+    {"Package",  "Script",               FieldValueKind::Path,        false, "",                  "",
+     "Optional RaggieScript source file (`setup.rssc`) driving wizard steps, property/feature bridging, and `[CustomAction.*]` functions when `Engine = raggiescript-msi`."},
+    {"RaggieScript", "Source",           FieldValueKind::Path,        false, "",                  "",
+     "RaggieScript source file (`setup.rssc`) compiled into `Setup.exe` (`#225`) and/or `Product.msi` (`Binary.RsscBytecode`)."},
+    {"CustomAction", "Type",             FieldValueKind::EnumChoice,  false, "raggiescript",      "raggiescript",
+     "Custom Action engine (`raggiescript` executes via zero-dependency static `/MT` `RsscMsiCa.dll` embedded in `Product.msi`'s `Binary` table)."},
+    {"CustomAction", "Function",         FieldValueKind::String,      true,  "",                  "",
+     "Top-level RaggieScript `fn <Name>()` invoked inside `Product.msi` when this Custom Action runs."},
+    {"CustomAction", "RollbackFunction", FieldValueKind::String,      false, "",                  "",
+     "Optional companion `fn <RollbackName>()` invoked after automatic `.jnl` LIFO rollback if `msiexec` aborts after a `deferred` Custom Action."},
+    {"CustomAction", "Execution",        FieldValueKind::EnumChoice,  false, "immediate",         "immediate|deferred|rollback|commit",
+     "Windows Installer execution phase: `immediate` (live `MSIHANDLE` properties & feature states), `deferred` (elevated/impersonated inside transaction with `CustomActionData` & automatic rollback pairing), `rollback`, or `commit`."},
+    {"CustomAction", "Impersonate",      FieldValueKind::Boolean,     false, "false",             "",
+     "When `false` (default on `deferred`), sets `msidbCustomActionTypeNoImpersonate` (`0x0800`) to run under elevated `SYSTEM` privileges during per-machine installs; `true` impersonates the launching user."},
+    {"CustomAction", "After",            FieldValueKind::String,      false, "InstallFiles",      "",
+     "Schedules this Custom Action immediately after a standard MSI action (`LaunchConditions`, `CostFinalize`, `InstallInitialize`, `InstallFiles`, `WriteRegistryValues`, `InstallFinalize`)."},
+    {"CustomAction", "Before",           FieldValueKind::String,      false, "",                  "",
+     "Schedules this Custom Action immediately before a standard MSI action (overrides `After` when set)."},
+    {"CustomAction", "Sequence",         FieldValueKind::Integer,     false, "0",                 "",
+     "Optional explicit `InstallExecuteSequence` number (`> 0` overrides `After`/`Before`)."},
+    {"CustomAction", "Condition",        FieldValueKind::String,      false, "NOT REMOVE~=\"ALL\"", "",
+     "Windows Installer conditional expression gating when this Custom Action runs (use `\"\"` or `1` to run on both install and uninstall)."},
     {"Package",  "RequestedExecutionLevel", FieldValueKind::EnumChoice, false, "asInvoker",       "asInvoker|highestAvailable|requireAdministrator",
      "Controls Windows UAC level stamped onto PE `RT_MANIFEST` `#1` across `msi`, `native`, `sfx`, and `suite` EXEs: `asInvoker` (default — un-elevated launch; prompts UAC only if per-machine install begins), `highestAvailable` (elevates upfront for Admins while letting Standard Users run), or `requireAdministrator` (requires Admin UAC immediately at `0.0s` launch)."},
     {"Package",  "BuildUniversal",       FieldValueKind::Boolean,     false, "false",             "",

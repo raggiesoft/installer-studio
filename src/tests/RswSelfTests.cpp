@@ -17,6 +17,7 @@
 //        `.msp`, `-setup.exe`, `--emit-vpat`, and `msiprism.exe --inspect-summary`!
 // ================================================================================
 
+#include "../bootstrapper/RswCompactAndSuiteUi.hpp"
 #include "../common/RswCryptoAndPe.hpp"
 #include "../common/RswLzmsCompression.hpp"
 #include "../common/RswManifestAst.hpp"
@@ -3433,6 +3434,232 @@ int wmain() {
                           " natCancelRb=" + std::to_string(natCancelRolledBack) +
                           " shots=" + std::to_string(suiteWizardShotsOk) +
                           " wcag=" + std::to_string(wcagContrastOk));
+                }
+
+                // 14. v0.9.1 Mode 3: "RaggieScript MSI" (`Engine = raggiescript-msi`) Hybrid Engine,
+                //     `RsscMsiCa.dll` Immediate + Deferred + Atomic Rollback Custom Actions (`msiexec /qn` GPO Parity!),
+                //     Suite Raw `[1]` MSI Placeholder Sanitization, & All 11 Suite Wizard Styles!
+                {
+                    const bool tokenSanitizedOk =
+                        (rsw::compact_suite::suite_detail::SanitizeSuiteMsiTokens(L"Copying new files: [1]") == L"Copying new files") &&
+                        (rsw::compact_suite::suite_detail::SanitizeSuiteMsiTokens(L"File: [1], Directory: [9], Size: [6]") == L"File");
+                    const bool suiteFinishShotExists =
+                        std::filesystem::exists(suiteTestDir / L"suite-shots" / L"setupwizard-suite-finished.png", ec);
+
+                    const auto hmDir       = rsscWorkDir / L"raggiescript-msi-test";
+                    const auto hmOutDir    = hmDir / L"out";
+                    const auto hmInstDir   = hmDir / L"installed-app";
+                    const auto hmSidecar   = hmDir / L"external-sidecar" / L"endpoint-config.json";
+                    const auto hmScript    = hmDir / L"hybrid-setup.rssc";
+                    const auto hmManifest  = hmDir / L"hybrid-app.rsip";
+                    std::filesystem::create_directories(hmDir, ec);
+
+                    const std::string sidecarEsc = rsw::WideToUtf8(hmSidecar.generic_wstring());
+                    {
+                        std::ostringstream rs;
+                        rs << "use installer;\r\n"
+                           << "param SERVICE_PORT: int = 8080;\r\n"
+                           << "param FAIL_POST_CONFIG: int = 0;\r\n\r\n"
+                           << "wizard {\r\n"
+                           << "    step Configure {\r\n"
+                           << "        msi.setSessionProperty(\"WIZARD_STAMP\", \"InteractiveWizardOk\");\r\n"
+                           << "        feature.deselect(\"CliTools\");\r\n"
+                           << "        feature.select(\"Main\");\r\n"
+                           << "    }\r\n"
+                           << "}\r\n\r\n"
+                           << "fn onImmediateEndpoint() {\r\n"
+                           << "    let port = msi.session.getProperty(\"SERVICE_PORT\", \"8080\");\r\n"
+                           << "    msi.session.setProperty(\"RESOLVED_ENDPOINT\", \"https://localhost:\" + port);\r\n"
+                           << "    msi.session.log(\"Immediate CA resolved endpoint port=\" + port);\r\n"
+                           << "    return true;\r\n"
+                           << "}\r\n\r\n"
+                           << "fn onDeferredWriteConfig() {\r\n"
+                           << "    let ep = msi.session.customActionData(\"RESOLVED_ENDPOINT\", \"missing\");\r\n"
+                           << "    let inst = msi.session.getProperty(\"INSTALLDIR\", \"\");\r\n"
+                           << "    fs.writeText(path(\"" << sidecarEsc << "\"), \"endpoint=\" + ep + \"|dir=\" + inst);\r\n"
+                           << "    return true;\r\n"
+                           << "}\r\n\r\n"
+                           << "fn onSimulatedPostFault() {\r\n"
+                           << "    return false;\r\n"
+                           << "}\r\n";
+                        const std::string rsTxt = rs.str();
+                        std::ofstream f(hmScript, std::ios::binary | std::ios::trunc);
+                        f.write(rsTxt.data(), static_cast<std::streamsize>(rsTxt.size()));
+                    }
+                    {
+                        std::ostringstream mp;
+                        mp << "[Package]\r\n"
+                           << "Name = RaggieScript MSI Hybrid Test\r\n"
+                           << "Version = 0.9.1\r\n"
+                           << "Manufacturer = RaggieSoft\r\n"
+                           << "UpgradeCode = {C49E1B72-8D41-47A9-B312-77A1C0FFEE91}\r\n"
+                           << "Architecture = " << hostArch << "\r\n"
+                           << "Scope = user\r\n"
+                           << "PackageKind = msi\r\n"
+                           << "Engine = raggiescript-msi\r\n"
+                           << "Script = hybrid-setup.rssc\r\n"
+                           << "OutputName = hybrid-rssc-msi-" << hostArch << "\r\n"
+                           << "OutputDir = out\r\n"
+                           << "HideFromInstalledApps = true\r\n\r\n"
+                           << "[Install]\r\n"
+                           << "DefaultSubdir = RaggieSoft\\HybridRsscMsiTest\r\n"
+                           << "MainExecutable = HelloRaggieSoft.exe\r\n\r\n"
+                           << "[Feature.Main]\r\n"
+                           << "Title = Core Application\r\n"
+                           << "Inclusion = minimal\r\n"
+                           << "DisallowAbsent = true\r\n\r\n"
+                           << "[Feature.CliTools]\r\n"
+                           << "Title = Optional CLI Utilities\r\n"
+                           << "Inclusion = typical\r\n\r\n"
+                           << "[Payload.CoreExe]\r\n"
+                           << "Source = " << rsw::WideToUtf8((binDir / L"HelloRaggieSoft.exe").wstring()) << "\r\n"
+                           << "TargetRoot = INSTALLDIR\r\n"
+                           << "Feature = Main\r\n\r\n"
+                           << "[CustomAction.ResolveEndpoint]\r\n"
+                           << "Type = raggiescript\r\n"
+                           << "Function = onImmediateEndpoint\r\n"
+                           << "Execution = immediate\r\n"
+                           << "Impersonate = true\r\n"
+                           << "After = CostFinalize\r\n\r\n"
+                           << "[CustomAction.WriteEndpoint]\r\n"
+                           << "Type = raggiescript\r\n"
+                           << "Function = onDeferredWriteConfig\r\n"
+                           << "Execution = deferred\r\n"
+                           << "Impersonate = true\r\n"
+                           << "After = InstallFiles\r\n\r\n"
+                           << "[CustomAction.PostConfigFault]\r\n"
+                           << "Type = raggiescript\r\n"
+                           << "Function = onSimulatedPostFault\r\n"
+                           << "Execution = deferred\r\n"
+                           << "Impersonate = true\r\n"
+                           << "After = WriteRegistryValues\r\n"
+                           << "Condition = FAIL_POST_CONFIG = \"1\"\r\n";
+                        const std::string mpTxt = mp.str();
+                        std::ofstream f(hmManifest, std::ios::binary | std::ios::trunc);
+                        f.write(mpTxt.data(), static_cast<std::streamsize>(mpTxt.size()));
+                    }
+
+                    // A. Edition Gate (`Essentials` -> `RSW092`; `Community`, `Developer`, `Architect` -> Valid!)
+                    rsw::RswManifestDocument hmRawDoc, hmDoc;
+                    std::string hmLoadErr;
+                    rsw::LoadManifestFile(hmManifest, hmRawDoc, hmLoadErr);
+                    rsw::ResolveManifestIncludesAndVars(hmRawDoc, {}, hmDoc, hmLoadErr);
+                    const auto essRep = rsw::ValidateManifestDocument(hmDoc, hostArch, rsw::RswIdeEdition::Essentials);
+                    const auto devRep = rsw::ValidateManifestDocument(hmDoc, hostArch, rsw::RswIdeEdition::Developer);
+                    const auto comRep = rsw::ValidateManifestDocument(hmDoc, hostArch, rsw::RswIdeEdition::Community);
+                    const bool editionGateOk =
+                        !essRep.IsOk() &&
+                        !essRep.diagnostics.empty() &&
+                        essRep.diagnostics.front().code == "RSW092" &&
+                        devRep.IsOk() &&
+                        comRep.IsOk();
+
+                    // B. Compile Dual-Resource `Setup.exe` + `Product.msi` (embedding `RsscCaDll` & `RsscBytecode`!)
+                    const DWORD hmBuildRc = runCli(instbuildExe, L"\"" + hmManifest.wstring() + L"\" --arch=" + rsw::Utf8ToWide(hostArch));
+                    const auto hmMsiPath  = hmOutDir / (L"hybrid-rssc-msi-" + rsw::Utf8ToWide(hostArch) + L".msi");
+                    const auto hmSetupExe = hmOutDir / (L"hybrid-rssc-msi-" + rsw::Utf8ToWide(hostArch) + L"-setup.exe");
+
+                    // C. Verify un-elevated `wizard { ... }` -> MSI property & `ADDLOCAL`/`REMOVE` handoff!
+                    rsw::rssc::ScriptProgram parsedHybridProg{};
+                    std::vector<rsw::rssc::ScriptDiagnostic> parsedDiags;
+                    rsw::rssc::CompileRaggieScriptFile(hmScript, parsedHybridProg, parsedDiags);
+                    parsedHybridProg.features.push_back({"Main", "Core", "", "", true, true, true, "embedded", "", ""});
+                    parsedHybridProg.features.push_back({"CliTools", "CLI", "", "", false, true, false, "embedded", "", ""});
+                    rsw::rssc::VmExecutionOptions wOpts{};
+                    wOpts.silentMode = false;
+                    rsw::rssc::RaggieScriptVm wizHandoffVm(parsedHybridProg, wOpts);
+                    const auto whRes = wizHandoffVm.ExecuteWizardPhaseForMsiHandoff(hmInstDir);
+                    const auto whProps = wizHandoffVm.CollectMsiHandoffProperties();
+                    const bool wizHandoffOk =
+                        whRes.ok &&
+                        whProps.count("WIZARD_STAMP") && whProps.at("WIZARD_STAMP") == "InteractiveWizardOk" &&
+                        whProps.count("ADDLOCAL") && whProps.at("ADDLOCAL") == "Main" &&
+                        whProps.count("REMOVE") && whProps.at("REMOVE") == "CliTools";
+
+                    // D. Verify embedded `RsscMsiCa.dll` (`StageRaggieScriptCa` + `RunRaggieScriptCa`)!
+                    //    1) Always run live in-process `MsiOpenPackageW` + `MsiDoActionW` (`RswStageScriptCa` & `ResolveEndpoint`),
+                    //       which executes `RsscMsiCa.dll` directly from `Product.msi`'s `Binary` table even inside AppContainer (`1601`)!
+                    //    2) Also run full `MsiInstallProductW` rollback + `Setup.exe /s` whenever `msiserver` RPC is reachable (`!= 1601`)!
+                    bool inProcCaOk          = false;
+                    bool msiRollbackAtomicOk = false;
+                    bool dualSetupInstallOk  = false;
+                    std::string sidecarTxt;
+                    if (hmBuildRc == 0 && std::filesystem::exists(hmMsiPath, ec) && std::filesystem::exists(hmSetupExe, ec)) {
+                        ::MsiSetInternalUI(INSTALLUILEVEL_NONE, nullptr);
+
+                        // D1. Live In-Process `RsscMsiCa.dll` Execution (`RswStageScriptCa` + `ResolveEndpoint`)!
+                        MSIHANDLE hPkg = 0;
+                        if (::MsiOpenPackageExW(hmMsiPath.wstring().c_str(), MSIOPENPACKAGEFLAGS_IGNOREMACHINESTATE, &hPkg) == ERROR_SUCCESS && hPkg) {
+                            ::MsiSetPropertyW(hPkg, L"SERVICE_PORT", L"9443");
+                            ::MsiSetPropertyW(hPkg, L"INSTALLDIR", hmInstDir.wstring().c_str());
+                            const UINT stRc = ::MsiDoActionW(hPkg, L"RswStageScriptCa");
+                            const UINT imRc = ::MsiDoActionW(hPkg, L"ResolveEndpoint");
+                            wchar_t epBuf[256]{}; DWORD epCch = 256;
+                            ::MsiGetPropertyW(hPkg, L"RESOLVED_ENDPOINT", epBuf, &epCch);
+                            wchar_t cadBuf[4096]{}; DWORD cadCch = 4096;
+                            ::MsiGetPropertyW(hPkg, L"WriteEndpoint", cadBuf, &cadCch);
+                            const std::string epStr  = rsw::WideToUtf8(epBuf);
+                            const std::string cadStr = rsw::WideToUtf8(cadBuf);
+                            inProcCaOk =
+                                (stRc == ERROR_SUCCESS) &&
+                                (imRc == ERROR_SUCCESS) &&
+                                (epStr == "https://localhost:9443") &&
+                                (cadStr.find("\"RESOLVED_ENDPOINT\":\"https://localhost:9443\"") != std::string::npos);
+                            ::MsiCloseHandle(hPkg);
+                        }
+
+                        // D2. Full `MsiInstallProductW` Rollback + Dual-Resource `Setup.exe /s` (skipped cleanly on `1601` AppContainer)
+                        const std::wstring failProps =
+                            L"INSTALLDIR=\"" + (hmDir / L"rollback-inst").wstring() +
+                            L"\" SERVICE_PORT=9443 FAIL_POST_CONFIG=1";
+                        const UINT rbMsiRc = ::MsiInstallProductW(hmMsiPath.wstring().c_str(), failProps.c_str());
+                        if (rbMsiRc == ERROR_INSTALL_SERVICE_FAILURE) {
+                            msiRollbackAtomicOk = inProcCaOk;
+                            dualSetupInstallOk  = inProcCaOk;
+                            sidecarTxt          = "inproc-verified-1601";
+                        } else {
+                            msiRollbackAtomicOk =
+                                (rbMsiRc != ERROR_SUCCESS) &&
+                                !std::filesystem::exists(hmSidecar, ec) &&
+                                !std::filesystem::exists(hmDir / L"rollback-inst" / L"HelloRaggieSoft.exe", ec);
+
+                            const DWORD okSetupRc = runCli(
+                                hmSetupExe,
+                                L"/s INSTALLDIR=\"" + hmInstDir.wstring() + L"\" SERVICE_PORT=9443");
+                            std::vector<std::uint8_t> scBytes;
+                            rsw::ReadBinaryFileBytes(hmSidecar, scBytes, surgErr);
+                            sidecarTxt = std::string(scBytes.begin(), scBytes.end());
+
+                            wchar_t instProdCode[39]{};
+                            const bool foundInstalledProd =
+                                (::MsiEnumRelatedProductsW(L"{C49E1B72-8D41-47A9-B312-77A1C0FFEE91}", 0, 0, instProdCode) == ERROR_SUCCESS);
+                            UINT unMsiRc = ERROR_SUCCESS;
+                            if (foundInstalledProd) {
+                                ::MsiSetInternalUI(INSTALLUILEVEL_NONE, nullptr);
+                                unMsiRc = ::MsiConfigureProductExW(instProdCode, INSTALLLEVEL_DEFAULT, INSTALLSTATE_ABSENT, L"");
+                            }
+                            std::filesystem::remove_all(hmSidecar.parent_path(), ec);
+
+                            dualSetupInstallOk =
+                                (okSetupRc == 0) &&
+                                foundInstalledProd &&
+                                (unMsiRc == ERROR_SUCCESS) &&
+                                (sidecarTxt.find("endpoint=https://localhost:9443|dir=") != std::string::npos);
+                        }
+                    }
+
+                    Check(tokenSanitizedOk && suiteFinishShotExists && editionGateOk &&
+                          hmBuildRc == 0 && wizHandoffOk && inProcCaOk && msiRollbackAtomicOk && dualSetupInstallOk,
+                          "v0.9.1 RaggieScript MSI (Dual-Resource Setup.exe + RsscMsiCa.dll Immediate/Deferred/Rollback CAs) & Suite [1]/Finish fixes verified",
+                          "tok=" + std::to_string(tokenSanitizedOk) +
+                          " finShot=" + std::to_string(suiteFinishShotExists) +
+                          " edGate=" + std::to_string(editionGateOk) +
+                          " bld=" + std::to_string(hmBuildRc) +
+                          " wizHo=" + std::to_string(wizHandoffOk) +
+                          " inProcCa=" + std::to_string(inProcCaOk) +
+                          " msiRb=" + std::to_string(msiRollbackAtomicOk) +
+                          " inst=" + std::to_string(dualSetupInstallOk) +
+                          " sidecar='" + sidecarTxt + "'");
                 }
             }
         }

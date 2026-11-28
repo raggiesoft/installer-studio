@@ -272,7 +272,7 @@ bool LoadBytecodeFile(
         return false;
     }
     std::vector<std::uint8_t> raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    return LoadRaggieScriptBytecode(raw.data(), raw.size(), outProg, outMod, outErr);
+    return LoadRaggieScriptBytecode(raw.data(), raw.size(), outProg, outErr, &outMod);
 }
 
 /// Converts a RaggieScript function return value (`bool` `false` or `int` `1602`/`1603`) into an MSI `UINT` status.

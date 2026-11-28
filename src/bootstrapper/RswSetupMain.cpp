@@ -6456,6 +6456,157 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         } else if (a.find(L'=') != std::wstring::npos && a.front() != L'-' && a.front() != L'/') {
             if (!silentExtraProps.empty()) silentExtraProps += L" ";
             silentExtraProps += a;
+        } else if (a.find(L':') != std::wstring::npos && a.find(L':') >= 2 && a.front() != L'-' && a.front() != L'/') {
+            // Support immutable locked policy syntax (`SERVICE_PORT:9443` -> `SERVICE_PORT="9443"`)!
+            const auto col = a.find(L':');
+            const std::wstring k = a.substr(0, col);
+            const std::wstring v = a.substr(col + 1);
+            if (!silentExtraProps.empty()) silentExtraProps += L" ";
+            silentExtraProps += k + L"=\"" + v + L"\"";
+        }
+    }
+
+    // =========================================================================
+    // MODE 3: HYBRID "RAGGIESCRIPT MSI" (`#201 Product.msi` + `#225 RSWBC`)!
+    //   When BOTH `kResIdEmbeddedMsi` (`#201`) and `kResIdScriptBytecode` (`#225`)
+    //   are present in `Setup.exe`:
+    //     - In `/s` / `/qn` silent mode: evaluates `param` defaults + CLI overrides
+    //       and `topStatements` (skipping `wizard { ... }`) and merges resolved
+    //       public MSI properties directly into `silentExtraProps`!
+    //     - In interactive first-time setup (when `wizard { ... }` is defined):
+    //       runs `wizard { ... }` un-elevated (`asInvoker`), collects `INSTALLDIR`,
+    //       `ADDLOCAL` / `REMOVE`, and custom public properties, and launches
+    //       `SetupWizardApp` directly into live `MsiSetExternalUIRecord` installation!
+    // =========================================================================
+    bool rsscMsiAutoStartAfterWizard = false;
+    std::map<std::string, std::string> rsscMsiResolvedProps;
+    std::wstring rsscMsiResolvedInstallDir;
+    std::string rsscMsiAddLocalCsv;
+    {
+        const std::uint8_t* dualRsscPtr = nullptr;
+        std::size_t dualRsscSz = 0;
+        const std::uint8_t* dualMsiPtr = nullptr;
+        std::size_t dualMsiSz = 0;
+        if (exportShotDir.empty() &&
+            GetEmbeddedRcDataView(rsw::kResIdScriptBytecode, dualRsscPtr, dualRsscSz) && dualRsscSz > 0 &&
+            GetEmbeddedRcDataView(rsw::kResIdEmbeddedMsi, dualMsiPtr, dualMsiSz) && dualMsiSz > 0) {
+            std::vector<std::uint8_t> bcRaw;
+            std::string bcErr;
+            rsw::rssc::ScriptProgram dualProg{};
+            if (rsw::DecompressLzmsOrCopyRaw(dualRsscPtr, dualRsscSz, bcRaw, bcErr) &&
+                rsw::rssc::LoadRaggieScriptBytecode(bcRaw.data(), bcRaw.size(), dualProg, bcErr)) {
+                const auto dualCfg = LoadBrandingConfigFromResource();
+                wchar_t prodBuf[39]{};
+                const bool isAlreadyInstalled =
+                    !dualCfg.upgradeCode.empty() &&
+                    (::MsiEnumRelatedProductsW(dualCfg.upgradeCode.c_str(), 0, 0, prodBuf) == ERROR_SUCCESS);
+
+                // Only run pre-MSI `.rssc` wizard/param orchestration on fresh install or `/s` silent install
+                // (already-installed interactive runs open Office-style Maintenance Mode in `SetupWizardApp`!).
+                if (silentInstall || (!isAlreadyInstalled && dualProg.wizardBlock)) {
+                    rsw::rssc::VmExecutionOptions vmOpts{};
+                    vmOpts.silentMode  = silentInstall;
+                    vmOpts.passiveMode = cliPassiveMode;
+                    wchar_t selfBuf[MAX_PATH * 4]{};
+                    ::GetModuleFileNameW(nullptr, selfBuf, static_cast<DWORD>(std::size(selfBuf)));
+                    vmOpts.runningExePath = std::filesystem::path(selfBuf);
+
+                    for (const auto& wa : args) {
+                        const std::string a = rsw::WideToUtf8(wa);
+                        if (a.find('=') != std::string::npos && a.front() != '-' && a.front() != '/') {
+                            const auto eq = a.find('=');
+                            vmOpts.cliProperties[a.substr(0, eq)] = a.substr(eq + 1);
+                        } else if (a.find(':') != std::string::npos && a.find(':') >= 2 && a.front() != '-' && a.front() != '/') {
+                            const auto col = a.find(':');
+                            const std::string k = a.substr(0, col);
+                            vmOpts.cliProperties[k] = a.substr(col + 1);
+                            vmOpts.lockedCliProperties.insert(k);
+                        }
+                    }
+
+                    // Extract any `#220` (`__support__`) files to `%TEMP%` for wizard inspection!
+                    const std::uint8_t* pakPtr = nullptr;
+                    std::size_t pakSz = 0;
+                    std::filesystem::path tempSupRoot;
+                    std::error_code supEc;
+                    if (GetEmbeddedRcDataView(rsw::kResIdSfxOrNativeArchive, pakPtr, pakSz) && pakSz > 0) {
+                        vmOpts.embeddedPakBytes = pakPtr;
+                        vmOpts.embeddedPakSize  = pakSz;
+                        std::vector<rsw::RswPakFileMetadata> metas;
+                        std::vector<std::uint8_t> payload;
+                        std::string pErr;
+                        if (rsw::UnpackRswPakBytesInMemory(pakPtr, pakSz, metas, payload, pErr)) {
+                            for (const auto& m : metas) {
+                                if (m.featureId != "__support__") continue;
+                                if (tempSupRoot.empty()) {
+                                    tempSupRoot = std::filesystem::temp_directory_path(supEc) /
+                                                  (L"rsw-rsscmsi-sup-" + std::to_wstring(::GetCurrentProcessId()));
+                                    vmOpts.supportDirPath = tempSupRoot / L"_support";
+                                }
+                                const auto dst = (vmOpts.supportDirPath / rsw::Utf8ToWide(m.archiveRelPath)).lexically_normal();
+                                std::filesystem::create_directories(dst.parent_path(), supEc);
+                                std::ofstream out(dst, std::ios::binary | std::ios::trunc);
+                                if (m.payloadSize > 0) {
+                                    out.write(reinterpret_cast<const char*>(payload.data() + m.payloadOffset),
+                                              static_cast<std::streamsize>(m.payloadSize));
+                                }
+                            }
+                        }
+                    }
+
+                    const HRESULT hrCo = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+                    INITCOMMONCONTROLSEX iccW{sizeof(iccW), ICC_STANDARD_CLASSES | ICC_PROGRESS_CLASS};
+                    ::InitCommonControlsEx(&iccW);
+
+                    rsw::rssc::RaggieScriptVm wizVm(dualProg, vmOpts);
+                    const auto wRes = wizVm.ExecuteWizardPhaseForMsiHandoff(
+                        std::filesystem::path(ComputeDefaultInstallDir(dualCfg)));
+
+                    if (!tempSupRoot.empty()) std::filesystem::remove_all(tempSupRoot, supEc);
+                    if (hrCo == S_OK || hrCo == S_FALSE) ::CoUninitialize();
+
+                    if (!wRes.ok || wRes.exitCode != 0) {
+                        if (!wRes.ok && !silentInstall && !wRes.errorMessage.empty()) {
+                            const std::wstring tit = dualCfg.productName + L" Setup";
+                            const std::wstring msg = rsw::Utf8ToWide(wRes.errorMessage);
+                            ::TaskDialog(nullptr, hInstance, tit.c_str(), L"Setup Could Not Continue",
+                                         msg.c_str(), TDCBF_CLOSE_BUTTON, TD_ERROR_ICON, nullptr);
+                        }
+                        return wRes.exitCode != 0 ? wRes.exitCode : ERROR_INSTALL_FAILURE;
+                    }
+
+                    rsscMsiResolvedProps = wizVm.CollectMsiHandoffProperties();
+                    if (silentInstall) {
+                        // Format all resolved script properties onto `silentExtraProps` (CLI args already took precedence in `wizVm`!)
+                        std::wstring mergedSilentProps;
+                        for (const auto& [pk, pv] : rsscMsiResolvedProps) {
+                            if (pk.empty()) continue;
+                            std::wstring wEsc;
+                            for (wchar_t ch : rsw::Utf8ToWide(pv)) {
+                                if (ch == L'"') wEsc += L"\"\"";
+                                else wEsc.push_back(ch);
+                            }
+                            if (!mergedSilentProps.empty()) mergedSilentProps += L" ";
+                            mergedSilentProps += rsw::Utf8ToWide(pk) + L"=\"" + wEsc + L"\"";
+                        }
+                        if (!silentExtraProps.empty()) {
+                            if (!mergedSilentProps.empty()) mergedSilentProps += L" ";
+                            mergedSilentProps += silentExtraProps;
+                        }
+                        silentExtraProps = std::move(mergedSilentProps);
+                    } else {
+                        if (rsscMsiResolvedProps.count("INSTALLDIR")) {
+                            rsscMsiResolvedInstallDir = rsw::Utf8ToWide(rsscMsiResolvedProps["INSTALLDIR"]);
+                            rsscMsiResolvedProps.erase("INSTALLDIR");
+                        }
+                        if (rsscMsiResolvedProps.count("ADDLOCAL")) {
+                            rsscMsiAddLocalCsv = rsscMsiResolvedProps["ADDLOCAL"];
+                            rsscMsiResolvedProps.erase("ADDLOCAL");
+                        }
+                        rsscMsiAutoStartAfterWizard = true;
+                    }
+                }
+            }
         }
     }
 
@@ -6648,6 +6799,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     app.installDir     = ComputeDefaultInstallDir(app.cfg);
     app.startMenuGroup = app.cfg.startMenuFolder;
     app.DetectExistingInstallation();
+    if (rsscMsiAutoStartAfterWizard) {
+        if (!rsscMsiResolvedInstallDir.empty()) app.installDir = rsscMsiResolvedInstallDir;
+        if (!rsscMsiAddLocalCsv.empty())        app.selectedExplicitFeaturesCsv = rsscMsiAddLocalCsv;
+        for (const auto& [pk, pv] : rsscMsiResolvedProps) {
+            app.customDialogProps[pk] = pv;
+        }
+    }
     app.theme.Refresh(app.cfg.accentPrimary, app.cfg.accentSecondary);
     rsw::ApplyWizardStyleThemeOverrides(app.cfg.wizardStyle, app.theme);
 
@@ -6754,7 +6912,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
 
     ::ShowWindow(hWnd, nCmdShow);
     ::UpdateWindow(hWnd);
-    if (app.IsPassiveToastMode() && exportShotDir.empty()) {
+    if ((app.IsPassiveToastMode() || rsscMsiAutoStartAfterWizard) && exportShotDir.empty()) {
         ::SetTimer(hWnd, SetupWizardApp::kPassiveAutostartTimerId, 120, nullptr);
     }
 

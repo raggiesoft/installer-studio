@@ -809,6 +809,79 @@ inline bool PackageSelfExtractingBootstrapper(
         ReadBinaryFileBytes(artworkPath, artworkBytes, outError);
     }
 
+    // Dual-Resource **RaggieScript MSI** (`Engine = raggiescript-msi` -> `#201 Product.msi` + `#225 RSWBC` + optional `#220 _support\`):
+    // When `Engine = raggiescript-msi` (or `[Package] Script` / `[RaggieScript] Source` is supplied on an MSI),
+    // compile the `.rssc` script into `#225` (`kResIdScriptBytecode`) so `Setup.exe` can run its un-elevated
+    // `wizard { ... }` (`asInvoker`), bridge `param` / `msi.setSessionProperty` / `feature` selections into
+    // public MSI properties, and execute the embedded `Product.msi` (`#201`) cleanly!
+    std::vector<std::uint8_t> rsscMsiBytecodeLzms;
+    std::vector<std::uint8_t> rsscMsiSupportPakBytes;
+    {
+        const std::string pkgEngLow = AsciiLower(TrimAscii(doc.GetString("Package", "", "Engine", "msi")));
+        std::string rawScript = TrimAscii(doc.GetString("Package", "", "Script"));
+        if (rawScript.empty()) rawScript = TrimAscii(doc.GetString("RaggieScript", "", "Source"));
+        if (pkgEngLow == "raggiescript-msi" && !rawScript.empty()) {
+            const auto absScript = resolvePath(rawScript);
+            rssc::ScriptProgram rsProg{};
+            std::vector<rssc::ScriptDiagnostic> rsDiags;
+            const std::map<std::string, std::string> rsDefs{
+                {"ARCH",    arch},
+                {"VERSION", msiSummary.productVersion}
+            };
+            if (!rssc::CompileRaggieScriptFile(absScript, rsProg, rsDiags, rsDefs)) {
+                outError = rsDiags.empty()
+                    ? ("Failed compiling RaggieScript MSI source: " + WideToUtf8(absScript.wstring()))
+                    : ("[" + rsDiags.front().code + " Line " + std::to_string(rsDiags.front().line) + "] " + rsDiags.front().message);
+                std::filesystem::remove(stageSetupPath, ec);
+                return false;
+            }
+            if (rsProg.package.name.empty())      rsProg.package.name      = msiSummary.productName;
+            if (rsProg.package.version.empty())   rsProg.package.version   = msiSummary.productVersion;
+            if (rsProg.package.publisher.empty()) rsProg.package.publisher = msiSummary.manufacturer;
+            // Inherit `[Feature.<id>]` declarations from `.rsip` if the `.rssc` didn't duplicate them!
+            if (rsProg.features.empty()) {
+                for (const auto& fid : doc.GetNamedSectionIds("Feature")) {
+                    rssc::FeatureDecl fd{};
+                    fd.id              = fid;
+                    fd.title           = doc.GetString("Feature", fid, "Title", fid);
+                    fd.description     = doc.GetString("Feature", fid, "Description");
+                    fd.parentId        = doc.GetString("Feature", fid, "Parent");
+                    fd.required        = doc.GetBool("Feature", fid, "DisallowAbsent", false);
+                    const auto tier    = ResolveFeatureInclusionTier(
+                        doc.GetString("Feature", fid, "Inclusion"),
+                        doc.GetInt("Feature", fid, "Level", 1),
+                        doc.HasKey("Feature", fid, "Level"));
+                    fd.inCompact       = (tier == FeatureInclusionTier::Minimal);
+                    fd.defaultSelected = (tier != FeatureInclusionTier::Hidden);
+                    rsProg.features.push_back(std::move(fd));
+                }
+            }
+            std::vector<std::uint8_t> rawBc;
+            if (!rssc::EmitRaggieScriptBytecode(rsProg, rawBc, outError)) {
+                std::filesystem::remove(stageSetupPath, ec);
+                return false;
+            }
+            rsscMsiBytecodeLzms = CompressWithLzmsIfSmaller(rawBc);
+
+            // Pack optional sibling `_support\` directory into `#220` (`__support__`) if present!
+            std::filesystem::path supDir = rsProg.package.supportDir.empty()
+                ? (absScript.parent_path() / L"_support")
+                : (absScript.parent_path() / Utf8ToWide(rsProg.package.supportDir)).lexically_normal();
+            if (std::filesystem::is_directory(supDir, ec)) {
+                std::vector<RswPakInputItem> supItems;
+                for (const auto& de : std::filesystem::recursive_directory_iterator(supDir, ec)) {
+                    if (!de.is_regular_file(ec)) continue;
+                    const auto rel = std::filesystem::relative(de.path(), supDir, ec);
+                    supItems.push_back({de.path(), WideToUtf8(rel.generic_wstring()), "__support__"});
+                }
+                if (!supItems.empty()) {
+                    std::uint64_t dummyTot = 0;
+                    BuildRswPakBytes(supItems, rsscMsiSupportPakBytes, dummyTot, outError);
+                }
+            }
+        }
+    }
+
     // 4. Inspect existing `RT_MANIFEST` `#1` languages, then open PE resource table on local NTFS `stageSetupPath`!
     const auto existingManifestLangs = QueryExistingPeManifestLangIds(stageSetupPath);
     HANDLE hRes = ::BeginUpdateResourceW(stageSetupPath.wstring().c_str(), FALSE);
@@ -855,6 +928,16 @@ inline bool PackageSelfExtractingBootstrapper(
         ok = ok && ::UpdateResourceW(
             hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdArtworkPng), kLangNeutral,
             artworkBytes.data(), static_cast<DWORD>(artworkBytes.size()));
+    }
+    if (!rsscMsiBytecodeLzms.empty()) {
+        ok = ok && ::UpdateResourceW(
+            hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdScriptBytecode), kLangNeutral,
+            rsscMsiBytecodeLzms.data(), static_cast<DWORD>(rsscMsiBytecodeLzms.size()));
+    }
+    if (!rsscMsiSupportPakBytes.empty()) {
+        ok = ok && ::UpdateResourceW(
+            hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdSfxOrNativeArchive), kLangNeutral,
+            rsscMsiSupportPakBytes.data(), static_cast<DWORD>(rsscMsiSupportPakBytes.size()));
     }
 
     // 5. Stamp custom `.ico` (`RT_GROUP_ICON` #101 + `RT_ICON` #1..N) if `[UI] IconFile` was supplied!

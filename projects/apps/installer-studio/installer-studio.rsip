@@ -87,6 +87,30 @@ Source                = ..\..\..\bin\$(ARCH)
 TargetRoot            = INSTALLDIR
 Feature               = Main
 
+[Payload.CrossStubX64]
+Source                = ..\..\..\bin\x64\SetupWizard.exe
+TargetRoot            = INSTALLDIR
+TargetSubdir          = x64
+Feature               = Main
+
+[Payload.CrossCaX64]
+Source                = ..\..\..\bin\x64\RsscMsiCa.dll
+TargetRoot            = INSTALLDIR
+TargetSubdir          = x64
+Feature               = Main
+
+[Payload.CrossStubArm64]
+Source                = ..\..\..\bin\arm64\SetupWizard.exe
+TargetRoot            = INSTALLDIR
+TargetSubdir          = arm64
+Feature               = Main
+
+[Payload.CrossCaArm64]
+Source                = ..\..\..\bin\arm64\RsscMsiCa.dll
+TargetRoot            = INSTALLDIR
+TargetSubdir          = arm64
+Feature               = Main
+
 [Payload.DialogTemplates]
 Source                = ..\..\..\templates
 TargetRoot            = INSTALLDIR

@@ -1842,11 +1842,19 @@ inline LRESULT CALLBACK SharedPushButtonSubclassProc(
         case WM_ENABLE:
         case BM_SETSTATE:
         case BM_SETSTYLE: {
-            // Suppress `ComCtl32`'s internal GDI flash during text/enable/state updates!
-            ::SendMessageW(hWnd, WM_SETREDRAW, FALSE, 0);
+            // Suppress `ComCtl32`'s internal GDI flash ONLY when the button is currently visible!
+            // Why? In Win32 `user32.dll`, calling `DefWindowProc(WM_SETREDRAW, TRUE)` implicitly sets
+            // `WS_VISIBLE` back ON even on controls intentionally hidden via `ShowWindow(..., SW_HIDE)`
+            // (such as the hidden `Cancel` button on Finish dialogs)!
+            const bool wasVisible = (::GetWindowLongW(hWnd, GWL_STYLE) & WS_VISIBLE) != 0;
+            if (wasVisible) {
+                ::SendMessageW(hWnd, WM_SETREDRAW, FALSE, 0);
+            }
             const LRESULT res = ::DefSubclassProc(hWnd, uMsg, wParam, lParam);
-            ::SendMessageW(hWnd, WM_SETREDRAW, TRUE, 0);
-            ::InvalidateRect(hWnd, nullptr, FALSE);
+            if (wasVisible) {
+                ::SendMessageW(hWnd, WM_SETREDRAW, TRUE, 0);
+                ::InvalidateRect(hWnd, nullptr, FALSE);
+            }
             return res;
         }
 

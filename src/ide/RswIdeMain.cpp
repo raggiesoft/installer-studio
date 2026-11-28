@@ -707,12 +707,16 @@ public:
     HWND hNavTree = nullptr, hConsoleEdit = nullptr;
 
     // View 0: Package & Identity
-    static constexpr int IDC_PKG_UNIV_CHK = 2221;
-    static constexpr int IDC_PKG_UNIV_URL = 2222;
-    static constexpr int IDC_PKG_EXEC_LVL = 2223;
+    static constexpr int IDC_PKG_UNIV_CHK  = 2221;
+    static constexpr int IDC_PKG_UNIV_URL  = 2222;
+    static constexpr int IDC_PKG_EXEC_LVL  = 2223;
+    static constexpr int IDC_PKG_ENGINE    = 2224;
+    static constexpr int IDC_PKG_SCRIPT    = 2225;
+    static constexpr int IDC_PKG_SCRIPT_BR = 2226;
     HWND hPkgName = nullptr, hPkgTag = nullptr, hPkgWeb = nullptr, hPkgVer = nullptr, hPkgPub = nullptr;
     HWND hPkgGuid = nullptr, hPkgBtnGuid = nullptr, hPkgSub = nullptr, hPkgExe = nullptr, hPkgScope = nullptr;
-    HWND hPkgUnivChk = nullptr, hPkgUnivUrl = nullptr, hPkgExecLvl = nullptr, hPkgApply = nullptr;
+    HWND hPkgUnivChk = nullptr, hPkgUnivUrl = nullptr, hPkgExecLvl = nullptr;
+    HWND hPkgEngine = nullptr, hPkgScript = nullptr, hPkgScriptBtn = nullptr, hPkgApply = nullptr;
 
     // View 1: Application Runtimes (`[Prerequisite.*]`) & Merge Modules (`[MergeModule.*]`) Tree
     HWND hPrTree = nullptr, hPrPreset = nullptr, hPrDist = nullptr, hPrSource = nullptr;
@@ -1044,6 +1048,15 @@ public:
             L"highestAvailable (Elevate upfront for Admins)",
             L"requireAdministrator (Require Admin at 0.0s)"
         }, 0);
+        mkLbl(VIEW_PACKAGE, L"Packaging &Engine:");
+        hPkgEngine = mkCombo(VIEW_PACKAGE, IDC_PKG_ENGINE, {
+            L"msi — Standard Windows Installer (.MSI + Setup.exe)",
+            L"raggiescript-msi — RaggieScript MSI Hybrid (.MSI + .rssc Wizard & Custom Actions)",
+            L"raggiescript — RaggieScript EXE (Zero-msi.dll LZMS Native Setup)"
+        }, 0);
+        mkLbl(VIEW_PACKAGE, L"RaggieScript (.&rssc):");
+        hPkgScript    = mkEd(VIEW_PACKAGE, IDC_PKG_SCRIPT);
+        hPkgScriptBtn = mkBtn(VIEW_PACKAGE, L"Pick .r&ssc...", IDC_PKG_SCRIPT_BR);
         hPkgApply = mkBtn(VIEW_PACKAGE, L"&Apply Package Identity to .rsip AST (Preserves Comments)", IDC_PKG_APPLY);
 
         // --- VIEW 1: Application Runtimes (`[Prerequisite.*]`) & Merge Modules (`[MergeModule.*]`) Tree ---
@@ -1399,9 +1412,18 @@ public:
                 if (v.size() >= 25) {
                     ::MoveWindow(v[22],       paneX,      y + S(3), lw, S(20),  TRUE);
                     ::MoveWindow(hPkgExecLvl, paneX + lw, y,        fw, S(160), TRUE);
-                    y += S(29);
+                    y += S(27);
                 }
-                ::MoveWindow(hPkgApply, paneX, y + S(2), fw + lw, S(32), TRUE);
+                if (v.size() >= 30) {
+                    ::MoveWindow(v[24],         paneX,                     y + S(3), lw,           S(20),  TRUE);
+                    ::MoveWindow(hPkgEngine,    paneX + lw,                y,        fw,           S(160), TRUE);
+                    y += S(27);
+                    ::MoveWindow(v[26],         paneX,                     y + S(3), lw,           S(20),  TRUE);
+                    ::MoveWindow(hPkgScript,    paneX + lw,                y,        fw - S(96),   S(25),  TRUE);
+                    ::MoveWindow(hPkgScriptBtn, paneX + lw + fw - S(90),   y,        S(90),        S(25),  TRUE);
+                    y += S(27);
+                }
+                ::MoveWindow(hPkgApply, paneX, y + S(2), fw + lw, S(30), TRUE);
             }
         }
 
@@ -2423,6 +2445,13 @@ public:
         const int execIdx = (execLvl == "requireAdministrator") ? 2 : ((execLvl == "highestAvailable") ? 1 : 0);
         ::SendMessageW(hPkgExecLvl, CB_SETCURSEL, execIdx, 0);
 
+        const std::string engLow = rsw::AsciiLower(rsw::TrimAscii(effectiveDoc.GetString("Package", "", "Engine", "msi")));
+        const int engIdx = (engLow == "raggiescript-msi") ? 1 : ((engLow == "raggiescript" || engLow == "native") ? 2 : 0);
+        if (hPkgEngine) ::SendMessageW(hPkgEngine, CB_SETCURSEL, engIdx, 0);
+        std::string scriptVal = effectiveDoc.GetString("Package", "", "Script");
+        if (scriptVal.empty()) scriptVal = effectiveDoc.GetString("RaggieScript", "", "Source");
+        if (hPkgScript) ::SetWindowTextW(hPkgScript, rsw::Utf8ToWide(scriptVal).c_str());
+
         RebuildPrerequisitesTree(effectiveDoc);
         RebuildFeaturesTree(effectiveDoc);
         RebuildDestinationTreeAndPayloadTree(effectiveDoc);
@@ -2670,6 +2699,9 @@ public:
         enWnd(hEntGenMst,     canMsp);
         enWnd(hEntGenMsp,     canMsp);
         enWnd(hEntRelWizBtn,  canMsp);
+        enWnd(hPkgEngine,     canScript);
+        enWnd(hPkgScript,     canScript);
+        enWnd(hPkgScriptBtn,  canScript);
 
         UpdateWindowCaptionWithEdition();
         ::InvalidateRect(hWnd, nullptr, FALSE);
@@ -2826,6 +2858,19 @@ public:
         const char* execTok   = (execSel == 2) ? "requireAdministrator" : ((execSel == 1) ? "highestAvailable" : "asInvoker");
         if (execSel > 0 || astDoc.HasKey("Package", "", "RequestedExecutionLevel")) {
             astDoc.SetString("Package", "", "RequestedExecutionLevel", execTok);
+        }
+        if (hPkgEngine) {
+            const LRESULT engSel = ::SendMessageW(hPkgEngine, CB_GETCURSEL, 0, 0);
+            const char* engTok = (engSel == 1) ? "raggiescript-msi" : ((engSel == 2) ? "raggiescript" : "msi");
+            if (engSel > 0 || astDoc.HasKey("Package", "", "Engine")) {
+                astDoc.SetString("Package", "", "Engine", engTok);
+            }
+        }
+        if (hPkgScript) {
+            const std::string scr = ReadCtlUtf8(hPkgScript);
+            if (!scr.empty() || astDoc.HasKey("Package", "", "Script")) {
+                astDoc.SetString("Package", "", "Script", scr);
+            }
         }
         astDoc.SetString("Install", "", "DefaultSubdir",  ReadCtlUtf8(hPkgSub));
         astDoc.SetString("Install", "", "MainExecutable", ReadCtlUtf8(hPkgExe));
@@ -4648,6 +4693,13 @@ public:
                     case IDC_PKG_NEW_GUID:
                         ::SetWindowTextW(self->hPkgGuid, rsw::Utf8ToWide(rsw::GenerateRandomMsiGuid()).c_str());
                         return 0;
+                    case IDC_PKG_SCRIPT_BR: {
+                        std::wstring sp;
+                        if (self->PickPathDialog(false, L"RaggieScript Files (*.rssc)\0*.rssc\0All Files (*.*)\0*.*\0", sp)) {
+                            ::SetWindowTextW(self->hPkgScript, sp.c_str());
+                        }
+                        return 0;
+                    }
                     case IDC_PKG_APPLY:
                         self->ApplyPackageViewToAst();
                         return 0;

@@ -36,6 +36,8 @@
 #include <commctrl.h>
 #include <dwmapi.h>
 #include <msi.h>
+#include <msiquery.h>
+#include <richedit.h>
 #include <shellapi.h>
 #include <shobjidl.h>
 
@@ -1171,8 +1173,8 @@ struct SuiteTaskbarProgress {
     }
 };
 
-/// Strips unexpanded Windows Installer `[1]`..`[99]` field placeholders and trailing `: ` separators
-/// so Suite progress bars NEVER display raw `"Copying New Files: [1]"`!
+/// Strips unexpanded Windows Installer `[1]`..`[99]` field placeholders, empty `, Label: ` clauses,
+/// and trailing `: ` separators so Suite progress bars NEVER display raw `"Copying New Files: [1]"`!
 inline std::wstring SanitizeSuiteMsiTokens(std::wstring s) {
     std::wstring out;
     out.reserve(s.size());
@@ -1187,7 +1189,28 @@ inline std::wstring SanitizeSuiteMsiTokens(std::wstring s) {
         }
         out.push_back(s[i]);
     }
-    while (!out.empty() && (out.back() == L' ' || out.back() == L':' || out.back() == L'-')) {
+    // Collapse trailing empty `, Label: ` clauses left behind when optional MSI fields `[9]`/`[6]` were blank
+    for (;;) {
+        while (!out.empty() && (out.back() == L' ' || out.back() == L':' || out.back() == L'-' || out.back() == L',')) {
+            out.pop_back();
+        }
+        const auto commaPos = out.rfind(L',');
+        const auto colonPos = s.find(L':');
+        if (commaPos != std::wstring::npos && colonPos != std::wstring::npos) {
+            bool tailHasColonInOrig = false;
+            std::wstring tailLabel = out.substr(commaPos + 1);
+            while (!tailLabel.empty() && tailLabel.front() == L' ') tailLabel.erase(tailLabel.begin());
+            if (!tailLabel.empty() && s.find(tailLabel + L": [") != std::wstring::npos) {
+                tailHasColonInOrig = true;
+            }
+            if (tailHasColonInOrig) {
+                out.resize(commaPos);
+                continue;
+            }
+        }
+        break;
+    }
+    while (!out.empty() && (out.back() == L' ' || out.back() == L':' || out.back() == L'-' || out.back() == L',')) {
         out.pop_back();
     }
     return out;

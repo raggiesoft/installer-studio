@@ -26,6 +26,7 @@
 #include "../common/RswCryptoAndPe.hpp"
 #include "../common/RswEditions.hpp"
 #include "../common/RswManifestAst.hpp"
+#include "../common/RswRaggieScript.hpp"
 #include "../common/RswSchema.hpp"
 #include "../common/RswWcagContrast.hpp"
 #include "../common/RswWin32UiTheme.hpp"
@@ -719,6 +720,52 @@ inline ValidationReport ValidateManifestDocument(
                "[Upgrade] Strategy = " + upgStrategy + " requires either an explicit [Package] ProductCode = {GUID} or [Upgrade] BaselineMsi = <old.msi> so the baseline ProductCode is preserved.");
     }
 
+    // 4D. Validate `Engine = raggiescript-msi`, `[RaggieScript]`, & `[CustomAction.*]` (`v0.9.1`)!
+    const std::string pkgEngineLow = AsciiLower(TrimAscii(doc.GetString("Package", "", "Engine", "msi")));
+    std::string rawRsscScript = TrimAscii(doc.GetString("Package", "", "Script"));
+    if (rawRsscScript.empty()) {
+        rawRsscScript = TrimAscii(doc.GetString("RaggieScript", "", "Source"));
+    }
+    const auto customActionIds = doc.GetNamedSectionIds("CustomAction");
+    if (pkgEngineLow == "raggiescript-msi" && rawRsscScript.empty()) {
+        addErr("RSW071", 1, "Package", "Script",
+               "Engine = raggiescript-msi requires [Package] Script = <file.rssc> (or [RaggieScript] Source = <file.rssc>).");
+    }
+    if (!customActionIds.empty() && rawRsscScript.empty()) {
+        addErr("RSW071", 1, "CustomAction." + customActionIds.front(), "Function",
+               "[CustomAction.*] sections require a RaggieScript source file via [Package] Script = <file.rssc> (or [RaggieScript] Source = <file.rssc>).");
+    }
+    if (!rawRsscScript.empty()) {
+        const auto absScript = resolvePathStd(rawRsscScript);
+        if (!std::filesystem::exists(absScript, ec)) {
+            addErr("RSW072", 1, "Package", "Script",
+                   "RaggieScript file does not exist on disk: " + WideToUtf8(absScript.wstring()));
+        } else {
+            rssc::ScriptProgram rsProg{};
+            std::vector<rssc::ScriptDiagnostic> rsDiags;
+            const std::map<std::string, std::string> rsDefs{{"ARCH", rep.resolvedArchitecture}};
+            rssc::CompileRaggieScriptFile(absScript, rsProg, rsDiags, rsDefs);
+            for (const auto& rd : rsDiags) {
+                if (rd.isError) addErr(rd.code, rd.line, "RaggieScript", "Script", rd.message);
+                else            addWarn(rd.code, rd.line, "RaggieScript", "Script", rd.message);
+            }
+            std::set<std::string> declaredFns;
+            for (const auto& fn : rsProg.functions) declaredFns.insert(fn.name);
+            for (const auto& caId : customActionIds) {
+                const std::string fnName = TrimAscii(doc.GetString("CustomAction", caId, "Function"));
+                const std::string rbName = TrimAscii(doc.GetString("CustomAction", caId, "RollbackFunction"));
+                if (fnName.empty() || declaredFns.count(fnName) == 0) {
+                    addErr("RSW073", 1, "CustomAction." + caId, "Function",
+                           "[CustomAction." + caId + "] Function = '" + fnName + "' was not found as a top-level 'fn " + fnName + "(...)' in " + WideToUtf8(absScript.filename().wstring()) + ".");
+                }
+                if (!rbName.empty() && declaredFns.count(rbName) == 0) {
+                    addErr("RSW073", 1, "CustomAction." + caId, "RollbackFunction",
+                           "[CustomAction." + caId + "] RollbackFunction = '" + rbName + "' was not found as a top-level 'fn " + rbName + "(...)' in " + WideToUtf8(absScript.filename().wstring()) + ".");
+                }
+            }
+        }
+    }
+
     // 5. WCAG 2.2 AA Brand Accent Contrast Verification (`[UI] AccentPrimaryHex`)
     const std::string rawPrimaryHex = TrimAscii(doc.GetString("UI", "", "AccentPrimaryHex"));
     if (!rawPrimaryHex.empty()) {
@@ -749,10 +796,12 @@ inline ValidationReport ValidateManifestDocument(
             addErr("RSW091", 1, "Package", "PackageKind",
                    edLabel + " can consume existing [MergeModule.*] (.msm) files, while compiling new .MSM Merge Modules requires Developer, Architect, or Community Edition.");
         }
-        if (pkgKind != "sfx" && pkgKind != "addon" && (engine == "raggiescript" || engine == "native") &&
+        if (pkgKind != "sfx" && pkgKind != "addon" &&
+            (engine == "raggiescript" || engine == "raggiescript-msi" || engine == "native" ||
+             !rawRsscScript.empty() || !customActionIds.empty()) &&
             !EditionSupportsNativeEngineAndScripting(activeEdition)) {
             addErr("RSW092", 1, "Package", "Engine",
-                   "RaggieScript EXE (Engine = raggiescript) and RaggieScript (.rssc) scripting require Developer, Architect, or Community Edition (currently running " + edLabel + ").");
+                   "RaggieScript MSI (Engine = raggiescript-msi), RaggieScript EXE (Engine = raggiescript), and RaggieScript (.rssc) Custom Actions require Developer, Architect, or Community Edition (currently running " + edLabel + ").");
         }
         if ((upgStrategy == "minor" || upgStrategy == "small_hotfix") &&
             !EditionSupportsMspPatchesAndMstTransforms(activeEdition)) {

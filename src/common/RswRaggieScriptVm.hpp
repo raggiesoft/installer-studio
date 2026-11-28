@@ -1539,6 +1539,118 @@ public:
         return FinalizeNormalResult(res);
     }
 
+    static std::string ParamNameToPublicMsiProperty(std::string_view rawName) {
+        bool hasLower = false;
+        for (char c : rawName) if (c >= 'a' && c <= 'z') hasLower = true;
+        if (!hasLower) return std::string(rawName);
+        std::string out;
+        out.reserve(rawName.size() + 4);
+        for (std::size_t i = 0; i < rawName.size(); ++i) {
+            const char c = rawName[i];
+            if (c >= 'A' && c <= 'Z' && i > 0 && rawName[i - 1] >= 'a' && rawName[i - 1] <= 'z') {
+                out.push_back('_');
+            }
+            out.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
+        }
+        return out;
+    }
+
+    /// Runs ONLY `param` evaluation + `topStatements` + side-effect-free `wizard { ... }` (`asInvoker`!)
+    /// inside a **RaggieScript MSI** (`Engine = raggiescript-msi`) hybrid `Setup.exe`, stopping right
+    /// before installation so `SetupWizardApp` can pass resolved public MSI properties & feature states
+    /// directly into `Product.msi`!
+    VmExecutionResult ExecuteWizardPhaseForMsiHandoff(const std::filesystem::path& defaultInstallDir) {
+        VmExecutionResult res{};
+        for (const auto& p : prog_.params) {
+            Value val = p.defaultExpr ? EvalExpr(p.defaultExpr, globalScope_) : Value::Null();
+            if (Failed()) return BuildFailureResult(res);
+
+            bool isLockedByCli = false;
+            const std::string pubProp = ParamNameToPublicMsiProperty(p.name);
+            for (const auto& [cliK, cliV] : opts_.cliProperties) {
+                if (EqualsIgnoreCase(cliK, p.name) || EqualsIgnoreCase(cliK, pubProp)) {
+                    const std::string tl = AsciiLower(p.typeName);
+                    if (tl == "bool")         val = Value::FromBool(EqualsIgnoreCase(cliV, "true") || cliV == "1" || EqualsIgnoreCase(cliV, "yes"));
+                    else if (tl == "int")     val = Value::FromInt(std::strtoll(cliV.c_str(), nullptr, 0));
+                    else if (tl == "version") val = Value::FromVer(SemVer::Parse(cliV));
+                    else if (tl == "path")    val = Value::FromPathUtf8(cliV);
+                    else                      val = Value::FromStr(cliV);
+                    for (const auto& lk : opts_.lockedCliProperties) {
+                        if (EqualsIgnoreCase(lk, cliK)) isLockedByCli = true;
+                    }
+                    break;
+                }
+            }
+            globalScope_.Declare(p.name, std::move(val), isLockedByCli);
+        }
+
+        Value existingDir;
+        if (!globalScope_.TryGet("installDir", existingDir)) {
+            std::filesystem::path initDir = defaultInstallDir;
+            for (const auto& [cliK, cliV] : opts_.cliProperties) {
+                if (EqualsIgnoreCase(cliK, "INSTALLDIR") || EqualsIgnoreCase(cliK, "installDir")) {
+                    initDir = std::filesystem::path(Utf8ToWide(cliV));
+                    break;
+                }
+            }
+            if (!initDir.empty()) {
+                globalScope_.Declare("installDir", Value::FromPath(initDir), false);
+            }
+        }
+
+        for (const auto& st : prog_.topStatements) {
+            ExecStmt(st, globalScope_);
+            if (flow_ == FlowKind::ExitSetup) return FinalizeNormalResult(res);
+            if (Failed()) return BuildFailureResult(res);
+        }
+
+        if (!opts_.silentMode && prog_.wizardBlock) {
+            inWizardPhase_ = true;
+            ExecuteWizardBlock(prog_.wizardBlock);
+            inWizardPhase_ = false;
+            if (flow_ == FlowKind::ExitSetup) return FinalizeNormalResult(res);
+            if (Failed()) return BuildFailureResult(res);
+        }
+        return FinalizeNormalResult(res);
+    }
+
+    /// Harvests `INSTALLDIR`, `ADDLOCAL` / `REMOVE` feature selections, `param` values, and
+    /// `msi.setSessionProperty(...)` overrides after `ExecuteWizardPhaseForMsiHandoff` completes!
+    std::map<std::string, std::string> CollectMsiHandoffProperties() const {
+        std::map<std::string, std::string> out = msiSessionProps_;
+        out.erase("__EXTRA_MSI_ARGS__");
+
+        Value dirV;
+        if (globalScope_.TryGet("installDir", dirV) && !dirV.AsString().empty()) {
+            out["INSTALLDIR"] = dirV.AsString();
+        }
+        for (const auto& p : prog_.params) {
+            if (EqualsIgnoreCase(p.name, "installDir")) continue;
+            Value v;
+            if (globalScope_.TryGet(p.name, v)) {
+                const std::string pubName = ParamNameToPublicMsiProperty(p.name);
+                if (!out.count(pubName)) {
+                    out[pubName] = (v.kind == ValKind::Bool) ? (v.boolVal ? "1" : "0") : v.AsString();
+                }
+            }
+        }
+        if (!featureStates_.empty()) {
+            std::string addCsv, remCsv;
+            for (const auto& [fid, sel] : featureStates_) {
+                if (sel) {
+                    if (!addCsv.empty()) addCsv.push_back(',');
+                    addCsv += fid;
+                } else {
+                    if (!remCsv.empty()) remCsv.push_back(',');
+                    remCsv += fid;
+                }
+            }
+            if (!addCsv.empty() && !out.count("ADDLOCAL")) out["ADDLOCAL"] = addCsv;
+            if (!remCsv.empty() && !out.count("REMOVE"))   out["REMOVE"]   = remCsv;
+        }
+        return out;
+    }
+
     /// Fires a Showcase Studio canvas or hotspot event (`on hotspot("BtnInstall").click { ... }`).
     bool TriggerEventHandler(std::string_view targetKind, std::string_view targetId, std::string_view eventName) {
         for (const auto& ev : prog_.eventHandlers) {
@@ -1577,6 +1689,8 @@ private:
     bool                      inWizardStepBody_           = false;
     std::size_t               currentWizardStepIndex_     = 0;
     bool                      arpRegisteredDuringInstall_ = false;
+    bool                      embeddedMsiInstallRequested_ = false;
+    std::map<std::string, std::string> msiSessionProps_;
     std::string               errorMsg_;
     int                       errorLine_                  = 0;
     std::vector<std::string>  consoleLines_;
@@ -2320,6 +2434,11 @@ private:
 
         // 1. Array / Map instance helper methods (`arr.push(x)`, `arr.contains(x)`, `map.has(k)`, `map.keys()`)
         if (e->lhs->kind == ExprKind::Member && e->lhs->lhs) {
+            if (e->lhs->lhs->kind == ExprKind::Member &&
+                e->lhs->lhs->lhs && e->lhs->lhs->lhs->kind == ExprKind::Ident &&
+                e->lhs->lhs->lhs->strVal == "msi" && e->lhs->lhs->strVal == "session") {
+                return InvokeNamespaceMethod("msi.session", e->lhs->strVal, args, e->line);
+            }
             if (e->lhs->lhs->kind == ExprKind::Ident) {
                 const std::string& ns = e->lhs->lhs->strVal;
                 if (IsBuiltInNamespace(ns)) {
@@ -2413,7 +2532,7 @@ private:
                ns == "shortcut" || ns == "shell" || ns == "env" || ns == "arp" || ns == "svc" ||
                ns == "task" || ns == "firewall" || ns == "acl" || ns == "ui" || ns == "wizard" ||
                ns == "feature" || ns == "compile" || ns == "payload" || ns == "showcase" ||
-               ns == "RsDialog" || ns == "rsdialog" || ns == "log";
+               ns == "RsDialog" || ns == "rsdialog" || ns == "log" || ns == "mutex";
     }
 
     /// Dispatches all 12 turnkey `Rs*` wizard dialog functions (`RsWelcome`, `RsLicense`, `RsReadme`,
@@ -2746,9 +2865,11 @@ private:
         if (ns == "crypto")   return CallCrypto(m, args);
         if (ns == "net")      return CallNet(m, args, line);
         if (ns == "proc")     return CallProc(m, args, line);
-        if (ns == "ffi")      return CallFfi(m, args, line);
-        if (ns == "msi")      return CallMsi(m, args, line);
-        if (ns == "prereq")   return CallPrereq(m, args, line);
+        if (ns == "ffi")         return CallFfi(m, args, line);
+        if (ns == "msi")         return CallMsi(m, args, line);
+        if (ns == "msi.session") return CallMsiSession(m, args, line);
+        if (ns == "mutex")       return CallMutex(m, args);
+        if (ns == "prereq")      return CallPrereq(m, args, line);
         if (ns == "shortcut") return CallShortcut(m, args, line);
         if (ns == "shell")    return CallShell(m, args, line);
         if (ns == "env")      return CallEnv(m, args, line);
@@ -4039,7 +4160,74 @@ private:
             }
             return Value::FromStr(std::move(body));
         }
+        if (m == "isPortFree" || m == "findFreePort") {
+            auto probePort = [](int port, bool loopbackOnly) -> bool {
+                if (port < 1 || port > 65535) return false;
+                HMODULE hWs = ::LoadLibraryW(L"ws2_32.dll");
+                if (!hWs) return true;
+                struct MiniWsaData { WORD wVersion; WORD wHighVersion; char pad[408]; };
+                struct MiniSockAddrIn { short sin_family; unsigned short sin_port; unsigned long sin_addr; char sin_zero[8]; };
+                using FnStartup = int(WINAPI*)(WORD, void*);
+                using FnCleanup = int(WINAPI*)();
+                using FnSocket  = std::uintptr_t(WINAPI*)(int, int, int);
+                using FnBind    = int(WINAPI*)(std::uintptr_t, const void*, int);
+                using FnClose   = int(WINAPI*)(std::uintptr_t);
+                auto pStart = reinterpret_cast<FnStartup>(::GetProcAddress(hWs, "WSAStartup"));
+                auto pClean = reinterpret_cast<FnCleanup>(::GetProcAddress(hWs, "WSACleanup"));
+                auto pSock  = reinterpret_cast<FnSocket>(::GetProcAddress(hWs, "socket"));
+                auto pBind  = reinterpret_cast<FnBind>(::GetProcAddress(hWs, "bind"));
+                auto pClose = reinterpret_cast<FnClose>(::GetProcAddress(hWs, "closesocket"));
+                bool freeOk = true;
+                MiniWsaData wd{};
+                if (pStart && pClean && pSock && pBind && pClose && pStart(0x0202, &wd) == 0) {
+                    const std::uintptr_t s = pSock(2 /* AF_INET */, 1 /* SOCK_STREAM */, 6 /* IPPROTO_TCP */);
+                    if (s != ~static_cast<std::uintptr_t>(0)) {
+                        MiniSockAddrIn sa{};
+                        sa.sin_family = 2;
+                        sa.sin_port   = static_cast<unsigned short>(((port & 0xFF) << 8) | ((port >> 8) & 0xFF));
+                        sa.sin_addr   = loopbackOnly ? 0x0100007Fu : 0u;
+                        freeOk        = (pBind(s, &sa, sizeof(sa)) == 0);
+                        pClose(s);
+                    }
+                    pClean();
+                }
+                ::FreeLibrary(hWs);
+                return freeOk;
+            };
+            if (m == "isPortFree") {
+                return Value::FromBool(probePort(static_cast<int>(args.At(0).AsInt()),
+                                                 args.NamedOrPos("loopbackOnly", 1, Value::FromBool(true)).AsBool()));
+            }
+            const int lo = static_cast<int>(args.NamedOrPos("startPort", 0, Value::FromInt(8000)).AsInt());
+            const int hi = static_cast<int>(args.NamedOrPos("endPort", 1, Value::FromInt(9000)).AsInt());
+            for (int p = lo; p <= hi; ++p) {
+                if (probePort(p, true)) return Value::FromInt(p);
+            }
+            return Value::FromInt(0);
+        }
         RaiseError(line, "Unknown net.* method 'net." + m + "()'.");
+        return Value::Null();
+    }
+
+    Value CallMutex(const std::string& m, const EvaluatedArgs& args) {
+        const std::wstring wName = Utf8ToWide(args.At(0).AsString());
+        if (m == "isHeld") {
+            HANDLE hm = ::OpenMutexW(SYNCHRONIZE, FALSE, wName.c_str());
+            if (!hm) return Value::FromBool(::GetLastError() == ERROR_ACCESS_DENIED);
+            ::CloseHandle(hm);
+            return Value::FromBool(true);
+        }
+        if (m == "waitRelease") {
+            const int timeoutMs = static_cast<int>(args.NamedOrPos("timeoutMs", 1, Value::FromInt(5000)).AsInt());
+            const ULONGLONG t0 = ::GetTickCount64();
+            for (;;) {
+                HANDLE hm = ::OpenMutexW(SYNCHRONIZE, FALSE, wName.c_str());
+                if (!hm && ::GetLastError() != ERROR_ACCESS_DENIED) return Value::FromBool(true);
+                if (hm) ::CloseHandle(hm);
+                if (static_cast<int>(::GetTickCount64() - t0) >= timeoutMs) return Value::FromBool(false);
+                ::Sleep(50);
+            }
+        }
         return Value::Null();
     }
 
@@ -4329,9 +4517,9 @@ private:
             }
             return Value::FromBool(false);
         }
-        if (m == "setSelected" || m == "setState") {
+        if (m == "setSelected" || m == "setState" || m == "select" || m == "deselect") {
             const std::string id  = args.At(0).AsString();
-            const bool        sel = args.At(1, Value::FromBool(true)).AsBool();
+            const bool        sel = (m == "deselect") ? false : args.At(1, Value::FromBool(true)).AsBool();
             for (const auto& ft : prog_.features) {
                 if (EqualsIgnoreCase(ft.id, id)) {
                     featureStates_[ft.id] = ft.required ? true : sel;
@@ -4435,6 +4623,21 @@ private:
     // Namespace 9: `msi.*` & `prereq.*`
     // ----------------------------------------------------------------------------
     Value CallMsi(const std::string& m, const EvaluatedArgs& args, int line) {
+        if (m == "setSessionProperty") {
+            const std::string k = args.At(0).AsString();
+            const std::string v = args.At(1).AsString();
+            if (!k.empty()) msiSessionProps_[k] = v;
+            return Value::FromBool(!k.empty());
+        }
+        if (m == "getSessionProperty") {
+            return CallMsiSession("getProperty", args, line);
+        }
+        if (m == "installEmbedded") {
+            embeddedMsiInstallRequested_ = true;
+            const std::string extra = args.At(0, Value::FromStr("")).AsString();
+            if (!extra.empty()) msiSessionProps_["__EXTRA_MSI_ARGS__"] = extra;
+            return Value::FromInt(0);
+        }
         if (m == "isUpgradeInstalled") {
             const std::wstring upg = Utf8ToWide(args.At(0).AsString());
             wchar_t prodBuf[39]{};
@@ -5473,7 +5676,91 @@ private:
     // ----------------------------------------------------------------------------
     // Namespace 12: `ui.*` & `showcase.*` (Native `TaskDialogIndirect` — Zero `MessageBox`!)
     // ----------------------------------------------------------------------------
+    Value CallMsiSession(const std::string& m, const EvaluatedArgs& args, int line) {
+        (void)line;
+        if (m == "isDeferred" || m == "isRollback" || m == "isCommit") return Value::FromBool(false);
+        if (m == "customActionData") {
+            if (args.pos.empty() && args.named.empty()) return Value::FromStr("");
+            const std::string key = args.At(0).AsString();
+            for (const auto& [k, v] : msiSessionProps_) if (EqualsIgnoreCase(k, key)) return Value::FromStr(v);
+            for (const auto& [k, v] : opts_.cliProperties) if (EqualsIgnoreCase(k, key)) return Value::FromStr(v);
+            return args.At(1, Value::FromStr(""));
+        }
+        if (m == "getProperty") {
+            const std::string key = args.At(0).AsString();
+            for (const auto& [k, v] : msiSessionProps_) if (EqualsIgnoreCase(k, key)) return Value::FromStr(v);
+            for (const auto& [k, v] : opts_.cliProperties) if (EqualsIgnoreCase(k, key)) return Value::FromStr(v);
+            Value gv;
+            if (globalScope_.TryGet(key, gv)) return Value::FromStr(gv.AsString());
+            return args.At(1, Value::FromStr(""));
+        }
+        if (m == "setProperty") {
+            const std::string k = args.At(0).AsString();
+            const std::string v = args.At(1).AsString();
+            if (!k.empty()) msiSessionProps_[k] = v;
+            return Value::FromBool(!k.empty());
+        }
+        if (m == "getFeatureState") {
+            const std::string fid = args.At(0).AsString();
+            bool sel = false;
+            for (const auto& [k, v] : featureStates_) if (EqualsIgnoreCase(k, fid)) sel = v;
+            return Value::FromMap({
+                {"installed", Value::FromInt(INSTALLSTATE_ABSENT)},
+                {"action",    Value::FromInt(sel ? INSTALLSTATE_LOCAL : INSTALLSTATE_ABSENT)},
+                {"selected",  Value::FromBool(sel)}
+            });
+        }
+        if (m == "setFeatureState") {
+            const std::string fid = args.At(0).AsString();
+            const bool sel = args.At(1, Value::FromBool(true)).AsBool();
+            featureStates_[fid] = sel;
+            return Value::FromBool(true);
+        }
+        if (m == "evaluateCondition") {
+            const std::string c = args.At(0).AsString();
+            return Value::FromBool(!c.empty() && c != "0" && !EqualsIgnoreCase(c, "false"));
+        }
+        if (m == "formatString") return Value::FromStr(args.At(0).AsString());
+        if (m == "log") { AppendLogLine("MSI-CA", args.At(0).AsString()); return Value::FromBool(true); }
+        if (m == "doAction") return Value::FromInt(0);
+        return Value::Null();
+    }
+
     Value CallUi(const std::string& m, const EvaluatedArgs& args) {
+        // Bridge declarative `ui.*` step widgets (`ui.welcome`, `ui.folderPicker`, `ui.textBox`, `ui.readySummary`, etc.)
+        // directly onto `TryInvokeRsTurnkeyDialog` so `.rssc` wizards work identically across `raggiescript.exe` & `SetupWizard.exe`!
+        if (m == "welcome" || m == "license" || m == "readme" || m == "folderPicker" ||
+            m == "textBox" || m == "featureTree" || m == "readySummary") {
+            Value dlgOut;
+            EvaluatedArgs mapped = args;
+            std::string rsName = "RsWelcome";
+            if (m == "license") {
+                rsName = "RsLicense";
+            } else if (m == "readme") {
+                rsName = "RsReadme";
+            } else if (m == "folderPicker") {
+                rsName = "RsSelectDestDir";
+                mapped.pos = {args.NamedOrPos("label", 0, Value::FromStr("Select destination folder:")),
+                              args.RawNamedOrPos("bind", 1),
+                              args.NamedOrPos("minFreeMB", 2, Value::FromInt(0))};
+                mapped.named["destDir"] = args.RawNamedOrPos("bind", 1);
+            } else if (m == "textBox") {
+                rsName = "RsAskText";
+                mapped.pos = {args.NamedOrPos("placeholder", 2, args.NamedOrPos("label", 0)),
+                              args.NamedOrPos("label", 0),
+                              args.RawNamedOrPos("bind", 1)};
+                mapped.named["value"] = args.RawNamedOrPos("bind", 1);
+            } else if (m == "featureTree") {
+                rsName = "RsFeatureTree";
+            } else if (m == "readySummary") {
+                rsName = "RsReadyToInstall";
+            }
+            TryInvokeRsTurnkeyDialog(rsName, mapped, 0, dlgOut);
+            return Value::Null();
+        }
+        if (m == "heading" || m == "label" || m == "notice") {
+            return Value::Null();
+        }
         if (m == "progress") {
             const int pct     = std::clamp<int>(static_cast<int>(args.At(0).AsInt()), 0, 100);
             const std::wstring status = Utf8ToWide(args.At(1, Value::FromStr("")).AsString());

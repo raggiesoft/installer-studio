@@ -1520,7 +1520,11 @@ inline bool IsMutatingHostCall(std::string_view ns, std::string_view method) noe
         return method == "install" || method == "repair" || method == "uninstall" || method == "configureFeature" ||
                method == "applyPatch" || method == "runLegacyUninstaller" || method == "createDatabase" ||
                method == "execSql" || method == "setProperty" || method == "setSummary" ||
-               method == "importStream" || method == "generateTransform" || method == "generatePatch";
+               method == "importStream" || method == "generateTransform" || method == "generatePatch" ||
+               method == "installEmbedded";
+    }
+    if (ns == "msi.session") {
+        return method == "doAction";
     }
     if (ns == "archive") {
         return method == "extractZip" || method == "extractPak" || method == "createPak" || method == "downloadPak";
@@ -1572,31 +1576,40 @@ inline void AnalyzeExprCapabilitiesAndPhase(
 
     if (e->kind != ExprKind::Call || !e->lhs) return;
 
-    // 1. Direct `namespace.method(...)` host call check
-    if (e->lhs->kind == ExprKind::Member && e->lhs->lhs && e->lhs->lhs->kind == ExprKind::Ident) {
-        const std::string ns     = e->lhs->lhs->strVal;
-        const std::string method = e->lhs->strVal;
-
-        // `RSW702` Sandboxed Training/A11y Capability Gate:
-        const bool isSandboxedTraining = prog.capabilities.count("training") > 0 &&
-                                         prog.capabilities.count("installer") == 0 &&
-                                         prog.capabilities.count("showcase") == 0;
-        if (isSandboxedTraining &&
-            (ns == "fs" || ns == "reg" || ns == "proc" || ns == "ffi" || ns == "svc" || ns == "net" ||
-             ns == "msi" || ns == "firewall" || ns == "acl" || ns == "task" || ns == "env")) {
-            diags.push_back({
-                true, "RSW702", e->line, 1, prog.sourcePath,
-                "Capability violation: sandboxed 'use training;' script cannot call '" + ns + "." + method + "()'."
-            });
+    // 1. Direct `namespace.method(...)` or `msi.session.method(...)` host call check
+    if (e->lhs->kind == ExprKind::Member && e->lhs->lhs) {
+        std::string ns;
+        if (e->lhs->lhs->kind == ExprKind::Ident) {
+            ns = e->lhs->lhs->strVal;
+        } else if (e->lhs->lhs->kind == ExprKind::Member &&
+                   e->lhs->lhs->lhs && e->lhs->lhs->lhs->kind == ExprKind::Ident &&
+                   e->lhs->lhs->lhs->strVal == "msi" && e->lhs->lhs->strVal == "session") {
+            ns = "msi.session";
         }
+        if (!ns.empty()) {
+            const std::string method = e->lhs->strVal;
 
-        // `RSW701` Wizard Phase Isolation Gate:
-        if (insideWizard && IsMutatingHostCall(ns, method)) {
-            diags.push_back({
-                true, "RSW701", e->line, 1, prog.sourcePath,
-                "Phase isolation violation: mutating call '" + ns + "." + method +
-                "()' is forbidden inside 'wizard { ... }'. Move system modifications into 'install { ... }'."
-            });
+            // `RSW702` Sandboxed Training/A11y Capability Gate:
+            const bool isSandboxedTraining = prog.capabilities.count("training") > 0 &&
+                                             prog.capabilities.count("installer") == 0 &&
+                                             prog.capabilities.count("showcase") == 0;
+            if (isSandboxedTraining &&
+                (ns == "fs" || ns == "reg" || ns == "proc" || ns == "ffi" || ns == "svc" || ns == "net" ||
+                 ns == "msi" || ns == "msi.session" || ns == "firewall" || ns == "acl" || ns == "task" || ns == "env")) {
+                diags.push_back({
+                    true, "RSW702", e->line, 1, prog.sourcePath,
+                    "Capability violation: sandboxed 'use training;' script cannot call '" + ns + "." + method + "()'."
+                });
+            }
+
+            // `RSW701` Wizard Phase Isolation Gate:
+            if (insideWizard && IsMutatingHostCall(ns, method)) {
+                diags.push_back({
+                    true, "RSW701", e->line, 1, prog.sourcePath,
+                    "Phase isolation violation: mutating call '" + ns + "." + method +
+                    "()' is forbidden inside 'wizard { ... }'. Move system modifications into 'install { ... }'."
+                });
+            }
         }
     }
 
