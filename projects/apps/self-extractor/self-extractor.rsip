@@ -46,7 +46,7 @@ MainExecutable        = rswsfx.exe
 
 [UI]
 WizardLayout          = fluentmica
-AccentPrimaryHex      = #1D4ED8
+AccentPrimaryHex      = #2563EB
 AccentSecondaryHex    = #FBBF24
 LicenseRtf            = ..\..\..\examples\hello-raggiesoft\License.rtf
 IconFile              = ..\..\..\examples\hello-raggiesoft\HelloRaggieSoft.ico
