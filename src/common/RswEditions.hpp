@@ -10,7 +10,7 @@
 //     This header is the single source of truth for **RaggieSoft Installer Studio's**
 //     official Four-Edition capability model (`Community`, `Essentials`, `Developer`,
 //     and `Architect`) across both the visual IDE (`InstallerStudio.exe`) and the
-//     headless command-line compiler (`instbuild.exe --edition=<tier>`):
+//     headless command-line compiler (`instbuild.exe --license-file=<file.rswlic>`):
 //
 //       1. `Community Edition` (Free for hobbyists, solo creators, students,
 //          educators, non-profits, and open source):

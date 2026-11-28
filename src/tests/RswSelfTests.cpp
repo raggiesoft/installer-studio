@@ -2135,31 +2135,143 @@ int wmain() {
                   "Book and Album CD-Autorun RaggieScript templates pass RSW701/RSW702 static validation",
                   "bookRc=" + std::to_string(bkValRc) + " albumRc=" + std::to_string(alValRc));
 
-            // 7. Test Official Four-Edition Capability Enforcement (`Community == Architect`, `Essentials`, `Developer`, `Architect`)
+            // 7. Test Cryptographic ECDSA P-256 `.rswlic` Licensing (`No License File == Community Edition`),
+            //    Four-Edition Capability Matrix (`Community == Architect`, `Essentials`, `Developer`, `Architect`),
             //    AND Standalone `rswsfx.exe --pack` Self-Extractor CLI!
             const auto stdSampleRsip = binDir / L".." / L".." / L"examples" / L"hello-raggiesoft" / L"hello-raggiesoft.rsip";
             const auto suiteRsip     = binDir / L".." / L".." / L"examples" / L"hello-raggiesoft" / L"hello-raggiesoft-suite.rsis";
 
-            // Essentials ALLOWS standard MSI + Setup.exe + Signing + SFX, but GATES .rssc (RSW092), --emit-msm (RSW091), .rsis (RSW094), & --emit-vpat (RSW096)!
-            const std::wstring archFlag = L" --arch=" + rsw::Utf8ToWide(hostArch);
-            const DWORD essMsiOk    = runCli(instbuildExe, L"--validate --edition=essentials \"" + stdSampleRsip.wstring() + L"\"" + archFlag);
-            const DWORD essRsscGate = runCli(instbuildExe, L"--validate --edition=essentials \"" + sampleScriptPath.wstring() + L"\"");
-            const DWORD essSuiteGate= runCli(instbuildExe, L"--validate --edition=essentials \"" + suiteRsip.wstring() + L"\"");
-            const DWORD essVpatGate = runCli(instbuildExe, L"--emit-vpat --edition=essentials \"" + stdSampleRsip.wstring() + L"\" \"" + (rsscWorkDir / L"ess-vpat").wstring() + L"\"");
+            // 7a. With NO `.rswlic` license file present, `instbuild.exe` MUST present `Community Edition` (`100% Architect Parity`)!
+            const DWORD licStatRc   = runCli(instbuildExe, L"--license-status --diagnostics=json");
+            const DWORD comSuiteOk  = runCli(instbuildExe, L"--validate \"" + suiteRsip.wstring() + L"\"");
 
-            // Developer UNLOCKS .rssc & .MSM compilation, while still gating .rsis Suites & --emit-vpat to Architect / Community!
-            const DWORD devRsscOk   = runCli(instbuildExe, L"--validate --edition=developer \"" + sampleScriptPath.wstring() + L"\"");
-            const DWORD devSuiteGate= runCli(instbuildExe, L"--validate --edition=developer \"" + suiteRsip.wstring() + L"\"");
+            // 7b. Ephemeral NIST P-256 ECDSA (`bcrypt.dll`) `.rswlic` Signing, Verification, & Tamper Rejection (`RSW098`)!
+            bool ecdsaSignVerifyOk = false;
+            bool tamperRejectedOk  = false;
+            DWORD tamperedCliRc    = 0;
+            {
+                auto b64EncodeTest = [](const std::uint8_t* data, std::size_t len) -> std::string {
+                    static constexpr char kTab[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+                    std::string out;
+                    for (std::size_t i = 0; i < len; i += 3) {
+                        const std::uint32_t b0 = data[i];
+                        const std::uint32_t b1 = (i + 1 < len) ? data[i + 1] : 0u;
+                        const std::uint32_t b2 = (i + 2 < len) ? data[i + 2] : 0u;
+                        const std::uint32_t n  = (b0 << 16) | (b1 << 8) | b2;
+                        out.push_back(kTab[(n >> 18) & 0x3Fu]);
+                        out.push_back(kTab[(n >> 12) & 0x3Fu]);
+                        out.push_back((i + 1 < len) ? kTab[(n >> 6) & 0x3Fu] : '=');
+                        out.push_back((i + 2 < len) ? kTab[n & 0x3Fu]        : '=');
+                    }
+                    return out;
+                };
 
-            // Community & Architect BOTH pass 100% of capabilities (`Community == 100% Architect Parity`)!
-            const DWORD comSuiteOk  = runCli(instbuildExe, L"--validate --edition=community \"" + suiteRsip.wstring() + L"\"");
-            const DWORD arcSuiteOk  = runCli(instbuildExe, L"--validate --edition=architect \"" + suiteRsip.wstring() + L"\"");
-            Check(essMsiOk == 0 && essRsscGate != 0 && essSuiteGate != 0 && essVpatGate != 0 &&
-                  devRsscOk == 0 && devSuiteGate != 0 && comSuiteOk == 0 && arcSuiteOk == 0,
-                  "Four-Edition capability gates (--edition=community|essentials|developer|architect) enforce exact tier rules & Community == Architect parity",
-                  "essMsi=" + std::to_string(essMsiOk) + " essRssc=" + std::to_string(essRsscGate) +
-                  " devRssc=" + std::to_string(devRsscOk) + " devSuite=" + std::to_string(devSuiteGate) +
-                  " comSuite=" + std::to_string(comSuiteOk) + " arcSuite=" + std::to_string(arcSuiteOk));
+                BCRYPT_ALG_HANDLE hAlg = nullptr;
+                BCRYPT_KEY_HANDLE hKey = nullptr;
+                std::array<std::uint8_t, 64> testPubQxQy{};
+                if (::BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_ECDSA_P256_ALGORITHM, nullptr, 0) == 0 &&
+                    ::BCryptGenerateKeyPair(hAlg, &hKey, 256, 0) == 0 &&
+                    ::BCryptFinalizeKeyPair(hKey, 0) == 0) {
+                    ULONG cbPub = 0;
+                    ::BCryptExportKey(hKey, nullptr, BCRYPT_ECCPUBLIC_BLOB, nullptr, 0, &cbPub, 0);
+                    std::vector<UCHAR> pubBlob(cbPub);
+                    if (cbPub >= sizeof(BCRYPT_ECCKEY_BLOB) + 64 &&
+                        ::BCryptExportKey(hKey, nullptr, BCRYPT_ECCPUBLIC_BLOB, pubBlob.data(), cbPub, &cbPub, 0) == 0) {
+                        std::memcpy(testPubQxQy.data(), pubBlob.data() + sizeof(BCRYPT_ECCKEY_BLOB), 64);
+                    }
+
+                    auto makeSignedCert = [&](const std::string& prod, const std::string& ed) -> std::string {
+                        std::map<std::string, std::string> f{
+                            {"edition",    ed},
+                            {"format",     "RSWLIC1"},
+                            {"issueddate", "2026-11-27"},
+                            {"licensee",   "Unit Test Studio Team"},
+                            {"licenseid",  "RSW-UNITTEST-001"},
+                            {"product",    prod},
+                            {"seats",      "3"}
+                        };
+                        std::ostringstream can;
+                        can << "RSWLIC1_CANONICAL_V1\n";
+                        for (const auto& [k, v] : f) can << k << "=" << v << "\n";
+                        std::array<std::uint8_t, 32> digest{};
+                        rsw::license_detail::ComputeSha256Raw(can.str(), digest);
+                        std::array<std::uint8_t, 64> sig{};
+                        ULONG cbSig = 0;
+                        ::BCryptSignHash(hKey, nullptr, digest.data(), 32, sig.data(), 64, &cbSig, 0);
+                        std::ostringstream doc;
+                        doc << "-----BEGIN RAGGIESOFT LICENSE-----\r\n"
+                            << "Format     = RSWLIC1\r\n"
+                            << "LicenseId  = RSW-UNITTEST-001\r\n"
+                            << "Product    = " << prod << "\r\n"
+                            << "Edition    = " << ed << "\r\n"
+                            << "Licensee   = Unit Test Studio Team\r\n"
+                            << "Seats      = 3\r\n"
+                            << "IssuedDate = 2026-11-27\r\n"
+                            << "Signature  = " << b64EncodeTest(sig.data(), 64) << "\r\n"
+                            << "-----END RAGGIESOFT LICENSE-----\r\n";
+                        return doc.str();
+                    };
+
+                    rsw::RswLicenseCertificate cEss{}, cDev{}, cArc{}, cSuite{}, cTamper{};
+                    std::string lErr;
+                    const std::string validEssTxt = makeSignedCert("installer-studio",  "essentials");
+                    const std::string validDevTxt = makeSignedCert("installer-studio",  "developer");
+                    const std::string validArcTxt = makeSignedCert("installer-studio",  "architect");
+                    const std::string validSteTxt = makeSignedCert("raggiesoft-studio", "architect");
+
+                    ecdsaSignVerifyOk =
+                        rsw::VerifyRswLicenseTextWithPublicKey(validEssTxt, "installer-studio", testPubQxQy, cEss, lErr) &&
+                        cEss.edition == rsw::RswIdeEdition::Essentials &&
+                        rsw::VerifyRswLicenseTextWithPublicKey(validDevTxt, "installer-studio", testPubQxQy, cDev, lErr) &&
+                        cDev.edition == rsw::RswIdeEdition::Developer &&
+                        rsw::VerifyRswLicenseTextWithPublicKey(validArcTxt, "installer-studio", testPubQxQy, cArc, lErr) &&
+                        cArc.edition == rsw::RswIdeEdition::Architect &&
+                        rsw::VerifyRswLicenseTextWithPublicKey(validSteTxt, "installer-studio", testPubQxQy, cSuite, lErr) &&
+                        cSuite.edition == rsw::RswIdeEdition::Architect;
+
+                    // Tamper `Edition = essentials` -> `Edition = architect` without private key -> MUST fail with `RSW098`!
+                    std::string forgedTxt = validEssTxt;
+                    const auto pos = forgedTxt.find("essentials");
+                    if (pos != std::string::npos) forgedTxt.replace(pos, 10, "architect ");
+                    tamperRejectedOk = !rsw::VerifyRswLicenseTextWithPublicKey(forgedTxt, "installer-studio", testPubQxQy, cTamper, lErr) &&
+                                       (lErr.find("[RSW098]") != std::string::npos);
+
+                    const auto forgedLicPath = rsscWorkDir / L"forged-architect.rswlic";
+                    {
+                        std::ofstream fl(forgedLicPath, std::ios::binary | std::ios::trunc);
+                        fl.write(forgedTxt.data(), static_cast<std::streamsize>(forgedTxt.size()));
+                    }
+                    tamperedCliRc = runCli(instbuildExe, L"--license-file=\"" + forgedLicPath.wstring() + L"\" --validate \"" + stdSampleRsip.wstring() + L"\"");
+                }
+                if (hKey) ::BCryptDestroyKey(hKey);
+                if (hAlg) ::BCryptCloseAlgorithmProvider(hAlg, 0);
+            }
+
+            // 7c. Four-Edition Capability Predicates & Validator Enforcement (`Essentials`, `Developer`, `Architect`, `Community`)!
+            rsw::RswManifestDocument stdRawDoc, stdResDoc;
+            std::string stdLoadErr;
+            rsw::LoadManifestFile(stdSampleRsip, stdRawDoc, stdLoadErr);
+            rsw::ResolveManifestIncludesAndVars(stdRawDoc, {}, stdResDoc, stdLoadErr);
+            const bool essMsiOk     = rsw::ValidateManifestDocument(stdResDoc, hostArch, rsw::RswIdeEdition::Essentials).IsOk();
+            const bool essGatesOk   = !rsw::EditionSupportsNativeEngineAndScripting(rsw::RswIdeEdition::Essentials) &&
+                                      !rsw::EditionSupportsCompilingMergeModules(rsw::RswIdeEdition::Essentials) &&
+                                      !rsw::EditionSupportsUnifiedSuites(rsw::RswIdeEdition::Essentials) &&
+                                      !rsw::EditionSupportsAutoVpatExport(rsw::RswIdeEdition::Essentials);
+            const bool devGatesOk   = rsw::EditionSupportsNativeEngineAndScripting(rsw::RswIdeEdition::Developer) &&
+                                      rsw::EditionSupportsCompilingMergeModules(rsw::RswIdeEdition::Developer) &&
+                                      !rsw::EditionSupportsUnifiedSuites(rsw::RswIdeEdition::Developer) &&
+                                      !rsw::EditionSupportsAutoVpatExport(rsw::RswIdeEdition::Developer);
+            const bool arcParityOk  = rsw::EditionSupportsUnifiedSuites(rsw::RswIdeEdition::Community) &&
+                                      rsw::EditionSupportsUnifiedSuites(rsw::RswIdeEdition::Architect) &&
+                                      rsw::EditionSupportsMspPatchesAndMstTransforms(rsw::RswIdeEdition::Community) &&
+                                      rsw::EditionSupportsMspPatchesAndMstTransforms(rsw::RswIdeEdition::Architect);
+
+            Check(licStatRc == 0 && comSuiteOk == 0 && ecdsaSignVerifyOk && tamperRejectedOk && tamperedCliRc != 0 &&
+                  essMsiOk && essGatesOk && devGatesOk && arcParityOk,
+                  "Cryptographic ECDSA P-256 .rswlic licensing (No License == Community Edition, RSW098 tamper rejection) & Four-Edition capability gates verified",
+                  "licStat=" + std::to_string(licStatRc) + " ecdsa=" + std::to_string(ecdsaSignVerifyOk) +
+                  " tamper=" + std::to_string(tamperRejectedOk) + " cliTamperRc=" + std::to_string(tamperedCliRc) +
+                  " essMsi=" + std::to_string(essMsiOk));
 
             // Test standalone `rswsfx.exe --pack` building a working self-extracting `.exe` and extracting it silently (`/s`)!
             const auto rswSfxExe    = binDir / L"rswsfx.exe";
@@ -2480,8 +2592,12 @@ int wmain() {
                 makeDlgRsip(goodDlgRsip, true);
 
                 const DWORD badDlgRc  = runCli(instbuildExe, L"--validate \"" + badCtrlRsip.wstring() + L"\"");
-                const DWORD essGateRc = runCli(instbuildExe, L"--validate --edition=essentials \"" + goodDlgRsip.wstring() + L"\"");
-                const DWORD devPassRc = runCli(instbuildExe, L"--validate --edition=developer \"" + goodDlgRsip.wstring() + L"\"");
+                rsw::RswManifestDocument goodDlgRaw, goodDlgRes;
+                std::string dlgLoadErr;
+                rsw::LoadManifestFile(goodDlgRsip, goodDlgRaw, dlgLoadErr);
+                rsw::ResolveManifestIncludesAndVars(goodDlgRaw, {}, goodDlgRes, dlgLoadErr);
+                const bool essGateBlocked = !rsw::ValidateManifestDocument(goodDlgRes, hostArch, rsw::RswIdeEdition::Essentials).IsOk();
+                const bool devPassOk      = rsw::ValidateManifestDocument(goodDlgRes, hostArch, rsw::RswIdeEdition::Developer).IsOk();
                 const DWORD bldDlgRc  = runCli(instbuildExe, L"\"" + goodDlgRsip.wstring() + L"\" --out-dir=\"" + dlgOutDir.wstring() + L"\" --output-name=custom-dlg-pkg");
                 std::vector<std::uint8_t> setupBytes;
                 rsw::ReadBinaryFileBytes(dlgOutDir / L"custom-dlg-pkg-setup.exe", setupBytes, surgErr);
@@ -2490,9 +2606,9 @@ int wmain() {
                     (setupRaw.find("CustomDialogCount=1") != std::string::npos) &&
                     (setupRaw.find("CustomControl_0_Property=API_ENDPOINT") != std::string::npos);
 
-                Check(badDlgRc != 0 && essGateRc != 0 && devPassRc == 0 && bldDlgRc == 0 && stampedCustomDlg,
+                Check(badDlgRc != 0 && essGateBlocked && devPassOk && bldDlgRc == 0 && stampedCustomDlg,
                       "v0.7.0 Custom [Dialog.*] & [Control.*] enforce RSW066/RSW093 and stamp #202 bootstrapper controls & SecureCustomProperties",
-                      "bad=" + std::to_string(badDlgRc) + " ess=" + std::to_string(essGateRc) + " dev=" + std::to_string(devPassRc) + " stamped=" + std::to_string(stampedCustomDlg));
+                      "bad=" + std::to_string(badDlgRc) + " essBlk=" + std::to_string(essGateBlocked) + " devOk=" + std::to_string(devPassOk) + " stamped=" + std::to_string(stampedCustomDlg));
             }
 
             // =========================================================================
@@ -2585,8 +2701,12 @@ int wmain() {
                       << "[Payload.Main]\r\n"
                       << "Source = " << rsw::WideToUtf8(srcPay1.wstring()) << "\r\n";
                 }
-                const DWORD minorEssGateRc = runCli(instbuildExe, L"--validate --edition=essentials \"" + minorRsip.wstring() + L"\"");
-                const DWORD minorBldRc     = runCli(instbuildExe, L"--edition=architect \"" + minorRsip.wstring() + L"\" --out-dir=\"" + upgOutDir.wstring() + L"\" --output-name=upg-v101-minor");
+                rsw::RswManifestDocument minorRaw, minorRes;
+                std::string minLoadErr;
+                rsw::LoadManifestFile(minorRsip, minorRaw, minLoadErr);
+                rsw::ResolveManifestIncludesAndVars(minorRaw, {}, minorRes, minLoadErr);
+                const DWORD minorEssGateRc = rsw::ValidateManifestDocument(minorRes, hostArch, rsw::RswIdeEdition::Essentials).IsOk() ? 0u : 1u;
+                const DWORD minorBldRc     = runCli(instbuildExe, L"\"" + minorRsip.wstring() + L"\" --out-dir=\"" + upgOutDir.wstring() + L"\" --output-name=upg-v101-minor");
                 std::string minorProdCode;
                 if (minorBldRc == 0) {
                     MSIHANDLE hDb = 0;

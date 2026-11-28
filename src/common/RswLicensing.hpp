@@ -110,6 +110,15 @@ struct RswLicenseStatus {
 
 namespace license_detail {
 
+/// Trims ASCII spaces, tabs, CR (`\r`), and LF (`\n`) so CRLF and LF `.rswlic` files parse identically!
+inline std::string TrimLicWs(std::string_view sv) {
+    std::size_t b = 0;
+    std::size_t e = sv.size();
+    while (b < e && std::isspace(static_cast<unsigned char>(sv[b]))) ++b;
+    while (e > b && std::isspace(static_cast<unsigned char>(sv[e - 1]))) --e;
+    return std::string(sv.substr(b, e - b));
+}
+
 /// Decodes an RFC 4648 Base64 string (ignoring embedded whitespace) into raw bytes.
 inline bool Base64DecodeBytes(std::string_view b64, std::vector<std::uint8_t>& out) {
     out.clear();
@@ -216,7 +225,7 @@ inline std::filesystem::path GetKnownFolder(REFKNOWNFOLDERID rfid, const wchar_t
 }
 
 inline bool ParseEditionSlugStrict(std::string_view slug, RswIdeEdition& outEd) noexcept {
-    const std::string low = AsciiLower(TrimAscii(slug));
+    const std::string low = AsciiLower(TrimLicWs(slug));
     if (low == "community")  { outEd = RswIdeEdition::Community;  return true; }
     if (low == "essentials") { outEd = RswIdeEdition::Essentials; return true; }
     if (low == "developer")  { outEd = RswIdeEdition::Developer;  return true; }
@@ -254,14 +263,14 @@ inline bool VerifyRswLicenseTextWithPublicKey(
     std::string& outError)
 {
     outCert = {};
-    std::string text = TrimAscii(rawInput);
+    std::string text = license_detail::TrimLicWs(rawInput);
     // Strip UTF-8 BOM if present
     if (text.size() >= 3 &&
         static_cast<unsigned char>(text[0]) == 0xEF &&
         static_cast<unsigned char>(text[1]) == 0xBB &&
         static_cast<unsigned char>(text[2]) == 0xBF) {
         text.erase(0, 3);
-        text = TrimAscii(text);
+        text = license_detail::TrimLicWs(text);
     }
 
     // Allow CI/CD secrets (`RSW_LICENSE_KEY`) to supply single-line Base64-encoded `.rswlic` text!
@@ -282,7 +291,7 @@ inline bool VerifyRswLicenseTextWithPublicKey(
     std::string sigB64;
 
     while (std::getline(iss, line)) {
-        const std::string t = TrimAscii(line);
+        const std::string t = license_detail::TrimLicWs(line);
         if (t.empty() || t[0] == ';' || t[0] == '#') continue;
         if (t == "-----BEGIN RAGGIESOFT LICENSE-----") { insideBlock = true; continue; }
         if (t == "-----END RAGGIESOFT LICENSE-----")   { break; }
@@ -290,8 +299,8 @@ inline bool VerifyRswLicenseTextWithPublicKey(
 
         const auto eq = t.find('=');
         if (eq == std::string::npos) continue;
-        const std::string k = AsciiLower(TrimAscii(std::string_view(t).substr(0, eq)));
-        const std::string v = TrimAscii(std::string_view(t).substr(eq + 1));
+        const std::string k = AsciiLower(license_detail::TrimLicWs(std::string_view(t).substr(0, eq)));
+        const std::string v = license_detail::TrimLicWs(std::string_view(t).substr(eq + 1));
         if (k.empty()) continue;
         if (k == "signature") sigB64 = v;
         else fields[k] = v;

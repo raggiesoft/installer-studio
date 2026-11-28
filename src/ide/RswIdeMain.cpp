@@ -121,11 +121,10 @@ enum IdeId : int {
     IDM_LAUNCH_MSIPRISM      = 2015,
     IDM_OPEN_OUTDIR          = 2016,
 
-    // Editions & Help Menu (`Community == 100% Architect Feature Parity`!)
-    IDM_EDITION_COMMUNITY    = 2020,
-    IDM_EDITION_ESSENTIALS   = 2021,
-    IDM_EDITION_DEVELOPER    = 2022,
-    IDM_EDITION_ARCHITECT    = 2023,
+    // Help & Cryptographic `.rswlic` Licensing Menu (`No .rswlic == Community Edition`!)
+    IDM_HELP_LICENSE_STATUS  = 2020,
+    IDM_HELP_IMPORT_LICENSE  = 2021,
+    IDM_HELP_REMOVE_LICENSE  = 2022,
     IDM_HELP_ABOUT           = 2024,
     IDM_HELP_TOPICS          = 2025,
     IDM_FILE_NEW_RSSC        = 2026,
@@ -645,6 +644,8 @@ public:
     bool                       hasActiveSuite = false;
     rsw::RswManifestDocument   astDoc{};
     rsw::RswIdeEdition         activeEdition = rsw::RswIdeEdition::Community;
+    rsw::RswLicenseStatus      licenseStatus{};
+    std::string                explicitCliLicenseFile;
     int                        activeView = VIEW_PACKAGE;
     bool                       suppressNavEvent = false;
     std::vector<TaggedControl> taggedControls;
@@ -858,21 +859,20 @@ public:
         ::AppendMenuW(hBuild, MF_STRING, IDM_LAUNCH_RSUPDATE, L"Open RaggieSoft &Updater (RsUpdate.exe)");
         ::AppendMenuW(hBuild, MF_STRING, IDM_OPEN_OUTDIR,     L"Open &Output Folder in Explorer");
 
-        HMENU hEd = ::CreatePopupMenu();
-        ::AppendMenuW(hEd, MF_STRING,              IDM_HELP_TOPICS,          L"&Help Topics (Offline C++ Help Viewer)\tF1");
-        ::AppendMenuW(hEd, MF_STRING,              IDM_EDITION_MATRIX,       L"Compare All 4 &Editions && Capabilities...");
-        ::AppendMenuW(hEd, MF_SEPARATOR, 0, nullptr);
-        ::AppendMenuW(hEd, MF_STRING | MF_CHECKED, IDM_EDITION_COMMUNITY,    L"&Community Edition (100% Architect Parity — Free)");
-        ::AppendMenuW(hEd, MF_STRING,              IDM_EDITION_ESSENTIALS,   L"E&ssentials Edition (Commercial Tier 1 — Guided MSI && SFX)");
-        ::AppendMenuW(hEd, MF_STRING,              IDM_EDITION_DEVELOPER,    L"&Developer Edition (Commercial Tier 2 — RaggieScript && .MSM)");
-        ::AppendMenuW(hEd, MF_STRING,              IDM_EDITION_ARCHITECT,    L"&Architect Edition (Commercial Tier 3 — Suites, .MSP && VPAT)");
-        ::AppendMenuW(hEd, MF_SEPARATOR, 0, nullptr);
-        ::AppendMenuW(hEd, MF_STRING,              IDM_HELP_ABOUT,           L"&About RaggieSoft Installer Studio...");
+        HMENU hHelp = ::CreatePopupMenu();
+        ::AppendMenuW(hHelp, MF_STRING, IDM_HELP_TOPICS,         L"&Help Topics (Offline C++ Help Viewer)\tF1");
+        ::AppendMenuW(hHelp, MF_SEPARATOR, 0, nullptr);
+        ::AppendMenuW(hHelp, MF_STRING, IDM_HELP_LICENSE_STATUS, L"&License && Edition Status...");
+        ::AppendMenuW(hHelp, MF_STRING, IDM_HELP_IMPORT_LICENSE, L"&Activate / Import License File (.rswlic)...");
+        ::AppendMenuW(hHelp, MF_STRING, IDM_HELP_REMOVE_LICENSE, L"&Remove Installed User License (Return to Community)");
+        ::AppendMenuW(hHelp, MF_STRING, IDM_EDITION_MATRIX,      L"Compare All 4 &Editions && Capabilities...");
+        ::AppendMenuW(hHelp, MF_SEPARATOR, 0, nullptr);
+        ::AppendMenuW(hHelp, MF_STRING, IDM_HELP_ABOUT,          L"&About RaggieSoft Installer Studio...");
 
         ::AppendMenuW(hBar, MF_POPUP, reinterpret_cast<UINT_PTR>(hFile),  L"&File");
         ::AppendMenuW(hBar, MF_POPUP, reinterpret_cast<UINT_PTR>(hWiz),   L"&Wizards (Aero)");
         ::AppendMenuW(hBar, MF_POPUP, reinterpret_cast<UINT_PTR>(hBuild), L"&Build && Compliance");
-        ::AppendMenuW(hBar, MF_POPUP, reinterpret_cast<UINT_PTR>(hEd),    L"&Editions && Help");
+        ::AppendMenuW(hBar, MF_POPUP, reinterpret_cast<UINT_PTR>(hHelp),  L"&Help");
         return hBar;
     }
 
@@ -2626,18 +2626,22 @@ public:
 
         HMENU hMenu = ::GetMenu(hWnd);
         if (hMenu) {
-            const int activeMenuId = IDM_EDITION_COMMUNITY + static_cast<int>(activeEdition);
-            ::CheckMenuRadioItem(hMenu, IDM_EDITION_COMMUNITY, IDM_EDITION_ARCHITECT, activeMenuId, MF_BYCOMMAND);
+            std::error_code licEc;
+            const auto userStore = rsw::GetUserLicenseStoreDir();
+            const bool hasUserInstalledLic =
+                std::filesystem::is_regular_file(userStore / L"installer-studio.rswlic", licEc) ||
+                std::filesystem::is_regular_file(userStore / L"raggiesoft-studio.rswlic", licEc);
             auto enMenu = [&](UINT cmdId, bool en) {
                 ::EnableMenuItem(hMenu, cmdId, MF_BYCOMMAND | (en ? MF_ENABLED : MF_GRAYED));
             };
-            enMenu(IDM_FILE_NEW_RSSC,   canScript);
-            enMenu(IDM_SOURCE_FORMAT,   canScript);
-            enMenu(IDM_WIZ_SUITE,       canSuite);
-            enMenu(IDM_WIZ_RELEASE,     canMsp);
-            enMenu(IDM_BUILD_MSM,       canMsm);
-            enMenu(IDM_BUILD_VPAT,      canVpat);
-            enMenu(IDM_LAUNCH_MSIPRISM, canPrism);
+            enMenu(IDM_HELP_REMOVE_LICENSE, hasUserInstalledLic);
+            enMenu(IDM_FILE_NEW_RSSC,       canScript);
+            enMenu(IDM_SOURCE_FORMAT,       canScript);
+            enMenu(IDM_WIZ_SUITE,           canSuite);
+            enMenu(IDM_WIZ_RELEASE,         canMsp);
+            enMenu(IDM_BUILD_MSM,           canMsm);
+            enMenu(IDM_BUILD_VPAT,          canVpat);
+            enMenu(IDM_LAUNCH_MSIPRISM,     canPrism);
             ::DrawMenuBar(hWnd);
         }
 
@@ -2666,6 +2670,33 @@ public:
 
         UpdateWindowCaptionWithEdition();
         ::InvalidateRect(hWnd, nullptr, FALSE);
+    }
+
+    /// Verifies an offline ECDSA P-256 `.rswlic` license file via `bcrypt.dll` and installs it for the user!
+    void ActivateLicenseFromPath(const std::filesystem::path& rswlicPath) {
+        rsw::RswLicenseStatus newStatus{};
+        std::string err;
+        if (!rsw::ImportAndInstallUserLicenseFile(rswlicPath, newStatus, err)) {
+            const std::wstring wErr = rsw::Utf8ToWide(err);
+            AppendConsole(L"[LICENSE ERROR] " + wErr + L"\r\n");
+            ::TaskDialog(hWnd, ::GetModuleHandleW(nullptr),
+                         L"RaggieSoft License Verification Failed",
+                         L"Could not verify .rswlic signature",
+                         wErr.c_str(), TDCBF_OK_BUTTON, TD_ERROR_ICON, nullptr);
+            return;
+        }
+        explicitCliLicenseFile.clear();
+        licenseStatus = std::move(newStatus);
+        activeEdition = licenseStatus.edition;
+        ApplyEditionUiState();
+        const std::wstring summary = rsw::BuildLicenseStatusSummaryText(licenseStatus);
+        AppendConsole(L"[LICENSE] Activated " + std::wstring(rsw::EditionDisplayName(activeEdition)) +
+                      L" (" + rsw::Utf8ToWide(licenseStatus.cert.licenseId) + L" — " +
+                      rsw::Utf8ToWide(licenseStatus.cert.licensee) + L").\r\n");
+        ::TaskDialog(hWnd, ::GetModuleHandleW(nullptr),
+                     L"RaggieSoft License Activated",
+                     (std::wstring(rsw::EditionDisplayName(activeEdition)) + L" Unlocked").c_str(),
+                     summary.c_str(), TDCBF_OK_BUTTON, TD_INFORMATION_ICON, nullptr);
     }
 
     void UpdateWindowCaptionWithEdition() {
@@ -2990,17 +3021,19 @@ public:
             return;
         }
         const std::wstring arch   = rsw::Utf8ToWide(SelectedArch());
-        const std::wstring edArg  = L" --edition=" + rsw::Utf8ToWide(rsw::EditionSlug(activeEdition));
+        const std::wstring licArg = explicitCliLicenseFile.empty()
+            ? L""
+            : (L" --license-file=\"" + rsw::Utf8ToWide(explicitCliLicenseFile) + L"\"");
         const bool buildUniv = (!mergeModule && !isRsscMode) && ResolvedEffectiveDoc().GetBool("Package", "", "BuildUniversal", false);
         std::wstring cmd = L"\"" + cliExe.wstring() + L"\" ";
         if (mergeModule) {
             const auto msmOut = currentFilePath.parent_path() / L"out" /
                                 (currentFilePath.stem().wstring() + L"-" + arch + L".msm");
-            cmd += L"--emit-msm \"" + currentFilePath.wstring() + L"\" \"" + msmOut.wstring() + L"\" --arch=" + arch + edArg;
+            cmd += L"--emit-msm \"" + currentFilePath.wstring() + L"\" \"" + msmOut.wstring() + L"\" --arch=" + arch + licArg;
         } else if (buildUniv) {
-            cmd += L"\"" + currentFilePath.wstring() + L"\" --universal" + edArg;
+            cmd += L"\"" + currentFilePath.wstring() + L"\" --universal" + licArg;
         } else {
-            cmd += L"\"" + currentFilePath.wstring() + L"\" --arch=" + arch + edArg;
+            cmd += L"\"" + currentFilePath.wstring() + L"\" --arch=" + arch + licArg;
         }
         ::SetWindowTextW(hConsoleEdit, (L"> " + cmd + L"\r\n").c_str());
         ::UpdateWindow(hConsoleEdit);
@@ -3890,9 +3923,7 @@ public:
             static_cast<float>(pillW), static_cast<float>(S(28)), static_cast<float>(S(14)), &pillBr, &pillPen);
         ::SelectObject(hdc, hFontBold);
         ::SetTextColor(hdc, RGB(255, 255, 255));
-        const std::wstring edBadge = (activeEdition == rsw::RswIdeEdition::Community)
-            ? L"COMMUNITY • ARCHITECT PARITY"
-            : rsw::ui::UpperWide(std::wstring(rsw::EditionDisplayName(activeEdition)));
+        const std::wstring edBadge = rsw::ui::UpperWide(std::wstring(rsw::EditionDisplayName(activeEdition)));
         ::DrawTextW(hdc, edBadge.c_str(), -1, &pillRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
         if (activeView == VIEW_CPP_WIZARD && previewCanvasRc.right > previewCanvasRc.left + S(160)) {
@@ -4083,8 +4114,23 @@ public:
             case WM_CREATE:
                 self->CreateControls();
                 rsw::ui::ApplyWindowChromeAndA11y(hWnd, self->theme);
+                ::DragAcceptFiles(hWnd, TRUE);
                 self->LayoutChildren();
                 return 0;
+            case WM_DROPFILES: {
+                HDROP hDrop = reinterpret_cast<HDROP>(wParam);
+                wchar_t droppedBuf[MAX_PATH * 2]{};
+                if (::DragQueryFileW(hDrop, 0, droppedBuf, static_cast<UINT>(std::size(droppedBuf))) > 0) {
+                    const std::filesystem::path droppedPath(droppedBuf);
+                    if (_wcsicmp(droppedPath.extension().wstring().c_str(), L".rswlic") == 0) {
+                        self->ActivateLicenseFromPath(droppedPath);
+                    } else {
+                        self->OpenProjectOrSuiteFile(droppedPath);
+                    }
+                }
+                ::DragFinish(hDrop);
+                return 0;
+            }
             case WM_SIZE:
                 self->LayoutChildren();
                 return 0;
@@ -4366,25 +4412,42 @@ public:
                         self->LaunchContextHelp();
                         return 0;
 
-                    // --- Editions & About Menu (`Community == 100% Architect Parity`) ---
+                    // --- Help & Cryptographic `.rswlic` Licensing Menu (`No License File == Community Edition`) ---
+                    case IDM_HELP_LICENSE_STATUS: {
+                        const std::wstring body = rsw::BuildLicenseStatusSummaryText(self->licenseStatus);
+                        const std::wstring head = self->licenseStatus.isCommercialLicensed
+                            ? (std::wstring(rsw::EditionDisplayName(self->activeEdition)) + L" (Verified .rswlic)")
+                            : L"Community Edition (No .rswlic Commercial License File Installed)";
+                        ::TaskDialog(hWnd, ::GetModuleHandleW(nullptr),
+                                     L"License & Edition Status",
+                                     head.c_str(), body.c_str(), TDCBF_OK_BUTTON, TD_INFORMATION_ICON, nullptr);
+                        return 0;
+                    }
+                    case IDM_HELP_IMPORT_LICENSE: {
+                        std::wstring chosenLic;
+                        if (self->PickPathDialog(false, L"RaggieSoft License Files (*.rswlic)\0*.rswlic\0All Files (*.*)\0*.*\0", chosenLic)) {
+                            self->ActivateLicenseFromPath(chosenLic);
+                        }
+                        return 0;
+                    }
+                    case IDM_HELP_REMOVE_LICENSE: {
+                        if (rsw::RemoveUserInstalledLicenseFiles()) {
+                            self->explicitCliLicenseFile.clear();
+                            std::string licErr;
+                            rsw::ResolveActiveProductLicense("", self->ideExeDir, self->licenseStatus, licErr);
+                            self->activeEdition = self->licenseStatus.edition;
+                            self->ApplyEditionUiState();
+                            self->AppendConsole(L"[LICENSE] Removed installed user .rswlic license file — active edition is now " +
+                                                std::wstring(rsw::EditionDisplayName(self->activeEdition)) + L".\r\n");
+                        }
+                        return 0;
+                    }
                     case IDM_EDITION_MATRIX: {
                         const std::wstring body = rsw::BuildEditionsComparisonText(self->activeEdition);
                         ::TaskDialog(hWnd, ::GetModuleHandleW(nullptr),
                                      L"RaggieSoft Installer Studio — Official Editions Matrix",
-                                     L"Four Product Editions (Community Permanently Equals 100% of Architect)",
+                                     L"Four Product Editions (No .rswlic File == Community Edition)",
                                      body.c_str(), TDCBF_OK_BUTTON, TD_INFORMATION_ICON, nullptr);
-                        return 0;
-                    }
-                    case IDM_EDITION_COMMUNITY:
-                    case IDM_EDITION_ESSENTIALS:
-                    case IDM_EDITION_DEVELOPER:
-                    case IDM_EDITION_ARCHITECT: {
-                        self->activeEdition = static_cast<rsw::RswIdeEdition>(id - IDM_EDITION_COMMUNITY);
-                        rsw::SavePersistedEdition(self->activeEdition);
-                        self->ApplyEditionUiState();
-                        self->AppendConsole(L"[EDITION] Active IDE & CLI tier set to " +
-                                            std::wstring(rsw::EditionDisplayName(self->activeEdition)) +
-                                            L" — " + std::wstring(rsw::EditionSummary(self->activeEdition)) + L"\r\n");
                         return 0;
                     }
                     case IDM_HELP_ABOUT: {
@@ -5336,13 +5399,27 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
             exportV070PrevDir = args[i + 1];
             rsw::ui::ForcedThemeOverride() = 1;
             ++i;
+        } else if (args[i].rfind(L"--license-file=", 0) == 0) {
+            ide.explicitCliLicenseFile = rsw::WideToUtf8(args[i].substr(15));
+        } else if (args[i] == L"--license-file" && i + 1 < args.size()) {
+            ide.explicitCliLicenseFile = rsw::WideToUtf8(args[++i]);
         } else if (std::filesystem::exists(args[i])) {
             initialProjectArg = args[i];
         }
     }
 
+    std::string startupLicErr;
     if (exportShotDir.empty() && exportV070PrevDir.empty()) {
-        ide.activeEdition = rsw::LoadPersistedEdition();
+        if (!rsw::ResolveActiveProductLicense(ide.explicitCliLicenseFile, ide.ideExeDir, ide.licenseStatus, startupLicErr)) {
+            ide.licenseStatus = {};
+            ide.activeEdition = rsw::RswIdeEdition::Community;
+        } else {
+            ide.activeEdition = ide.licenseStatus.edition;
+        }
+    } else {
+        // Automated website screenshot exports deterministically capture Community Edition (no license file).
+        ide.licenseStatus = {};
+        ide.activeEdition = rsw::RswIdeEdition::Community;
     }
     if (!initialProjectArg.empty()) {
         ide.OpenProjectOrSuiteFile(initialProjectArg);
@@ -5350,8 +5427,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         ide.LoadProjectText(BuildStarterRsipTemplate(), {});
     }
     ide.ApplyEditionUiState();
+    if (!startupLicErr.empty()) {
+        ide.AppendConsole(L"[LICENSE ERROR] " + rsw::Utf8ToWide(startupLicErr) + L" — presenting Community Edition.\r\n");
+    }
     ide.AppendConsole(L"RaggieSoft Installer Studio v" + std::wstring(rsw::kVersionStringWide) +
-                      L" ready. Press F1 for the Offline C++ Help Viewer, Ctrl+W for the Aero Project Assistant, or F5 to build.\r\n");
+                      L" [" + std::wstring(rsw::EditionDisplayName(ide.activeEdition)) +
+                      L"] ready. Press F1 for the Offline C++ Help Viewer, Ctrl+W for the Aero Project Assistant, or F5 to build.\r\n");
 
     ACCEL accels[] = {
         {FVIRTKEY,                    VK_F1, IDM_HELP_TOPICS},
