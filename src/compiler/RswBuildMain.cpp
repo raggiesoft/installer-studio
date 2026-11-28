@@ -868,7 +868,8 @@ int wmain(int argc, wchar_t* argv[]) {
                 if (mKind == "msm" || mKind == "sfx" || mKind == "suite") continue;
 
                 const std::string mEng  = rsw::AsciiLower(mDoc.GetString("Package", "", "Engine", "msi"));
-                const bool mIsRsscExe   = (mEng == "raggiescript" || mEng == "native");
+                const bool mIsAddon     = (mKind == "addon");
+                const bool mIsRsscExe   = mIsAddon || (mEng == "raggiescript" || mEng == "native");
                 const std::string mName = mDoc.GetString("Package", "", "Name", proj.id);
                 const std::string mVer  = mDoc.GetString("Package", "", "Version", "1.0.0");
                 const std::string mUpg  = mDoc.GetString("Package", "", "UpgradeCode");
@@ -885,9 +886,11 @@ int wmain(int argc, wchar_t* argv[]) {
                 synthDoc.SetString("SuitePackage", proj.id, "Version",           mVer);
                 synthDoc.SetString("SuitePackage", proj.id, "Source",            rsw::WideToUtf8(artFull.wstring()));
                 if (!mUpg.empty()) synthDoc.SetString("SuitePackage", proj.id, "UpgradeCode", mUpg);
-                synthDoc.SetString("SuitePackage", proj.id, "Engine",            mIsRsscExe ? "raggiescript" : "msi");
+                synthDoc.SetString("SuitePackage", proj.id, "Engine",            mIsAddon ? "addon" : (mIsRsscExe ? "raggiescript" : "msi"));
                 synthDoc.SetString("SuitePackage", proj.id, "Required",          proj.requiredInSuite ? "true" : "false");
                 synthDoc.SetString("SuitePackage", proj.id, "SelectedByDefault", proj.selectedByDefault ? "true" : "false");
+                synthDoc.SetString("SuitePackage", proj.id, "RollbackBoundary",  proj.rollbackBoundary ? "true" : "false");
+                synthDoc.SetString("SuitePackage", proj.id, "ForwardInstallDir", proj.forwardInstallDir ? "true" : "false");
                 ++bundledChildren;
             }
 
@@ -936,4 +939,5 @@ int wmain(int argc, wchar_t* argv[]) {
     }
     return ProcessSingleProject(
         inputPath, cliVariables, archOverride, universalFlag,
-     
+        validateOnly, jsonDiagnostics, emitVpatFlag, licenseStatus, pkgOverrides, compilerExeDir);
+}
