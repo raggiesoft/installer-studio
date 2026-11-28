@@ -179,6 +179,10 @@ struct NativeOrSfxManifest {
     int           waitSpawnGraceMs      = 1500;
     bool          autoStartExtract      = false;
 
+    // `[Upgrade]` static-CDN updater metadata (`v0.8.0` -> `<InstallDir>\UpdateConfig.json` for `RsUpdate.exe`)
+    std::string   updateFeedUrl;
+    std::string   updateChannel         = "stable";
+
     std::vector<NativeFolderRule>    folders;
     std::vector<NativeShortcutRule>  shortcuts;
     std::vector<NativeRegistryRule>  registries;
@@ -677,7 +681,9 @@ inline std::string SerializeNativeOrSfxManifestIni(const NativeOrSfxManifest& m)
         << "WaitMode="              << EscapeSingleLine(m.waitMode) << "\n"
         << "WaitForProcess="        << EscapeSingleLine(m.waitForProcess) << "\n"
         << "WaitSpawnGraceMs="      << m.waitSpawnGraceMs << "\n"
-        << "AutoStartExtract="      << (m.autoStartExtract ? "true" : "false") << "\n";
+        << "AutoStartExtract="      << (m.autoStartExtract ? "true" : "false") << "\n"
+        << "UpdateFeedUrl="         << EscapeSingleLine(m.updateFeedUrl) << "\n"
+        << "UpdateChannel="         << EscapeSingleLine(m.updateChannel) << "\n";
 
     out << "FolderCount=" << m.folders.size() << "\n";
     for (std::size_t i = 0; i < m.folders.size(); ++i) {
@@ -801,6 +807,8 @@ inline NativeOrSfxManifest ParseNativeOrSfxManifestIni(std::string_view text) {
         m.waitSpawnGraceMs = std::clamp(std::atoi(kv["WaitSpawnGraceMs"].c_str()), 0, 60000);
     }
     m.autoStartExtract    = EqualsIgnoreCase(getS("AutoStartExtract", "false"), "true");
+    m.updateFeedUrl       = getS("UpdateFeedUrl");
+    m.updateChannel       = getS("UpdateChannel", "stable");
 
     const int nFold = std::clamp(std::atoi(kv["FolderCount"].c_str()), 0, 512);
     for (int i = 0; i < nFold; ++i) {
@@ -976,7 +984,30 @@ inline bool ExecuteNativeOrSfxTransaction(
         return false;
     }
 
-    // Write live rollback journal header for crash diagnostics if `Engine = native`
+    // Pre-scan any pre-existing `<InstallDir>\Uninstall.rswm` BEFORE writing the new version so
+    // upgrading a **RaggieScript EXE** cleanly prunes retired files from older versions (with full
+    // `.rswbak` LIFO rollback if any error occurs during the upgrade)!
+    std::vector<std::filesystem::path> priorVersionFiles;
+    if (!isSfx) {
+        const auto priorMetaPath = opts.targetDir / L"Uninstall.rswm";
+        if (std::filesystem::is_regular_file(priorMetaPath, ec)) {
+            std::vector<std::uint8_t> priorRaw;
+            std::string ignoreErr;
+            if (ReadBinaryFileBytes(priorMetaPath, priorRaw, ignoreErr)) {
+                auto pkv = native_detail::ParseFlatIniMap(
+                    std::string_view(reinterpret_cast<const char*>(priorRaw.data()), priorRaw.size()));
+                const int oldN = std::clamp(std::atoi(pkv["FileCount"].c_str()), 0, 65536);
+                for (int i = 0; i < oldN; ++i) {
+                    const std::string fp = pkv["File_" + std::to_string(i)];
+                    if (!fp.empty()) {
+                        priorVersionFiles.push_back(std::filesystem::path(Utf8ToWide(fp)).lexically_normal());
+                    }
+                }
+            }
+        }
+    }
+
+    // Write live rollback journal header for crash diagnostics if **RaggieScript EXE** (`mode != sfx`)
     const std::filesystem::path journalFile = opts.targetDir / L".rsw-rollback.jnl";
     if (!isSfx) {
         std::ofstream jnl(journalFile, std::ios::binary | std::ios::trunc);
@@ -1383,6 +1414,49 @@ inline bool ExecuteNativeOrSfxTransaction(
     if (std::filesystem::exists(srcStub, ec) && srcStub != uninstallExePath) {
         std::filesystem::copy_file(srcStub, uninstallExePath, std::filesystem::copy_options::overwrite_existing, ec);
         newlyWrittenFiles.push_back(uninstallExePath);
+    }
+
+    // Optional `UpdateConfig.json` (`[Upgrade] UpdateFeedUrl`) consumed zero-config by `RsUpdate.exe`!
+    if (!manifest.updateFeedUrl.empty()) {
+        const auto updCfgPath = opts.targetDir / L"UpdateConfig.json";
+        std::string appId = SlugifyName(manifest.productName);
+        if (appId.rfind("raggiesoft-", 0) == 0 && appId.size() > 11) appId = appId.substr(11);
+        std::ofstream uc(updCfgPath, std::ios::binary | std::ios::trunc);
+        if (uc) {
+            uc << "{\n"
+               << "  \"appId\": \"" << appId << "\",\n"
+               << "  \"upgradeCode\": \"" << manifest.upgradeCode << "\",\n"
+               << "  \"productName\": \"" << manifest.productName << "\",\n"
+               << "  \"installedVersion\": \"" << manifest.version << "\",\n"
+               << "  \"architecture\": \"" << manifest.architecture << "\",\n"
+               << "  \"channel\": \"" << manifest.updateChannel << "\",\n"
+               << "  \"manifestUrl\": \"" << manifest.updateFeedUrl << "\"\n"
+               << "}\n";
+            newlyWrittenFiles.push_back(updCfgPath);
+        }
+    }
+
+    // Prune any retired files from a previous **RaggieScript EXE** installation (`priorVersionFiles`)
+    // that are no longer part of `newlyWrittenFiles`!
+    if (!priorVersionFiles.empty()) {
+        std::set<std::string> activeLower;
+        for (const auto& nw : newlyWrittenFiles) {
+            activeLower.insert(AsciiLower(WideToUtf8(nw.lexically_normal().wstring())));
+        }
+        activeLower.insert(AsciiLower(WideToUtf8(uninstallExePath.lexically_normal().wstring())));
+        activeLower.insert(AsciiLower(WideToUtf8((opts.targetDir / L"Uninstall.rswm").lexically_normal().wstring())));
+        for (const auto& oldFile : priorVersionFiles) {
+            const std::string key = AsciiLower(WideToUtf8(oldFile.wstring()));
+            if (activeLower.count(key) == 0 && std::filesystem::is_regular_file(oldFile, ec)) {
+                const auto bakPath = std::filesystem::path(oldFile.wstring() + L".rswbak." + std::to_wstring(::GetCurrentProcessId()));
+                std::filesystem::remove(bakPath, ec);
+                ec.clear();
+                std::filesystem::rename(oldFile, bakPath, ec);
+                if (!ec) {
+                    backedUpFiles.push_back({oldFile, bakPath});
+                }
+            }
+        }
     }
 
     const std::string uninstKeyId = manifest.upgradeCode.empty()

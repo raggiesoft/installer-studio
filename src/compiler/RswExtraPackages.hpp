@@ -41,6 +41,7 @@
 #include "../common/RswVersion.hpp"
 #include "RswCabBuilder.hpp"
 #include "RswMsiCompiler.hpp"
+#include "RswUpdatePlanner.hpp"
 #include "RswValidator.hpp"
 
 #include <objbase.h>
@@ -402,13 +403,37 @@ inline bool ExtractMsiStreamToFile(
     return true;
 }
 
-/// Generates a genuine Windows Installer Patch Package (`.msp`) from `baseMsiPath` -> `upgradedMsiPath`!
+/// Generates a genuine Windows Installer Patch Package (`.msp`) from `baseMsiPath` -> `upgradedMsiPath`,
+/// enforcing Microsoft Component Rules (`RSW080`–`RSW086`) and stamping `MsiPatchMetadata` (`AllowRemoval = 1`)!
 inline bool GenerateMsiPatchPackage(
     const std::filesystem::path& baseMsiPath,
     const std::filesystem::path& upgradedMsiPath,
     const std::filesystem::path& outMspPath,
-    std::string& outError)
+    std::string& outError,
+    bool allowSmallUpdate = false,
+    std::string_view additionalTargetProductCodes = "")
 {
+    UpdatePlanReport plan{};
+    if (!AnalyzeInstallerUpdatePlan(baseMsiPath, upgradedMsiPath, true, plan, outError)) {
+        return false;
+    }
+    if (plan.classification == "small_update" && !allowSmallUpdate) {
+        outError = "[RSW084] Small Update detected (ProductVersion unchanged at " + plan.targetVersion +
+                   "). Bump Version for a Minor Upgrade .MSP or pass --allow-small-update for an emergency hotfix .MSP.";
+        return false;
+    }
+    if (!plan.mspEligible) {
+        for (const auto& d : plan.diagnostics) {
+            if (d.code == "RSW080" || d.code == "RSW081" || d.code == "RSW082" ||
+                d.code == "RSW083" || d.code == "RSW085" || d.code == "RSW086") {
+                outError = "[" + d.code + "] " + d.message;
+                return false;
+            }
+        }
+        outError = "GenerateMsp: Target MSI violates Windows Installer Component Rules; service via Major Upgrade instead.";
+        return false;
+    }
+
     std::error_code ec;
     std::filesystem::create_directories(outMspPath.parent_path(), ec);
     std::filesystem::remove(outMspPath, ec);
@@ -428,8 +453,8 @@ inline bool GenerateMsiPatchPackage(
     std::string upgradedVer;
 
     // 1. Inspect `base.msi` and prepare `upgraded_patch_prep.msi` (aligning `ProductCode` for Small/Minor
-    //    MSP applicability when needed, adding `PatchPackage` + `#RswPatch.cab` `Media` DiskId = 2, and
-    //    extracting updated `payload.cab` as `RswPatch.cab`!).
+    //    MSP applicability when needed, adding `PatchPackage` + `MsiPatchMetadata` + `#RswPatch.cab` `Media`
+    //    `DiskId = 100`, and extracting `payload.cab` as `RswPatch.cab`!).
     {
         ScopedMsiHandle hBase;
         ScopedMsiHandle hUpg;
@@ -458,13 +483,29 @@ inline bool GenerateMsiPatchPackage(
             msi_sql::ExecuteDdl(hUpg.Get(), WideToUtf8(updSql), outError);
         }
 
-        // Add `PatchPackage` table and `#RswPatch.cab` `Media` row (`DiskId = 100`)
+        // Add `PatchPackage`, `MsiPatchMetadata` (`AllowRemoval = 1`), and `#RswPatch.cab` `Media` row (`DiskId = 100`)
         msi_sql::ExecuteDdl(
             hUpg.Get(),
             "CREATE TABLE `PatchPackage` (`PatchId` CHAR(38) NOT NULL, `Media_` SHORT NOT NULL PRIMARY KEY `PatchId`)",
             outError);
         msi_sql::InsertRow(
             hUpg.Get(), "PatchPackage", {"PatchId", "Media_"}, {patchGuid, 100}, outError);
+
+        msi_sql::ExecuteDdl(
+            hUpg.Get(),
+            "CREATE TABLE `MsiPatchMetadata` (`Company` CHAR(72), `Property` CHAR(72) NOT NULL, `Value` CHAR(0) NOT NULL LOCALIZABLE PRIMARY KEY `Company`, `Property`)",
+            outError);
+        const std::string compName = manufacturer.empty() ? "RaggieSoft" : manufacturer;
+        const std::string patchCls = (plan.classification == "small_update") ? "Hotfix" : "Update";
+        msi_sql::InsertRow(hUpg.Get(), "MsiPatchMetadata", {"Company", "Property", "Value"},
+                           {std::monostate{}, std::string("AllowRemoval"), std::string("1")}, outError);
+        msi_sql::InsertRow(hUpg.Get(), "MsiPatchMetadata", {"Company", "Property", "Value"},
+                           {std::monostate{}, std::string("Classification"), patchCls}, outError);
+        msi_sql::InsertRow(hUpg.Get(), "MsiPatchMetadata", {"Company", "Property", "Value"},
+                           {compName, std::string("DisplayName"), productName + " v" + upgradedVer + " " + patchCls}, outError);
+        msi_sql::InsertRow(hUpg.Get(), "MsiPatchMetadata", {"Company", "Property", "Value"},
+                           {compName, std::string("TargetProductName"), productName}, outError);
+
         msi_sql::InsertRow(
             hUpg.Get(), "Media",
             {"DiskId", "LastSequence", "DiskPrompt", "Cabinet", "VolumeLabel", "Source"},
@@ -505,9 +546,14 @@ inline bool GenerateMsiPatchPackage(
             return false;
         }
 
+        std::string targetCodeList = baseProductCode;
+        if (!additionalTargetProductCodes.empty()) {
+            if (!targetCodeList.empty() && targetCodeList.back() != ';') targetCodeList.push_back(';');
+            targetCodeList.append(additionalTargetProductCodes);
+        }
         const std::wstring wSubject = Utf8ToWide(productName + " Update v" + upgradedVer);
         const std::wstring wAuthor  = Utf8ToWide(manufacturer);
-        const std::wstring wTargets = Utf8ToWide(baseProductCode);
+        const std::wstring wTargets = Utf8ToWide(targetCodeList);
         const std::wstring wPatchId = Utf8ToWide(patchGuid);
 
         FILETIME ft{};

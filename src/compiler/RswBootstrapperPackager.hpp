@@ -737,6 +737,8 @@ inline bool PackageSelfExtractingBootstrapper(
              << "AuthorOrArtist="     << sanitizeSingleLine(doc.GetString("UI", "", "AuthorOrArtist", "")) << "\n"
              << "SetupTypePreset="    << sanitizeSingleLine(doc.GetString("UI", "", "SetupTypePreset", "express_custom")) << "\n"
              << "SystemMenuAbout="    << (doc.GetBool("UI", "", "SystemMenuAbout", false) ? "true" : "false") << "\n"
+             << "UpgradeStrategy="    << sanitizeSingleLine(doc.GetString("Upgrade", "", "Strategy", "major")) << "\n"
+             << "BlockDowngrades="    << (doc.GetBool("Requirements", "", "BlockDowngrades", true) ? "true" : "false") << "\n"
              << "ExternalMsiFileName="<< (msiSummary.usesExternalMedia ? sanitizeSingleLine(WideToUtf8(msiSummary.msiPath.filename().wstring())) : std::string{}) << "\n";
 
     // Serialize optional author-defined `[SetupType.<id>]` cards (`Typical`, `Compact`, `Complete`, custom presets)
@@ -1546,6 +1548,8 @@ inline bool PackageNativeOrSfxExecutable(
     nm.waitForProcess      = ExpandArchToken(doc.GetString("SFX", "", "WaitForProcess"), arch);
     nm.waitSpawnGraceMs    = std::clamp(doc.GetInt("SFX", "", "WaitSpawnGraceMs", 1500), 0, 60000);
     nm.autoStartExtract    = doc.GetBool("SFX", "", "AutoStartExtract", false);
+    nm.updateFeedUrl       = ExpandNamedToken(ExpandArchToken(doc.GetString("Upgrade", "", "UpdateFeedUrl"), arch), "VERSION", outSummary.productVersion);
+    nm.updateChannel       = doc.GetString("Upgrade", "", "UpdateChannel", "stable");
 
     // Classic 1990s multi-stage `SETUP.EXE` / `_INST32I.EX_` / `_INS*._MP` / `_ISDEL.EXE` auto-tuning:
     // If an SFX archive unpacks to `%TEMP%` with `CleanupTempAfterRun = true` and contains `_ISDEL.EXE`,

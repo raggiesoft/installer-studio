@@ -30,18 +30,20 @@
 //                         new `.MSM`s), and performs **Major Upgrades Only** (`1.0.0 -> 1.0.1`
 //                         mints a fresh `ProductCode`; does not create `.MSP` patches).
 //       3. `Developer`  — Commercial Tier 2: Adds `.MSM` Merge Module compilation,
-//                         `RaggieScript` (`.rssc`) zero-MSI native scripting & full
-//                         `Engine = native`, From-Scratch C++ & `MSI.DLL` Dialog Designers,
-//                         `.slnx` / VB6 `.vbp` importers, `msiprism.exe`, `RsUpdate.exe`,
-//                         `--emit-winget`, and commercial CI/CD build agent rights.
+//                         `RaggieScript` (`.rssc`) & full **RaggieScript EXE**
+//                         (`Engine = raggiescript`), From-Scratch C++ & `MSI.DLL` Dialog
+//                         Designers, `.slnx` / VB6 `.vbp` importers, `msiprism.exe`,
+//                         `RsUpdate.exe` (shared Launcher JSON updater), `--emit-winget`,
+//                         and commercial CI/CD build agent rights.
 //       4. `Architect`  — Commercial Tier 3: Adds Multi-Product `.rsis` Unified Suites
 //                         (`Showcase Studio` front-door + dynamic `ARPSYSTEMCOMPONENT`),
-//                         `.MSP` binary-delta patches (`RsPatch.exe`) & `.MST` transforms,
-//                         Multi-Volume Disk Spanning & `msiexec /a`, `.rswpak` CDN packs,
-//                         Automated HTML5 VPAT 2.5 (`--emit-vpat`), and `.wsb` Repackager.
+//                         `.MSP` & `.rswpatch` binary-delta patches (`RsPatch.exe` +
+//                         `--plan-update`) & `.MST` transforms, Multi-Volume Disk Spanning
+//                         & `msiexec /a`, `.rswpak` CDN packs, Automated HTML5 VPAT 2.5
+//                         (`--emit-vpat`), and `.wsb` Repackager.
 //
 //   Community Edition White-Label Attribution Rule:
-//     `kGeneratorSigWide` (`"RaggieSoft Installer Studio (instbuild.exe 0.6.0)"`) is
+//     `kGeneratorSigWide` (`"RaggieSoft Installer Studio (instbuild.exe 0.8.0)"`) is
 //     written ONLY to the non-visible MSI `SummaryInformation` `PID_APPNAME`
 //     (Creating Application) diagnostic field—never stamped as a visible watermark
 //     onto customer dialogs or `Setup.exe` `VERSIONINFO`!
@@ -53,20 +55,22 @@
 
 namespace rsw {
 
-// Semantic Versioning (`0.7.0`)
+// Semantic Versioning (`0.8.0`)
 inline constexpr int kVersionMajor = 0;
-inline constexpr int kVersionMinor = 7;
+inline constexpr int kVersionMinor = 8;
 inline constexpr int kVersionPatch = 0;
 
-inline constexpr std::string_view  kVersionString      = "0.7.0";
-inline constexpr std::wstring_view kVersionStringWide  = L"0.7.0";
+inline constexpr std::string_view  kVersionString      = "0.8.0";
+inline constexpr std::wstring_view kVersionStringWide  = L"0.8.0";
 
-// Suite, Runtime Wizard, Help Viewer, & MSI Prism Product Identity
+// Suite, Runtime Wizard, Help Viewer, Patch Compiler, Updater, & MSI Prism Product Identity
 inline constexpr std::string_view  kSuiteTitle         = "RaggieSoft Installer Studio";
 inline constexpr std::string_view  kProductTitle       = "RaggieSoft Installer Studio";
 inline constexpr std::string_view  kWizardTitle        = "RaggieSoft Setup Wizard";
 inline constexpr std::string_view  kPrismTitle         = "RaggieSoft MSI Prism";
 inline constexpr std::string_view  kHelpTitle          = "RaggieSoft Help Viewer";
+inline constexpr std::string_view  kPatchTitle         = "RaggieSoft Patch Compiler";
+inline constexpr std::string_view  kUpdaterTitle       = "RaggieSoft Updater";
 inline constexpr std::string_view  kLensTitle          = "RaggieSoft MSI Prism";
 inline constexpr std::string_view  kProductShortCode   = "RSIP";
 inline constexpr std::string_view  kProductTagline     = "Install Without Limits";
@@ -75,16 +79,17 @@ inline constexpr std::string_view  kSuiteExt           = ".rsis";
 inline constexpr std::string_view  kIncludeExt         = ".rsii";
 inline constexpr std::string_view  kScriptExt          = ".rssc";
 inline constexpr std::string_view  kPakExt             = ".rswpak";
-inline constexpr std::string_view  kGeneratorSignature = "RaggieSoft Installer Studio (instbuild.exe 0.7.0)";
-inline constexpr std::wstring_view kGeneratorSigWide   = L"RaggieSoft Installer Studio (instbuild.exe 0.7.0)";
-inline constexpr std::string_view  kManifestSchemaVer  = "0.7";
+inline constexpr std::string_view  kPatchExt           = ".rswpatch";
+inline constexpr std::string_view  kGeneratorSignature = "RaggieSoft Installer Studio (instbuild.exe 0.8.0)";
+inline constexpr std::wstring_view kGeneratorSigWide   = L"RaggieSoft Installer Studio (instbuild.exe 0.8.0)";
+inline constexpr std::string_view  kManifestSchemaVer  = "0.8";
 
 /// Official IDE Product Editions (`Community` permanently maintains 100% feature parity with `Architect`!).
 enum class RswIdeEdition : int {
     Community  = 0, // Free for hobbyists, solo creators, EDU & OSS — 100% Architect feature parity!
     Essentials = 1, // Commercial Tier 1: Guided MSI + Setup.exe, SFX, Runtimes, consume .MSM, Major Upgrades only
-    Developer  = 2, // Commercial Tier 2: + Compile .MSM, RaggieScript (.rssc), Dialog Designers, Importers & CI/CD
-    Architect  = 3  // Commercial Tier 3: + Unified .rsis Suites, .MSP/.MST deltas, Spanning/Admin & Auto-VPAT 2.5
+    Developer  = 2, // Commercial Tier 2: + Compile .MSM, RaggieScript EXE (.rssc), RsUpdate.exe, Designers, Importers & CI/CD
+    Architect  = 3  // Commercial Tier 3: + Unified .rsis Suites, .MSP/.rswpatch/.MST deltas, Spanning/Admin & Auto-VPAT 2.5
 };
 
 /// Returns the human-readable display badge for each official product edition.
@@ -106,9 +111,9 @@ inline constexpr std::wstring_view EditionSummary(RswIdeEdition ed) noexcept {
         case RswIdeEdition::Essentials:
             return L"Commercial Tier 1 — Guided .MSI + Universal Setup.exe, Basic .ZIP/Folder SFX (%TEMP% wrapper), WCAG 2.2 AA UI, Signing, Pre-MSI Runtimes, .MSM consumption, & Major Upgrades.";
         case RswIdeEdition::Developer:
-            return L"Commercial Tier 2 — Everything in Essentials + compile .MSM Merge Modules, RaggieScript (.rssc) zero-MSI native scripting, Custom Dialog Designers, VS/VB6 Importers, msiprism, & CI/CD agents.";
+            return L"Commercial Tier 2 — Everything in Essentials + compile .MSM Merge Modules, RaggieScript EXE (.rssc), RsUpdate.exe, Custom Dialog Designers, VS/VB6 Importers, msiprism, & CI/CD agents.";
         case RswIdeEdition::Architect:
-            return L"Commercial Tier 3 — Everything in Developer + Multi-Product .rsis Suites (Showcase front-door), .MSP binary-delta patches & .MST transforms, Disk Spanning/msiexec /a, & HTML5 VPAT 2.5.";
+            return L"Commercial Tier 3 — Everything in Developer + Multi-Product .rsis Suites (Showcase front-door), RsPatch.exe .MSP & .rswpatch binary deltas, .MST transforms, Disk Spanning/msiexec /a, & HTML5 VPAT 2.5.";
     }
     return L"100% Feature Parity with Architect Edition.";
 }

@@ -338,6 +338,8 @@ struct BrandingConfig {
     std::wstring authorOrArtist;
     std::string  setupTypePreset    = "express_custom";
     std::string  requestedExecLevel = "asInvoker";
+    std::string  upgradeStrategy    = "major";
+    bool         blockDowngrades    = true;
     std::string  externalMsiName;
     bool         systemMenuAbout    = false;
     std::vector<rsw::SetupTypeOptionSpec> setupTypes;
@@ -470,6 +472,10 @@ BrandingConfig LoadBrandingConfigFromResource() {
     if (!kv["RequestedExecutionLevel"].empty()) {
         cfg.requestedExecLevel = std::string(rsw::NormalizeRequestedExecutionLevel(kv["RequestedExecutionLevel"]));
     }
+    if (!kv["UpgradeStrategy"].empty()) {
+        cfg.upgradeStrategy = rsw::AsciiLower(rsw::TrimAscii(kv["UpgradeStrategy"]));
+    }
+    cfg.blockDowngrades = !rsw::EqualsIgnoreCase(rsw::TrimAscii(kv["BlockDowngrades"]), "false");
     cfg.externalMsiName = rsw::TrimAscii(kv["ExternalMsiFileName"]);
 
     // Parse optional `[SetupType.<id>]` custom setup type cards (`0..4`)
@@ -1397,11 +1403,48 @@ public:
         if (cfg.upgradeCode.empty()) return;
         wchar_t prodBuf[39]{};
         if (::MsiEnumRelatedProductsW(cfg.upgradeCode.c_str(), 0, 0, prodBuf) == ERROR_SUCCESS) {
-            alreadyInstalled     = true;
-            installedProductCode = prodBuf;
-            selectedAction       = SelectedAction::MaintQuickRepair;
-            if (!cfg.isAutorun16x9) {
-                currentPage = WizardPage::Maintenance;
+            wchar_t verBuf[64]{};
+            DWORD cchVer = static_cast<DWORD>(std::size(verBuf));
+            ::MsiGetProductInfoW(prodBuf, INSTALLPROPERTY_VERSIONSTRING, verBuf, &cchVer);
+
+            wchar_t locBuf[MAX_PATH * 2]{};
+            DWORD cchLoc = static_cast<DWORD>(std::size(locBuf));
+            if (::MsiGetProductInfoW(prodBuf, INSTALLPROPERTY_INSTALLLOCATION, locBuf, &cchLoc) == ERROR_SUCCESS &&
+                locBuf[0] != L'\0') {
+                installDir = std::filesystem::path(locBuf).lexically_normal().wstring();
+            }
+
+            const bool sameProductCode = !cfg.productCode.empty() &&
+                                         rsw::EqualsIgnoreCase(rsw::WideToUtf8(prodBuf), rsw::WideToUtf8(cfg.productCode));
+            const int verCmp = (verBuf[0] != L'\0')
+                ? rsw::CompareDottedVersions(rsw::WideToUtf8(cfg.version), rsw::WideToUtf8(verBuf))
+                : 0;
+
+            if (sameProductCode && verCmp == 0 && cfg.upgradeStrategy != "small_hotfix") {
+                // Exact same `ProductCode` and `ProductVersion` already installed -> open Maintenance Hub!
+                alreadyInstalled     = true;
+                installedProductCode = prodBuf;
+                selectedAction       = SelectedAction::MaintQuickRepair;
+                if (!cfg.isAutorun16x9) {
+                    currentPage = WizardPage::Maintenance;
+                }
+            } else if (sameProductCode && (verCmp > 0 || cfg.upgradeStrategy == "small_hotfix")) {
+                // In-place Minor Upgrade (same `ProductCode`, higher `ProductVersion`) or Small Hotfix:
+                // Automatically pass `REINSTALL=ALL REINSTALLMODE=vomus` so `MsiInstallProductW` never throws Error 1638!
+                alreadyInstalled        = false;
+                isInPlaceSameCodeUpdate = true;
+                installedProductCode    = prodBuf;
+                if (cfg.installBtnText == L"&Install") {
+                    cfg.installBtnText = L"&Update";
+                }
+            } else if (!sameProductCode && verCmp >= 0) {
+                // Major Upgrade (`ProductCode` changed, older version detected under `UpgradeCode`):
+                // Keep `alreadyInstalled = false` so `RemoveExistingProducts` upgrades cleanly!
+                alreadyInstalled     = false;
+                installedProductCode = prodBuf;
+                if (cfg.installBtnText == L"&Install") {
+                    cfg.installBtnText = L"&Upgrade";
+                }
             }
         }
     }

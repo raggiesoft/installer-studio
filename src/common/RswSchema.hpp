@@ -88,13 +88,15 @@ inline constexpr std::string_view kAllowedWizardLayouts =
     "standard|wizard95|wizard97|aerowizard|fluentmica|oneclick|passivetoast|fullscreenblue|fullscreenteal|autorun16x9|simple";
 
 // ================================================================================
-// 1. CANONICAL `.RSIP` SECTION DESCRIPTOR TABLE (`25` SECTIONS)
+// 1. CANONICAL `.RSIP` SECTION DESCRIPTOR TABLE (`26` SECTIONS)
 // ================================================================================
-inline constexpr std::array<SectionDescriptor, 25> kSectionDescriptors{{
+inline constexpr std::array<SectionDescriptor, 26> kSectionDescriptors{{
     {"Package",         SectionCardinality::SingletonRequired, true,
-     "Core product identity, PackageKind (msi/msm/sfx/suite), Engine (msi/native), UAC execution level, target CPU architecture (x64/arm64), and universal output settings."},
+     "Core product identity, PackageKind (msi/msm/sfx/suite), Engine (msi/raggiescript), UAC execution level, target CPU architecture (x64/arm64), and universal output settings."},
     {"Requirements",    SectionCardinality::SingletonOptional, false,
      "Minimum Windows 11 build gate (RtlGetVersion & MSI LaunchCondition), downgrade protection, and silent reboot exit code."},
+    {"Upgrade",         SectionCardinality::SingletonOptional, false,
+     "Declarative update & servicing policy ([Upgrade]): Strategy (major|minor|small_hotfix), RemoveExistingProducts Schedule (early 1525 vs late 6550), MigrateFeatures (257), BaselineMsi, and RsUpdate.exe UpdateFeedUrl."},
     {"Install",         SectionCardinality::SingletonRequired, true,
      "Default installation subfolder under ProgramFiles64Folder/LocalAppDataFolder and Start Menu group (optional when PackageKind = sfx or suite)."},
     {"Media",           SectionCardinality::SingletonOptional, false,
@@ -112,7 +114,7 @@ inline constexpr std::array<SectionDescriptor, 25> kSectionDescriptors{{
     {"Prerequisite",    SectionCardinality::NamedRepeatable,   false,
      "Runtime prerequisite ([Prerequisite.<id>]: .NET 11, .NET 10 LTS, WebView2, VC++ Redist, or Custom .exe/.msi) executed BEFORE msiexec with download/embedded/side-by-side delivery and reboot exit-code tracking."},
     {"SuitePackage",    SectionCardinality::NamedRepeatable,   false,
-     "Child .msi or native setup package ([SuitePackage.<id>]) chained under a single UAC prompt in Unified Suite Setup (PackageKind = suite) with dynamic ARPSYSTEMCOMPONENT adoption."},
+     "Child .msi or RaggieScript EXE setup package ([SuitePackage.<id>]) chained under a single UAC prompt in Unified Suite Setup (PackageKind = suite) with dynamic ARPSYSTEMCOMPONENT adoption."},
     {"MergeModule",     SectionCardinality::NamedRepeatable,   false,
      "Consumes a Windows Installer Merge Module ([MergeModule.<id>]: .msm) merging its Components, Files, Registry, and MergeModule.CABinet directly into Product.msi."},
     {"Feature",         SectionCardinality::NamedRepeatable,   false,
@@ -130,9 +132,9 @@ inline constexpr std::array<SectionDescriptor, 25> kSectionDescriptors{{
     {"Registry",        SectionCardinality::NamedRepeatable,   false,
      "Writes an HKLM/HKCU/HKCR/HKMU registry value ([Registry.<id>]) tied to an auto or explicit 64-bit MSI Component."},
     {"Environment",     SectionCardinality::NamedRepeatable,   false,
-     "Configures a user or system Environment Variable ([Environment.<id>]), including non-clobbering PATH append/prepend with exact uninstall removal via the MSI Environment table & Native Engine."},
+     "Configures a user or system Environment Variable ([Environment.<id>]), including non-clobbering PATH append/prepend with exact uninstall removal across MSI & RaggieScript EXE."},
     {"IniFile",         SectionCardinality::NamedRepeatable,   false,
-     "Writes or updates a [Section] Key = Value entry inside a target .ini configuration file ([IniFile.<id>]) via the MSI IniFile table & Native Engine."},
+     "Writes or updates a [Section] Key = Value entry inside a target .ini configuration file ([IniFile.<id>]) across MSI & RaggieScript EXE."},
     {"Dialog",          SectionCardinality::NamedRepeatable,   false,
      "Defines a custom C++ SetupWizard.exe page ([Dialog.<id>]) edited in the WYSIWYG Visual Dialog Designer and spliced into the runtime setup flow."},
     {"Control",         SectionCardinality::NamedRepeatable,   false,
@@ -148,8 +150,8 @@ inline constexpr std::array<SectionDescriptor, 25> kSectionDescriptors{{
 // ================================================================================
 inline constexpr std::array<FieldDescriptor, 45> kFieldDescriptors{{
     // --- [Package] ---
-    {"Package", "SchemaVersion",         FieldValueKind::String,      false, "0.6",               "",
-     "Manifest grammar version (`0.6`)."},
+    {"Package", "SchemaVersion",         FieldValueKind::String,      false, "0.8",               "",
+     "Manifest grammar version (`0.8`)."},
     {"Package", "Name",                  FieldValueKind::String,      true,  "",                  "",
      "Consumer-facing ProductName written to MSI Property table and VERSIONINFO."},
     {"Package", "Version",               FieldValueKind::MsiVersion,  true,  "",                  "",
@@ -265,8 +267,8 @@ inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>
     // --- Extended [Package], [Media], [SFX], [Requirements], [UI], [SetupType], [Billboard], [SuitePackage], [Feature], [Payload], [Shortcut], [Registry] ---
     {"Package",  "PackageKind",          FieldValueKind::EnumChoice,  false, "msi",               "msi|msm|sfx|suite",
      "`msi` builds an Enterprise `.msi` (+ optional `-setup.exe`), `msm` builds a Merge Module (`.msm`), `sfx` builds a lightweight LZMS Self-Extracting `.exe` (zero Installed Apps clutter), and `suite` builds a single-UAC Unified Suite Chainer (`ARPSYSTEMCOMPONENT` adoption)."},
-    {"Package",  "Engine",               FieldValueKind::EnumChoice,  false, "msi",               "msi|native",
-     "`msi` uses Microsoft Windows Installer (`msi.dll`); `native` uses RaggieSoft's zero-`msi.dll` transactional LZMS extraction engine with rollback journal, `.lnk` shortcuts, `Uninstall` registry registration, and signed `Uninstall.exe`."},
+    {"Package",  "Engine",               FieldValueKind::EnumChoice,  false, "msi",               "msi|raggiescript|native",
+     "`msi` uses Microsoft Windows Installer (`msi.dll`); `raggiescript` (alias `native`) builds a **RaggieScript EXE** zero-`msi.dll` transactional LZMS installer with rollback journal, `.lnk` shortcuts, `Uninstall` registry registration, and signed `Uninstall.exe`."},
     {"Package",  "RequestedExecutionLevel", FieldValueKind::EnumChoice, false, "asInvoker",       "asInvoker|highestAvailable|requireAdministrator",
      "Controls Windows UAC level stamped onto PE `RT_MANIFEST` `#1` across `msi`, `native`, `sfx`, and `suite` EXEs: `asInvoker` (default — un-elevated launch; prompts UAC only if per-machine install begins), `highestAvailable` (elevates upfront for Admins while letting Standard Users run), or `requireAdministrator` (requires Admin UAC immediately at `0.0s` launch)."},
     {"Package",  "BuildUniversal",       FieldValueKind::Boolean,     false, "false",             "",
@@ -404,8 +406,8 @@ inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>
      "Path to the compiled child `.msi` or native `-setup.exe` binary on the build machine (supports `$(ARCH)`)."},
     {"SuitePackage", "UpgradeCode",      FieldValueKind::Guid,        false, "",                  "",
      "Permanent `{UpgradeCode}` of this child package used to detect & dynamically adopt already-installed standalone siblings (`RS_SUITE_MANAGED=1`)."},
-    {"SuitePackage", "Engine",           FieldValueKind::EnumChoice,  false, "msi",               "msi|native|exe",
-     "Child installer engine (`msi` passes `RS_SUITE_MANAGED=1` via `MsiInstallProductW`; `native` / `exe` passes `/s RS_SUITE_MANAGED=1`)."},
+    {"SuitePackage", "Engine",           FieldValueKind::EnumChoice,  false, "msi",               "msi|raggiescript|native|exe",
+     "Child installer engine (`msi` passes `RS_SUITE_MANAGED=1` via `MsiInstallProductW`; `raggiescript` / `native` / `exe` passes `/s RS_SUITE_MANAGED=1`)."},
     {"SuitePackage", "InstallArgs",      FieldValueKind::String,      false, "",                  "",
      "Optional extra properties or CLI switches passed to this child package during Suite install."},
     {"SuitePackage", "Required",         FieldValueKind::Boolean,     false, "false",             "",
@@ -665,7 +667,23 @@ inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>
     {"Control", "TabOrder",              FieldValueKind::Integer,     false, "0",                 "",
      "Explicit keyboard `Tab` focus sequence order (`0` = document order)."},
     {"Control", "Required",              FieldValueKind::Boolean,     false, "false",             "",
-     "When `true`, blocks `&Next >` on this custom page until the user supplies a non-empty value."}
+     "When `true`, blocks `&Next >` on this custom page until the user supplies a non-empty value."},
+
+    // --- [Upgrade] (Declarative MSI, MSP, & RaggieScript EXE Servicing Policy — `v0.8.0`!) ---
+    {"Upgrade", "Strategy",              FieldValueKind::EnumChoice,  false, "major",             "major|minor|small_hotfix",
+     "`major` (default, all editions) mints a fresh `ProductCode` per version and runs `RemoveExistingProducts`; `minor` (Architect/Community) preserves `BaselineMsi`'s `ProductCode` for `.MSP` / `REINSTALLMODE=vomus` Minor Upgrades; `small_hotfix` (Architect/Community) preserves both `ProductCode` and `Version` for emergency hotfix `.MSP` patches."},
+    {"Upgrade", "Schedule",              FieldValueKind::EnumChoice,  false, "early",             "early|late",
+     "Controls when `RemoveExistingProducts` executes in `InstallExecuteSequence`: `early` (`Sequence = 1525`, right after `InstallInitialize` — cleanest default) or `late` (`Sequence = 6550`, right before `InstallFinalize` — atomic in-place overwrite)."},
+    {"Upgrade", "MigrateFeatures",       FieldValueKind::Boolean,     false, "true",              "",
+     "When `true` (default), sets `msidbUpgradeAttributesMigrateFeatures` (`0x001` -> `Attributes = 257`) so `MigrateFeatureStates` preserves custom feature selections across Major Upgrades."},
+    {"Upgrade", "AllowSameVersion",      FieldValueKind::Boolean,     false, "false",             "",
+     "When `true`, sets `msidbUpgradeAttributesVersionMaxInclusive` (`0x200`) on the `Upgrade` table row so rebuilt packages with the same 3-part `Version` and a new `ProductCode` upgrade cleanly."},
+    {"Upgrade", "BaselineMsi",           FieldValueKind::Path,        false, "",                  "",
+     "Optional path to the baseline `.msi` (supports `$(ARCH)`) used to inherit `ProductCode` and verify Microsoft Component Rules (`RSW081`–`RSW086`) when `Strategy = minor` or `small_hotfix`."},
+    {"Upgrade", "UpdateFeedUrl",         FieldValueKind::String,      false, "",                  "",
+     "Optional HTTPS URL to a `RaggieSoft Launcher`-compatible `apps-manifest.json` feed written to `<InstallDir>\\UpdateConfig.json` for `RsUpdate.exe`."},
+    {"Upgrade", "UpdateChannel",         FieldValueKind::EnumChoice,  false, "stable",            "stable|preview",
+     "Release channel tag written to `UpdateConfig.json` (`stable` or `preview`)."}
 });
 
 /// Returns `true` if `rootDirKey` points to a per-user Windows profile directory (requiring ICE38 HKCU KeyPath & ICE64 RemoveFolder!).

@@ -26,13 +26,16 @@
 //          Upgrades** (`1.0.0 -> 1.0.1` fresh `ProductCode`).
 //       3. `Developer Edition` (Commercial Tier 2 — Workstation + CI/CD Agents):
 //          Adds compiling new `.MSM` Merge Modules, `RaggieScript` (`.rssc`) &
-//          `Engine = native`, custom `[MsiDialog.*]` / `[Dialog.*]` & `[SetupType.*]`
-//          designers, `msiprism.exe` SQL table editor, and CI/CD build agent rights.
+//          **RaggieScript EXE** (`Engine = raggiescript`), `RsUpdate.exe` (shared
+//          Launcher JSON updater), custom `[MsiDialog.*]` / `[Dialog.*]` &
+//          `[SetupType.*]` designers, `msiprism.exe` SQL table editor, and CI/CD
+//          build agent rights.
 //       4. `Architect Edition` (Commercial Tier 3 — Enterprise Suites & Compliance):
 //          Adds Unified Multi-Product Suites (`PackageKind = suite` & `.rsis`),
-//          `.MSP` binary-delta patches & `.MST` GPO transforms, Multi-Volume Disk
-//          Spanning, Uncompressed Loose Media (`msiexec /a`), `.rswpak` CDN feature
-//          packs, and automated HTML5 VPAT 2.5 conformance reports (`--emit-vpat`).
+//          `.MSP` & `.rswpatch` binary-delta patches (`RsPatch.exe`, `--plan-update`)
+//          & `.MST` GPO transforms, Multi-Volume Disk Spanning, Uncompressed Loose
+//          Media (`msiexec /a`), `.rswpak` CDN feature packs, and automated HTML5
+//          VPAT 2.5 conformance reports (`--emit-vpat`).
 //
 //   Zero-Telemetry Offline Persistence:
 //     Selected/activated edition state is stored locally in:
@@ -115,6 +118,9 @@ inline constexpr bool EditionSupportsCustomDialogAndSetupTypeDesign(RswIdeEditio
     return ed != RswIdeEdition::Essentials;
 }
 inline constexpr bool EditionSupportsMsiPrismEditor(RswIdeEdition ed) noexcept {
+    return ed != RswIdeEdition::Essentials;
+}
+inline constexpr bool EditionSupportsRsUpdater(RswIdeEdition ed) noexcept {
     return ed != RswIdeEdition::Essentials;
 }
 
@@ -238,12 +244,12 @@ inline std::wstring BuildEditionsComparisonText(RswIdeEdition activeEd) {
         << L"  Guided .MSI + Universal Setup.exe (x64 & ARM64), Basic Folder/.ZIP Self-Extractor (%TEMP% wrapper),\n"
         << L"  11 Wizard Styles, Pre-MSI Runtimes, .MSM consumption, Major Upgrades, WCAG 2.2 AA & Code Signing.\n\n"
         << L"• Developer Edition (Commercial Tier 2 — Workstation + CI/CD Build Agents):\n"
-        << L"  Adds compiling new .MSM Merge Modules, RaggieScript (.rssc) & Engine = native, Custom C++ & MSI.DLL\n"
-        << L"  Dialog Designers, Custom [SetupType.*] cards, MSI Prism SQL Table Editor, & CI/CD build agent rights.\n\n"
+        << L"  Adds compiling new .MSM Merge Modules, RaggieScript (.rssc) & RaggieScript EXE, RsUpdate.exe\n"
+        << L"  (Launcher-compatible JSON updater), Custom C++ & MSI.DLL Dialog Designers, MSI Prism, & CI/CD rights.\n\n"
         << L"• Architect Edition (Commercial Tier 3 — Enterprise Suites & Procurement):\n"
-        << L"  Adds Unified Multi-Product Suites (.rsis Dual-Bar Progress + ARPSYSTEMCOMPONENT adoption), .MSP\n"
-        << L"  binary-delta patches & .MST GPO transforms, Disk Spanning, Loose Media (msiexec /a), .rswpak CDN\n"
-        << L"  packs, and automated HTML5 VPAT 2.5 conformance reports (--emit-vpat).";
+        << L"  Adds Unified Multi-Product Suites (.rsis Dual-Bar Progress + ARPSYSTEMCOMPONENT adoption), RsPatch.exe\n"
+        << L"  .MSP & .rswpatch binary-delta patches (--plan-update), .MST GPO transforms, Disk Spanning, Loose Media\n"
+        << L"  (msiexec /a), .rswpak CDN packs, and automated HTML5 VPAT 2.5 conformance reports (--emit-vpat).";
     return oss.str();
 }
 

@@ -664,6 +664,23 @@ inline ValidationReport ValidateManifestDocument(
         }
     }
 
+    // 4C. Validate `[Upgrade]` servicing strategy & optional `BaselineMsi` (`v0.8.0`)!
+    const std::string upgStrategy = AsciiLower(TrimAscii(doc.GetString("Upgrade", "", "Strategy", "major")));
+    const std::string rawBaseMsi  = TrimAscii(doc.GetString("Upgrade", "", "BaselineMsi"));
+    if (!rawBaseMsi.empty()) {
+        const auto absBaseMsi = resolvePathStd(rawBaseMsi);
+        if (!std::filesystem::exists(absBaseMsi, ec)) {
+            addErr("RSW087", 1, "Upgrade", "BaselineMsi",
+                   "[Upgrade] BaselineMsi does not exist on disk: " + WideToUtf8(absBaseMsi.wstring()));
+        }
+    }
+    if ((upgStrategy == "minor" || upgStrategy == "small_hotfix") &&
+        rawBaseMsi.empty() &&
+        TrimAscii(doc.GetString("Package", "", "ProductCode", "*")) == "*") {
+        addErr("RSW088", 1, "Upgrade", "BaselineMsi",
+               "[Upgrade] Strategy = " + upgStrategy + " requires either an explicit [Package] ProductCode = {GUID} or [Upgrade] BaselineMsi = <old.msi> so the baseline ProductCode is preserved.");
+    }
+
     // 5. WCAG 2.2 AA Brand Accent Contrast Verification (`[UI] AccentPrimaryHex`)
     const std::string rawPrimaryHex = TrimAscii(doc.GetString("UI", "", "AccentPrimaryHex"));
     if (!rawPrimaryHex.empty()) {
@@ -694,9 +711,15 @@ inline ValidationReport ValidateManifestDocument(
             addErr("RSW091", 1, "Package", "PackageKind",
                    edLabel + " can consume existing [MergeModule.*] (.msm) files, while compiling new .MSM Merge Modules requires Developer, Architect, or Community Edition.");
         }
-        if (pkgKind != "sfx" && engine == "native" && !EditionSupportsNativeEngineAndScripting(activeEdition)) {
+        if (pkgKind != "sfx" && (engine == "raggiescript" || engine == "native") &&
+            !EditionSupportsNativeEngineAndScripting(activeEdition)) {
             addErr("RSW092", 1, "Package", "Engine",
-                   "Engine = native and RaggieScript (.rssc) scripting require Developer, Architect, or Community Edition (currently running " + edLabel + ").");
+                   "RaggieScript EXE (Engine = raggiescript) and RaggieScript (.rssc) scripting require Developer, Architect, or Community Edition (currently running " + edLabel + ").");
+        }
+        if ((upgStrategy == "minor" || upgStrategy == "small_hotfix") &&
+            !EditionSupportsMspPatchesAndMstTransforms(activeEdition)) {
+            addErr("RSW097", 1, "Upgrade", "Strategy",
+                   "[Upgrade] Strategy = " + upgStrategy + " (.MSP Minor Upgrades & Small Update hotfixes) requires Architect or Community Edition (currently running " + edLabel + "; Essentials and Developer service updates via Major Upgrades).");
         }
         if (!EditionSupportsCustomDialogAndSetupTypeDesign(activeEdition)) {
             if (!doc.GetNamedSectionIds("MsiDialog").empty() ||

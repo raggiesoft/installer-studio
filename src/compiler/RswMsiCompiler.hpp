@@ -518,15 +518,37 @@ inline bool CompileManifestToMsi(
     outSummary.iconFilePath        = resolvePath(doc.GetString("UI", "", "IconFile"));
 
     NormalizeMsiGuid(doc.GetString("Package", "", "UpgradeCode"), outSummary.upgradeCode);
+    const std::string upgStrategy = AsciiLower(TrimAscii(doc.GetString("Upgrade", "", "Strategy", "major")));
+    const std::filesystem::path baselineMsiPath = resolvePath(doc.GetString("Upgrade", "", "BaselineMsi"));
     const std::string rawProdCode = ExpandArchToken(doc.GetString("Package", "", "ProductCode", "*"), arch);
     if (rawProdCode == "*" || rawProdCode.empty()) {
-        // Deterministic UUIDv5 keyed by `(UpgradeCode, Architecture, ProductVersion)`:
-        //   - Rebuilding the SAME version (`0.5.0`, `arm64`) keeps a stable `ProductCode` so
-        //     `msiexec /x <file>.msi` and `winget` manifests always match the installed product!
-        //   - Bumping `Version` (`0.5.0` -> `0.5.1` or `1.0.0` -> `1.1.0`) automatically yields a
-        //     fresh `ProductCode` so Major Upgrades work seamlessly out of the box!
-        outSummary.productCode = ComputeDeterministicComponentGuid(
-            outSummary.upgradeCode, arch, "productcode:" + outSummary.productVersion);
+        std::string inheritedProdCode;
+        if ((upgStrategy == "minor" || upgStrategy == "small_hotfix") && !baselineMsiPath.empty()) {
+            ScopedMsiHandle hBaseDb;
+            if (::MsiOpenDatabaseW(baselineMsiPath.wstring().c_str(), MSIDBOPEN_READONLY, hBaseDb.Put()) == ERROR_SUCCESS) {
+                ScopedMsiHandle hBaseView, hBaseRec;
+                if (::MsiDatabaseOpenViewW(hBaseDb.Get(), L"SELECT `Value` FROM `Property` WHERE `Property` = 'ProductCode'", hBaseView.Put()) == ERROR_SUCCESS &&
+                    ::MsiViewExecute(hBaseView.Get(), 0) == ERROR_SUCCESS &&
+                    ::MsiViewFetch(hBaseView.Get(), hBaseRec.Put()) == ERROR_SUCCESS) {
+                    wchar_t pcBuf[64]{};
+                    DWORD cch = static_cast<DWORD>(std::size(pcBuf));
+                    if (::MsiRecordGetStringW(hBaseRec.Get(), 1, pcBuf, &cch) == ERROR_SUCCESS) {
+                        NormalizeMsiGuid(WideToUtf8(pcBuf), inheritedProdCode);
+                    }
+                }
+            }
+        }
+        if (!inheritedProdCode.empty()) {
+            outSummary.productCode = inheritedProdCode;
+        } else {
+            // Deterministic UUIDv5 keyed by `(UpgradeCode, Architecture, ProductVersion)`:
+            //   - Rebuilding the SAME version (`0.5.0`, `arm64`) keeps a stable `ProductCode` so
+            //     `msiexec /x <file>.msi` and `winget` manifests always match the installed product!
+            //   - Bumping `Version` (`0.5.0` -> `0.5.1` or `1.0.0` -> `1.1.0`) automatically yields a
+            //     fresh `ProductCode` so Major Upgrades work seamlessly out of the box!
+            outSummary.productCode = ComputeDeterministicComponentGuid(
+                outSummary.upgradeCode, arch, "productcode:" + outSummary.productVersion);
+        }
     } else {
         NormalizeMsiGuid(rawProdCode, outSummary.productCode);
     }
@@ -1173,10 +1195,18 @@ inline bool CompileManifestToMsi(
         addProp("ARPPRODUCTICON", "AppProductIcon.ico");
     }
 
+    // Declarative `[Upgrade]` table configuration (`v0.8.0`):
+    //   - `msidbUpgradeAttributesMigrateFeatures` (`0x001`): Preserves user feature choices across Major Upgrades
+    //   - `msidbUpgradeAttributesVersionMinInclusive` (`0x100` = `256`)
+    //   - `msidbUpgradeAttributesVersionMaxInclusive` (`0x200` = `512`, enabled when `AllowSameVersion = true`)
+    const bool upgMigrateFeatures = doc.GetBool("Upgrade", "", "MigrateFeatures", true);
+    const bool upgAllowSameVer    = doc.GetBool("Upgrade", "", "AllowSameVersion", false);
+    const int  upgMajorAttrs      = 256 | (upgMigrateFeatures ? 1 : 0) | (upgAllowSameVer ? 512 : 0);
+
     msi_sql::InsertRow(
         hDb.Get(), "Upgrade",
         {"UpgradeCode", "VersionMin", "VersionMax", "Language", "Attributes", "Remove", "ActionProperty"},
-        {outSummary.upgradeCode, "0.0.0", outSummary.productVersion, std::monostate{}, 256, std::monostate{}, std::string("RSW_OLDERVERSION_DETECTED")},
+        {outSummary.upgradeCode, "0.0.0", outSummary.productVersion, std::monostate{}, upgMajorAttrs, std::monostate{}, std::string("RSW_OLDERVERSION_DETECTED")},
         outError);
 
     if (doc.GetBool("Requirements", "", "BlockDowngrades", true)) {
@@ -2197,6 +2227,9 @@ inline bool CompileManifestToMsi(
             outError);
     }
 
+    const int removeExistingSeq =
+        EqualsIgnoreCase(TrimAscii(doc.GetString("Upgrade", "", "Schedule", "early")), "late") ? 6550 : 1525;
+
     std::vector<SeqEntry> execSeq = {
         {"FindRelatedProducts",         nullptr, 100},
         {"AppSearch",                   nullptr, 200},
@@ -2209,7 +2242,7 @@ inline bool CompileManifestToMsi(
         {"CostFinalize",           nullptr, 1000},
         {"InstallValidate",        nullptr, 1400},
         {"InstallInitialize",      nullptr, 1500},
-        {"RemoveExistingProducts", nullptr, 1525},
+        {"RemoveExistingProducts", nullptr, removeExistingSeq},
         {"ProcessComponents",      nullptr, 1600},
         {"UnpublishFeatures",      nullptr, 1800},
         {"RemoveRegistryValues",   nullptr, 2600},
