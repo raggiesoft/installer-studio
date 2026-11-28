@@ -13,23 +13,30 @@
 ; ================================================================================
 
 [Package]
-SchemaVersion         = 0.6
-Name                  = RaggieSoft MSI Prism
-Tagline               = 64-Bit Read/Write MSI, MSM, MST & MSP Relational SQL Table Editor
-Version               = 0.6.0
-Manufacturer          = RaggieSoft
-WebsiteLabel          = raggiesoftstudio.com
-AboutUrl              = https://raggiesoftstudio.com/installer-studio
-UpgradeCode           = {3E94B7C2-84A1-4F6D-9B28-524147505249}
-Description           = Standalone 64-bit Windows Installer SQL database inspector, table editor, ICE80 validator, and MST/MSP diff generator
-Architecture          = $(ARCH)
-Scope                 = machine
-OutputName            = raggiesoft-msi-prism-v$(VERSION)-$(ARCH)
-UniversalOutputName   = raggiesoft-msi-prism-v$(VERSION)
-OutputDir             = out
-BuildBootstrapper     = true
-BuildUniversal        = true
-CabinetCompression    = lzx
+SchemaVersion            = 0.8
+Name                     = RaggieSoft MSI Prism
+Tagline                  = 64-Bit Read/Write MSI, MSM, MST & MSP Relational SQL Table Editor
+Version                  = 0.8.0
+Manufacturer             = RaggieSoft
+WebsiteLabel             = raggiesoftstudio.com
+AboutUrl                 = https://raggiesoftstudio.com/installer-studio
+UpgradeCode              = {3E94B7C2-84A1-4F6D-9B28-524147505249}
+Description              = Standalone 64-bit Windows Installer SQL database inspector, table editor, ICE80 validator, and MST/MSP diff generator
+Architecture             = $(ARCH)
+Scope                    = machine
+OutputName               = raggiesoft-msi-prism-v$(VERSION)-$(ARCH)
+UniversalOutputName      = raggiesoft-msi-prism-v$(VERSION)
+UniversalDownloadBaseUrl = https://assets.raggiesoft.com/desktop-apps/windows/apps/msi-prism/releases/v$(VERSION)
+OutputDir                = out
+BuildBootstrapper        = true
+BuildUniversal           = true
+CabinetCompression       = lzx
+
+[Upgrade]
+Strategy                 = major
+Schedule                 = early
+MigrateFeatures          = true
+UpdateFeedUrl            = https://assets.raggiesoft.com/desktop-apps/windows/studio-apps-manifest.json
 
 [Requirements]
 MinWindowsBuild       = 22000

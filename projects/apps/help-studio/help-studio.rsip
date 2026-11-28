@@ -16,10 +16,11 @@
 @include "..\..\shared\raggiesoft-defaults.rsii"
 
 [Package]
+SchemaVersion            = 0.8
 Name                     = RaggieSoft Help Studio
 Tagline                  = Native C++20 F1 Context Help IDE & Legacy .CHM / WinHelp .HLP Importer
 WebsiteLabel             = raggiesoftstudio.com/help-studio
-Version                  = 0.5.0
+Version                  = 0.6.1
 Manufacturer             = RaggieSoft
 UpgradeCode              = {6E39D214-8B72-4F5A-9C3E-147253485050}
 Architecture             = $(ARCH)
@@ -32,6 +33,12 @@ UniversalDownloadBaseUrl = https://assets.raggiesoft.com/desktop-apps/windows/ap
 OutputDir                = out
 BuildBootstrapper        = true
 AboutUrl                 = https://raggiesoftstudio.com/help-studio
+
+[Upgrade]
+Strategy                 = major
+Schedule                 = early
+MigrateFeatures          = true
+UpdateFeedUrl            = https://assets.raggiesoft.com/desktop-apps/windows/studio-apps-manifest.json
 
 [Install]
 DefaultSubdir            = RaggieSoft\RaggieSoft Studio\Help Studio

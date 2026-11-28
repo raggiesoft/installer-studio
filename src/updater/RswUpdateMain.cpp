@@ -490,7 +490,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         bool ok = rsw::updater::AcquireAndVerifyUpdatePayload(
             eval.selectedUrl, eval.selectedSha256, pkgPath, nullptr, nullptr, applyErr);
         if (ok) {
-            ok = rsw::updater::ApplyDownloadedUpdatePackage(eval, pkgPath, cfg.installDir, true, applyErr);
+            ok = rsw::updater::ApplyDownloadedUpdatePackage(eval, pkgPath, cfg.installDir, silentMode || applyMode, applyErr);
         }
         std::filesystem::remove_all(tmpDir, ec);
         if (!ok) {

@@ -1037,7 +1037,8 @@ public:
     bool                    oneClickExpanded  = false;
     bool                    passiveAutoStarted = false;
     int                     autorunChoiceIdx  = 0; // 0..3 in `autorun16x9` 2x2 grid
-    bool                    alreadyInstalled  = false;
+    bool                    alreadyInstalled        = false;
+    bool                    isInPlaceSameCodeUpdate = false;
     std::wstring            installedProductCode;
     std::wstring            installDir;
     std::wstring            startMenuGroup;
@@ -2849,6 +2850,14 @@ public:
                 else wEsc.push_back(ch);
             }
             msiProps += L" " + rsw::Utf8ToWide(propName) + L"=\"" + wEsc + L"\"";
+        }
+        if (isInPlaceSameCodeUpdate &&
+            selectedAction != SelectedAction::MaintUninstall &&
+            selectedAction != SelectedAction::MaintQuickRepair) {
+            // Minor Upgrade / Small Hotfix on an already-installed `ProductCode`:
+            // Appending `REINSTALL=ALL REINSTALLMODE=vomus` instructs Windows Installer to refresh
+            // the cached MSI and update files in-place instead of failing with MSI Error 1638!
+            msiProps += L" REINSTALL=ALL REINSTALLMODE=vomus";
         }
 
         // Re-evaluate pending `[Prerequisite.*]` runtimes right before execution
@@ -5331,6 +5340,9 @@ int RunElevatedMsiWorkerFromJobFile(const std::filesystem::path& jobFile) {
             st.FlushToDisk();
         },
         [&]() -> UINT {
+            if (mode == "applymsp") {
+                return ::MsiApplyPatchW(msiPath.c_str(), nullptr, INSTALLTYPE_DEFAULT, L"REINSTALL=ALL REINSTALLMODE=omus");
+            }
             if (mode == "uninstall" && !prodCode.empty()) {
                 return ::MsiConfigureProductExW(prodCode.c_str(), INSTALLLEVEL_DEFAULT, INSTALLSTATE_ABSENT, props.c_str());
             }
@@ -6330,8 +6342,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         }
     }
 
-    // Per-architecture `--extract-msi` flag
+    // Per-architecture `--extract-msi` and `--apply-msp <patch.msp>` CLI flags
     for (std::size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == L"--apply-msp" && i + 1 < args.size()) {
+            const std::filesystem::path mspPath(args[i + 1]);
+            ::MsiSetInternalUI(INSTALLUILEVEL_NONE, nullptr);
+            const UINT rc = ::MsiApplyPatchW(mspPath.wstring().c_str(), nullptr, INSTALLTYPE_DEFAULT, L"REINSTALL=ALL REINSTALLMODE=omus");
+            return static_cast<int>(rc);
+        }
         if (args[i] == L"--extract-msi" || args[i] == L"/extract") {
             if (i + 1 >= args.size()) return 2;
             const std::filesystem::path targetDir(args[i + 1]);
@@ -6459,6 +6477,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
             std::filesystem::remove_all(tmpDir, ec);
             if (hSilentMutex) ::CloseHandle(hSilentMutex);
             return 1619;
+        }
+        // Auto-detect Minor Upgrade / Small Hotfix (`same ProductCode`) in `/s` silent mode so Error 1638 never occurs!
+        if (!silentCfg.productCode.empty()) {
+            wchar_t instVerBuf[64]{};
+            DWORD cchInstVer = static_cast<DWORD>(std::size(instVerBuf));
+            if (::MsiGetProductInfoW(silentCfg.productCode.c_str(), INSTALLPROPERTY_VERSIONSTRING, instVerBuf, &cchInstVer) == ERROR_SUCCESS) {
+                if (silentExtraProps.find(L"REINSTALL=") == std::wstring::npos) {
+                    if (!silentExtraProps.empty()) silentExtraProps += L" ";
+                    silentExtraProps += L"REINSTALL=ALL REINSTALLMODE=vomus";
+                }
+            }
         }
         ::MsiSetInternalUI(INSTALLUILEVEL_NONE, nullptr);
         const UINT rc = ExecuteMsiCallWithPoliteQueue(

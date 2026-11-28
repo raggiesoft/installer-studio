@@ -133,6 +133,7 @@ enum IdeId : int {
     IDM_LAUNCH_RSWSFX        = 2028,
     IDM_SOURCE_FORMAT        = 2029,
     IDM_WIZ_ADD_PATH_ENV     = 2030,
+    IDM_LAUNCH_RSUPDATE      = 2031,
 
     // Persistent Toolbar & Category Navigation Tree
     IDC_TB_WIZARD            = 2100,
@@ -824,7 +825,7 @@ public:
         HMENU hFile = ::CreatePopupMenu();
         ::AppendMenuW(hFile, MF_STRING, IDM_WIZ_PROJECT,    L"New Project &Wizard (Aero Project Assistant)...\tCtrl+W");
         ::AppendMenuW(hFile, MF_STRING, IDM_WIZ_SUITE,      L"New Unified Multi-Product &Suite Wizard (.rsip)...");
-        ::AppendMenuW(hFile, MF_STRING, IDM_WIZ_SFX_SIMPLE, L"New Self-Extracting .E&XE / Simple Native Setup Wizard...");
+        ::AppendMenuW(hFile, MF_STRING, IDM_WIZ_SFX_SIMPLE, L"New Self-Extracting .E&XE / RaggieScript EXE Setup Wizard...");
         ::AppendMenuW(hFile, MF_STRING, IDM_FILE_NEW,       L"&New Starter .rsip Project\tCtrl+N");
         ::AppendMenuW(hFile, MF_STRING, IDM_FILE_NEW_RSSC,  L"New &RaggieScript (.rssc) Setup...");
         ::AppendMenuW(hFile, MF_STRING, IDM_FILE_OPEN,      L"&Open .rsip, .rsis, or .rssc...\tCtrl+O");
@@ -835,7 +836,7 @@ public:
         HMENU hWiz = ::CreatePopupMenu();
         ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_PROJECT,       L"&New Project AeroWizard (Project Assistant)...\tCtrl+W");
         ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_SUITE,         L"&Unified Multi-Product Suite AeroWizard (Dual-Bar Progress)...");
-        ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_SFX_SIMPLE,    L"&Self-Extracting .EXE && Simple Native Setup AeroWizard...");
+        ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_SFX_SIMPLE,    L"&Self-Extracting .EXE && RaggieScript EXE Setup AeroWizard...");
         ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_PREREQ_MSM,    L"&Runtime Prerequisite (.NET 11 / 10) & .MSM AeroWizard...");
         ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_COMPONENT,     L"&Component & KeyPath AeroWizard (Microsoft Rules)...");
         ::AppendMenuW(hWiz, MF_STRING, IDM_WIZ_FILE_ASSOC,    L"&File Association & Document Icon AeroWizard...");
@@ -854,6 +855,7 @@ public:
         ::AppendMenuW(hBuild, MF_STRING, IDM_BUILD_EMIT_AI,   L"Emit &llms.txt + SKILL.md");
         ::AppendMenuW(hBuild, MF_STRING, IDM_LAUNCH_MSIPRISM, L"Open &MSI Prism SQL Editor (msiprism.exe)");
         ::AppendMenuW(hBuild, MF_STRING, IDM_LAUNCH_RSWSFX,   L"Open Standalone &Self-Extractor (rswsfx.exe)");
+        ::AppendMenuW(hBuild, MF_STRING, IDM_LAUNCH_RSUPDATE, L"Open RaggieSoft &Updater (RsUpdate.exe)");
         ::AppendMenuW(hBuild, MF_STRING, IDM_OPEN_OUTDIR,     L"Open &Output Folder in Explorer");
 
         HMENU hEd = ::CreatePopupMenu();
@@ -5183,6 +5185,15 @@ public:
                     case IDM_LAUNCH_RSWSFX: {
                         const auto sfxExe = self->ideExeDir / L"rswsfx.exe";
                         ::ShellExecuteW(hWnd, L"open", sfxExe.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                        return 0;
+                    }
+                    case IDM_LAUNCH_RSUPDATE: {
+                        if (!rsw::EditionSupportsRsUpdater(self->activeEdition)) {
+                            self->AppendConsole(L"[EDITION] RaggieSoft Updater (RsUpdate.exe) requires Developer, Architect, or Community Edition.\r\n");
+                            return 0;
+                        }
+                        const auto updExe = self->ideExeDir / L"RsUpdate.exe";
+                        ::ShellExecuteW(hWnd, L"open", updExe.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                         return 0;
                     }
                     case IDM_OPEN_OUTDIR: {

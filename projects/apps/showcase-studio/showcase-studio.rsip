@@ -16,10 +16,11 @@
 @include "..\..\shared\raggiesoft-defaults.rsii"
 
 [Package]
+SchemaVersion            = 0.8
 Name                     = RaggieSoft Showcase Studio
 Tagline                  = Accessible 1990s .BMP CD-ROM Menus, FluentMica Hubs & Bespoke _support\ Installers
 WebsiteLabel             = raggiesoftstudio.com/showcase-studio
-Version                  = 0.5.0
+Version                  = 0.5.1
 Manufacturer             = RaggieSoft
 UpgradeCode              = {7A94E2C1-5D83-4B61-9E42-524147474957}
 Architecture             = $(ARCH)
@@ -32,6 +33,12 @@ UniversalDownloadBaseUrl = https://assets.raggiesoft.com/desktop-apps/windows/ap
 OutputDir                = out
 BuildBootstrapper        = true
 AboutUrl                 = https://raggiesoftstudio.com/showcase-studio
+
+[Upgrade]
+Strategy                 = major
+Schedule                 = early
+MigrateFeatures          = true
+UpdateFeedUrl            = https://assets.raggiesoft.com/desktop-apps/windows/studio-apps-manifest.json
 
 [Install]
 DefaultSubdir            = RaggieSoft\RaggieSoft Studio\Showcase Studio

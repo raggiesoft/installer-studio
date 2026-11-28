@@ -16,21 +16,28 @@
 @include "..\..\shared\raggiesoft-defaults.rsii"
 
 [Package]
+SchemaVersion            = 0.8
 Name                     = RaggieSoft Accessibility Studio
 Tagline                  = Enterprise WCAG 2.2 & Section 508 Source-Code Web IDE & CLI
-WebsiteLabel             = a11y.raggiesoft.com
-Version                  = 1.0.0
+WebsiteLabel             = raggiesoftstudio.com/accessibility-studio
+Version                  = 1.0.1
 Manufacturer             = RaggieSoft
 UpgradeCode              = {56DD624B-D43B-4B29-80A8-E06BE8EA7BFB}
 Architecture             = $(ARCH)
 Scope                    = machine
-OutputName               = raggiesoft-accessibility-studio-$(ARCH)
-UniversalOutputName      = raggiesoft-accessibility-studio
+OutputName               = raggiesoft-accessibility-studio-v$(VERSION)-$(ARCH)
+UniversalOutputName      = raggiesoft-accessibility-studio-v$(VERSION)
 BuildUniversal           = true
-UniversalDownloadBaseUrl = https://assets.raggiesoft.com/desktop-apps/windows/apps/accessibility-studio
+UniversalDownloadBaseUrl = https://assets.raggiesoft.com/desktop-apps/windows/apps/accessibility-studio/releases/v$(VERSION)
 OutputDir                = out
 BuildBootstrapper        = true
-AboutUrl                 = https://a11y.raggiesoft.com
+AboutUrl                 = https://raggiesoftstudio.com/accessibility-studio
+
+[Upgrade]
+Strategy                 = major
+Schedule                 = early
+MigrateFeatures          = true
+UpdateFeedUrl            = https://assets.raggiesoft.com/desktop-apps/windows/studio-apps-manifest.json
 
 [Install]
 DefaultSubdir            = RaggieSoft\Accessibility Studio

@@ -2494,6 +2494,385 @@ int wmain() {
                       "v0.7.0 Custom [Dialog.*] & [Control.*] enforce RSW066/RSW093 and stamp #202 bootstrapper controls & SecureCustomProperties",
                       "bad=" + std::to_string(badDlgRc) + " ess=" + std::to_string(essGateRc) + " dev=" + std::to_string(devPassRc) + " stamped=" + std::to_string(stampedCustomDlg));
             }
+
+            // =========================================================================
+            // 13. v0.8.0 Test A — Declarative `[Upgrade]` (`Schedule = late` `6550`,
+            //     `Attributes = 257`, `BaselineMsi` `ProductCode` Inheritance, `RSW097`
+            //     Edition Gate) & `Engine = raggiescript` Retired-File Pruning!
+            // =========================================================================
+            {
+                const auto upgDir     = rsscWorkDir / L"v080-upgrade-test";
+                const auto upgOutDir  = upgDir / L"out";
+                const auto srcPay1    = upgDir / L"payload-v1";
+                const auto srcPay2    = upgDir / L"payload-v2";
+                const auto rsscInst   = upgDir / L"rssc-installed";
+                std::filesystem::create_directories(srcPay1, ec);
+                std::filesystem::create_directories(srcPay2, ec);
+                std::filesystem::copy_file(binDir / L"HelloRaggieSoft.exe", srcPay1 / L"HelloRaggieSoft.exe", std::filesystem::copy_options::overwrite_existing, ec);
+                std::filesystem::copy_file(binDir / L"HelloRaggieSoft.exe", srcPay2 / L"HelloRaggieSoft.exe", std::filesystem::copy_options::overwrite_existing, ec);
+                { std::ofstream f1(srcPay1 / L"RetiredLegacyPlugin.txt", std::ios::binary); f1 << "legacy-v070-plugin"; }
+                { std::ofstream f2(srcPay2 / L"ModernV080Plugin.txt",    std::ios::binary); f2 << "modern-v080-plugin"; }
+
+                const auto lateMajorRsip = upgDir / L"late-major.rsip";
+                {
+                    std::ofstream o(lateMajorRsip, std::ios::binary | std::ios::trunc);
+                    o << "[Package]\r\n"
+                      << "Name = Upgrade Policy App\r\n"
+                      << "Version = 1.0.0\r\n"
+                      << "Manufacturer = RaggieSoft\r\n"
+                      << "UpgradeCode = {A3147E10-2C44-4B98-9D11-524147555047}\r\n"
+                      << "Architecture = " << hostArch << "\r\n"
+                      << "Scope = user\r\n"
+                      << "BuildBootstrapper = false\r\n\r\n"
+                      << "[Upgrade]\r\n"
+                      << "Strategy = major\r\n"
+                      << "Schedule = late\r\n"
+                      << "MigrateFeatures = true\r\n\r\n"
+                      << "[Install]\r\n"
+                      << "DefaultSubdir = RaggieSoft\\UpgradePolicyApp\r\n"
+                      << "MainExecutable = HelloRaggieSoft.exe\r\n\r\n"
+                      << "[Payload.Main]\r\n"
+                      << "Source = " << rsw::WideToUtf8(srcPay1.wstring()) << "\r\n";
+                }
+                const DWORD lateRc = runCli(instbuildExe, L"\"" + lateMajorRsip.wstring() + L"\" --out-dir=\"" + upgOutDir.wstring() + L"\" --output-name=upg-v1");
+                const auto v1Msi = upgOutDir / L"upg-v1.msi";
+
+                bool lateSeqAndAttrsOk = false;
+                std::string v1ProdCode;
+                if (lateRc == 0) {
+                    MSIHANDLE hDb = 0;
+                    if (::MsiOpenDatabaseW(v1Msi.wstring().c_str(), MSIDBOPEN_READONLY, &hDb) == ERROR_SUCCESS) {
+                        v1ProdCode = rsw::QueryMsiPropertyString(hDb, L"ProductCode");
+                        int seqVal = 0, attrVal = 0;
+                        MSIHANDLE hV1 = 0, hR1 = 0;
+                        if (::MsiDatabaseOpenViewW(hDb, L"SELECT `Sequence` FROM `InstallExecuteSequence` WHERE `Action` = 'RemoveExistingProducts'", &hV1) == ERROR_SUCCESS &&
+                            ::MsiViewExecute(hV1, 0) == ERROR_SUCCESS && ::MsiViewFetch(hV1, &hR1) == ERROR_SUCCESS) {
+                            seqVal = ::MsiRecordGetInteger(hR1, 1);
+                            ::MsiCloseHandle(hR1);
+                        }
+                        if (hV1) ::MsiCloseHandle(hV1);
+
+                        MSIHANDLE hV2 = 0, hR2 = 0;
+                        if (::MsiDatabaseOpenViewW(hDb, L"SELECT `Attributes` FROM `Upgrade` WHERE `ActionProperty` = 'RSW_OLDERVERSION_DETECTED'", &hV2) == ERROR_SUCCESS &&
+                            ::MsiViewExecute(hV2, 0) == ERROR_SUCCESS && ::MsiViewFetch(hV2, &hR2) == ERROR_SUCCESS) {
+                            attrVal = ::MsiRecordGetInteger(hR2, 1);
+                            ::MsiCloseHandle(hR2);
+                        }
+                        if (hV2) ::MsiCloseHandle(hV2);
+                        ::MsiCloseHandle(hDb);
+                        lateSeqAndAttrsOk = (seqVal == 6550) && (attrVal == 257);
+                    }
+                }
+
+                // Minor Upgrade inheriting `ProductCode` from `BaselineMsi = upg-v1.msi`!
+                const auto minorRsip = upgDir / L"minor-v101.rsip";
+                {
+                    std::ofstream o(minorRsip, std::ios::binary | std::ios::trunc);
+                    o << "[Package]\r\n"
+                      << "Name = Upgrade Policy App\r\n"
+                      << "Version = 1.0.1\r\n"
+                      << "Manufacturer = RaggieSoft\r\n"
+                      << "UpgradeCode = {A3147E10-2C44-4B98-9D11-524147555047}\r\n"
+                      << "Architecture = " << hostArch << "\r\n"
+                      << "Scope = user\r\n"
+                      << "BuildBootstrapper = false\r\n\r\n"
+                      << "[Upgrade]\r\n"
+                      << "Strategy = minor\r\n"
+                      << "BaselineMsi = " << rsw::WideToUtf8(v1Msi.wstring()) << "\r\n\r\n"
+                      << "[Install]\r\n"
+                      << "DefaultSubdir = RaggieSoft\\UpgradePolicyApp\r\n"
+                      << "MainExecutable = HelloRaggieSoft.exe\r\n\r\n"
+                      << "[Payload.Main]\r\n"
+                      << "Source = " << rsw::WideToUtf8(srcPay1.wstring()) << "\r\n";
+                }
+                const DWORD minorEssGateRc = runCli(instbuildExe, L"--validate --edition=essentials \"" + minorRsip.wstring() + L"\"");
+                const DWORD minorBldRc     = runCli(instbuildExe, L"--edition=architect \"" + minorRsip.wstring() + L"\" --out-dir=\"" + upgOutDir.wstring() + L"\" --output-name=upg-v101-minor");
+                std::string minorProdCode;
+                if (minorBldRc == 0) {
+                    MSIHANDLE hDb = 0;
+                    if (::MsiOpenDatabaseW((upgOutDir / L"upg-v101-minor.msi").wstring().c_str(), MSIDBOPEN_READONLY, &hDb) == ERROR_SUCCESS) {
+                        minorProdCode = rsw::QueryMsiPropertyString(hDb, L"ProductCode");
+                        ::MsiCloseHandle(hDb);
+                    }
+                }
+
+                // `Engine = raggiescript` (**RaggieScript EXE**) upgrade `0.7.0 -> 0.8.0` pruning `RetiredLegacyPlugin.txt`!
+                auto writeRsscExeRsip = [&](const std::filesystem::path& p, const char* ver, const std::filesystem::path& payFolder) {
+                    std::ofstream o(p, std::ios::binary | std::ios::trunc);
+                    o << "[Package]\r\n"
+                      << "Name = RaggieScript EXE Prune App\r\n"
+                      << "Version = " << ver << "\r\n"
+                      << "Manufacturer = RaggieSoft\r\n"
+                      << "UpgradeCode = {B4258F21-3D55-4CA9-AE22-524147555048}\r\n"
+                      << "Architecture = " << hostArch << "\r\n"
+                      << "Scope = user\r\n"
+                      << "Engine = raggiescript\r\n"
+                      << "HideFromInstalledApps = true\r\n\r\n"
+                      << "[Upgrade]\r\n"
+                      << "UpdateFeedUrl = https://assets.raggiesoft.com/desktop-apps/windows/studio-apps-manifest.json\r\n\r\n"
+                      << "[Install]\r\n"
+                      << "DefaultSubdir = RaggieSoft\\PruneApp\r\n"
+                      << "MainExecutable = HelloRaggieSoft.exe\r\n\r\n"
+                      << "[Payload.Files]\r\n"
+                      << "Source = " << rsw::WideToUtf8(payFolder.wstring()) << "\r\n";
+                };
+                const auto rsExeV1Rsip = upgDir / L"rsexe-v1.rsip";
+                const auto rsExeV2Rsip = upgDir / L"rsexe-v2.rsip";
+                writeRsscExeRsip(rsExeV1Rsip, "0.7.0", srcPay1);
+                writeRsscExeRsip(rsExeV2Rsip, "0.8.0", srcPay2);
+
+                wchar_t prevVReg[MAX_PATH * 4]{};
+                const DWORD prevVLen = ::GetEnvironmentVariableW(L"RSW_TEST_REG_STORE_DIR", prevVReg, static_cast<DWORD>(std::size(prevVReg)));
+                const auto upgVirtReg = upgDir / L"virt-reg";
+                std::filesystem::create_directories(upgVirtReg, ec);
+                ::SetEnvironmentVariableW(L"RSW_TEST_REG_STORE_DIR", upgVirtReg.wstring().c_str());
+
+                const DWORD b1 = runCli(instbuildExe, L"\"" + rsExeV1Rsip.wstring() + L"\" --out-dir=\"" + upgOutDir.wstring() + L"\" --output-name=rsexe-v070");
+                const DWORD b2 = runCli(instbuildExe, L"\"" + rsExeV2Rsip.wstring() + L"\" --out-dir=\"" + upgOutDir.wstring() + L"\" --output-name=rsexe-v080");
+                const DWORD r1 = (b1 == 0) ? runCli(upgOutDir / L"rsexe-v070-setup.exe", L"/s INSTALLDIR=\"" + rsscInst.wstring() + L"\"") : 1u;
+                const bool hadRetiredAfterV1 = std::filesystem::exists(rsscInst / L"RetiredLegacyPlugin.txt", ec);
+                const DWORD r2 = (r1 == 0 && b2 == 0) ? runCli(upgOutDir / L"rsexe-v080-setup.exe", L"/s INSTALLDIR=\"" + rsscInst.wstring() + L"\"") : 1u;
+                const bool prunedRetiredInV2 = !std::filesystem::exists(rsscInst / L"RetiredLegacyPlugin.txt", ec);
+                const bool hasModernInV2     = std::filesystem::exists(rsscInst / L"ModernV080Plugin.txt", ec);
+                const bool hasUpdateCfgJson  = std::filesystem::exists(rsscInst / L"UpdateConfig.json", ec);
+
+                ::SetEnvironmentVariableW(L"RSW_TEST_REG_STORE_DIR", (prevVLen > 0) ? prevVReg : nullptr);
+
+                Check(lateSeqAndAttrsOk &&
+                      minorEssGateRc != 0 && minorBldRc == 0 &&
+                      !v1ProdCode.empty() && rsw::EqualsIgnoreCase(v1ProdCode, minorProdCode) &&
+                      hadRetiredAfterV1 && r2 == 0 && prunedRetiredInV2 && hasModernInV2 && hasUpdateCfgJson,
+                      "v0.8.0 [Upgrade] Schedule=late (6550), Attributes=257, Minor BaselineMsi ProductCode inheritance, RSW097 gate, & RaggieScript EXE retired-file pruning verified",
+                      "late=" + std::to_string(lateSeqAndAttrsOk) + " v1PC=" + v1ProdCode + " minPC=" + minorProdCode + " pruned=" + std::to_string(prunedRetiredInV2));
+            }
+
+            // =========================================================================
+            // 14. v0.8.0 Test B — `--plan-update` & `RsPatch.exe build-msp` Component-Rule
+            //     Gates (`RSW081` Deleted Component & `RSW084` Small Update Hotfix)!
+            // =========================================================================
+            {
+                const auto planDir    = rsscWorkDir / L"v080-plan-msp";
+                const auto planOut    = planDir / L"out";
+                const auto rsPatchExe = binDir / L"RsPatch.exe";
+                std::filesystem::create_directories(planDir, ec);
+                { std::ofstream f(planDir / L"CoreA.txt", std::ios::binary); f << "CoreA v1"; }
+                { std::ofstream f(planDir / L"ExtraB.txt", std::ios::binary); f << "ExtraB v1"; }
+                { std::ofstream f(planDir / L"CoreA_v2.txt", std::ios::binary); f << "CoreA v1 hotfixed bytes!"; }
+                std::filesystem::copy_file(planDir / L"CoreA_v2.txt", planDir / L"hotfix_dir" / L"CoreA.txt", std::filesystem::copy_options::overwrite_existing, ec);
+                std::filesystem::create_directories(planDir / L"hotfix_dir", ec);
+                std::filesystem::copy_file(planDir / L"CoreA_v2.txt", planDir / L"hotfix_dir" / L"CoreA.txt", std::filesystem::copy_options::overwrite_existing, ec);
+                std::filesystem::copy_file(planDir / L"ExtraB.txt",   planDir / L"hotfix_dir" / L"ExtraB.txt", std::filesystem::copy_options::overwrite_existing, ec);
+
+                const std::string fixedPc = "{C5369A32-4E66-4DB0-BF33-524147555049}";
+                const std::string fixedUc = "{D647AB43-5F77-4EC1-AF44-524147555050}";
+
+                auto makePlanRsip = [&](const std::filesystem::path& p, const char* ver, bool includeExtraB, bool useHotfixCore) {
+                    std::ofstream o(p, std::ios::binary | std::ios::trunc);
+                    o << "[Package]\r\n"
+                      << "Name = Component Rule Test\r\n"
+                      << "Version = " << ver << "\r\n"
+                      << "Manufacturer = RaggieSoft\r\n"
+                      << "UpgradeCode = " << fixedUc << "\r\n"
+                      << "ProductCode = " << fixedPc << "\r\n"
+                      << "Architecture = " << hostArch << "\r\n"
+                      << "Scope = user\r\n"
+                      << "BuildBootstrapper = false\r\n\r\n"
+                      << "[Install]\r\n"
+                      << "DefaultSubdir = RaggieSoft\\CompRuleTest\r\n"
+                      << "MainExecutable = CoreA.txt\r\n\r\n"
+                      << "[Payload.Core]\r\n"
+                      << "Source = " << rsw::WideToUtf8(((useHotfixCore ? (planDir / L"hotfix_dir") : planDir) / L"CoreA.txt").wstring()) << "\r\n";
+                    if (includeExtraB) {
+                        o << "\r\n[Payload.Extra]\r\n"
+                          << "Source = " << rsw::WideToUtf8((planDir / L"ExtraB.txt").wstring()) << "\r\n";
+                    }
+                };
+                const auto baseRsip     = planDir / L"base.rsip";
+                const auto delCompRsip  = planDir / L"deleted-comp.rsip";
+                const auto hotfixRsip   = planDir / L"small-hotfix.rsip";
+                makePlanRsip(baseRsip,    "1.0.0", true,  false);
+                makePlanRsip(delCompRsip, "1.0.1", false, false); // Deletes `ExtraB.txt` component while keeping `ProductCode`!
+                makePlanRsip(hotfixRsip,  "1.0.0", true,  true);  // Same `1.0.0` version + modified `CoreA.txt`!
+
+                runCli(instbuildExe, L"\"" + baseRsip.wstring()    + L"\" --out-dir=\"" + planOut.wstring() + L"\" --output-name=base-100");
+                runCli(instbuildExe, L"\"" + delCompRsip.wstring() + L"\" --out-dir=\"" + planOut.wstring() + L"\" --output-name=bad-minor-101");
+                runCli(instbuildExe, L"\"" + hotfixRsip.wstring()  + L"\" --out-dir=\"" + planOut.wstring() + L"\" --output-name=hotfix-100");
+
+                const auto baseMsi   = planOut / L"base-100.msi";
+                const auto badMinMsi = planOut / L"bad-minor-101.msi";
+                const auto hotMsi    = planOut / L"hotfix-100.msi";
+                const auto hotMsp    = planOut / L"hotfix-100.msp";
+
+                // 1) Deleted Component on Minor Upgrade MUST fail `--plan-update` AND `RsPatch.exe build-msp` (`RSW081`)!
+                rsw::UpdatePlanReport badPlan{};
+                std::string pErr;
+                const bool analyzedBad = rsw::AnalyzeInstallerUpdatePlan(baseMsi, badMinMsi, false, badPlan, pErr);
+                const DWORD badMspRc   = runCli(rsPatchExe, L"build-msp \"" + baseMsi.wstring() + L"\" \"" + badMinMsi.wstring() + L"\" \"" + (planOut / L"should-fail.msp").wstring() + L"\"");
+
+                // 2) Same-Version Small Update MUST fail without `--allow-small-update` (`RSW084`) and SUCCEED with `--allow-small-update`!
+                const DWORD smallBlockedRc = runCli(rsPatchExe, L"build-msp \"" + baseMsi.wstring() + L"\" \"" + hotMsi.wstring() + L"\" \"" + hotMsp.wstring() + L"\"");
+                const DWORD smallAllowedRc = runCli(rsPatchExe, L"build-msp \"" + baseMsi.wstring() + L"\" \"" + hotMsi.wstring() + L"\" \"" + hotMsp.wstring() + L"\" --allow-small-update");
+
+                Check(analyzedBad && !badPlan.mspEligible && badPlan.HasBlockingErrors() && badMspRc != 0 &&
+                      smallBlockedRc != 0 && smallAllowedRc == 0 && std::filesystem::exists(hotMsp, ec),
+                      "v0.8.0 --plan-update & RsPatch.exe build-msp block RSW081 deleted Component on Minor Upgrade and gate RSW084 Small Update .MSP cleanly",
+                      "mspElig=" + std::to_string(badPlan.mspEligible) + " badRc=" + std::to_string(badMspRc) + " smBlk=" + std::to_string(smallBlockedRc) + " smOk=" + std::to_string(smallAllowedRc));
+            }
+
+            // =========================================================================
+            // 15. v0.8.0 Test C & D — `RsPatch.exe` (`msdelta.dll`) `.rswpatch` Delta,
+            //     Tamper Rejection, LIFO Rollback on Fault, & `RsUpdate.exe` DRY
+            //     `apps-manifest.json` Delta-vs-Full Auto-Selection!
+            // =========================================================================
+            {
+                const auto deltaDir   = rsscWorkDir / L"v080-delta-updater";
+                const auto rsPatchExe = binDir / L"RsPatch.exe";
+                const auto rsUpdExe   = binDir / L"RsUpdate.exe";
+                const auto snapV070   = deltaDir / L"snap-070";
+                const auto snapV080   = deltaDir / L"snap-080";
+                const auto liveDir    = deltaDir / L"live-install";
+                const auto fullSetup  = binDir / L"HelloRaggieSoft.exe"; // Dummy stand-in verified in check mode
+                std::filesystem::create_directories(snapV070, ec);
+                std::filesystem::create_directories(snapV080, ec);
+                std::filesystem::create_directories(liveDir, ec);
+
+                // Build realistic 32 KB binary payload so `msdelta.dll` exercises real block matching!
+                std::string bigV1(32768, 'A');
+                for (std::size_t i = 0; i < bigV1.size(); i += 64) bigV1[i] = static_cast<char>('0' + (i % 10));
+                std::string bigV2 = bigV1;
+                bigV2.replace(4096, 28, "RAGGIESOFT_V080_DELTA_PATCH!");
+
+                { std::ofstream f(snapV070 / L"EngineCore.bin", std::ios::binary); f.write(bigV1.data(), static_cast<std::streamsize>(bigV1.size())); }
+                { std::ofstream f(snapV070 / L"KeepReadme.txt", std::ios::binary); f << "Unchanged ReadMe across 0.7.0 and 0.8.0"; }
+                { std::ofstream f(snapV070 / L"OldHelper.dat",  std::ios::binary); f << "Retired in 0.8.0"; }
+
+                { std::ofstream f(snapV080 / L"EngineCore.bin", std::ios::binary); f.write(bigV2.data(), static_cast<std::streamsize>(bigV2.size())); }
+                { std::ofstream f(snapV080 / L"KeepReadme.txt", std::ios::binary); f << "Unchanged ReadMe across 0.7.0 and 0.8.0"; }
+                { std::ofstream f(snapV080 / L"NewFeature.txt", std::ios::binary); f << "Brand new 0.8.0 feature asset"; }
+
+                // Seed `liveDir` with `v0.7.0` files + `Uninstall.rswm`!
+                for (const auto& fn : {L"EngineCore.bin", L"KeepReadme.txt", L"OldHelper.dat"}) {
+                    std::filesystem::copy_file(snapV070 / fn, liveDir / fn, std::filesystem::copy_options::overwrite_existing, ec);
+                }
+                {
+                    std::ofstream um(liveDir / L"Uninstall.rswm", std::ios::binary | std::ios::trunc);
+                    um << "[NativeUninstall]\nProductName=Delta Studio App\nVersion=0.7.0\nManufacturer=RaggieSoft\nPerMachine=false\n"
+                       << "InstallDir=" << rsw::WideToUtf8(liveDir.wstring()) << "\nFileCount=3\n"
+                       << "File_0=" << rsw::WideToUtf8((liveDir / L"EngineCore.bin").wstring()) << "\n"
+                       << "File_1=" << rsw::WideToUtf8((liveDir / L"KeepReadme.txt").wstring()) << "\n"
+                       << "File_2=" << rsw::WideToUtf8((liveDir / L"OldHelper.dat").wstring()) << "\n";
+                }
+
+                const auto patchFile    = deltaDir / L"app-from-0.7.0-to-0.8.0-arm64.rswpatch";
+                const auto tamperedFile = deltaDir / L"tampered.rswpatch";
+                const std::string upgGuid = "{E758BC54-6A88-4FD2-BF55-524147555051}";
+
+                const DWORD bldPatchRc = runCli(
+                    rsPatchExe,
+                    L"build-exe \"" + snapV070.wstring() + L"\" \"" + snapV080.wstring() + L"\" \"" + patchFile.wstring() +
+                    L"\" --version-from=0.7.0 --version-to=0.8.0 --upgrade-code=" + rsw::Utf8ToWide(upgGuid));
+
+                // Tamper 1 byte in `tampered.rswpatch` -> MUST be rejected before touching `liveDir`!
+                std::vector<std::uint8_t> pBytes;
+                rsw::ReadBinaryFileBytes(patchFile, pBytes, surgErr);
+                if (pBytes.size() > 32) pBytes[24] ^= 0xFFu;
+                {
+                    std::ofstream tf(tamperedFile, std::ios::binary | std::ios::trunc);
+                    tf.write(reinterpret_cast<const char*>(pBytes.data()), static_cast<std::streamsize>(pBytes.size()));
+                }
+                const DWORD tamperRc = runCli(rsPatchExe, L"apply \"" + tamperedFile.wstring() + L"\" \"" + liveDir.wstring() + L"\" /s");
+
+                // Simulate mid-patch fault (`--simulate-fault=2`) -> MUST roll back `EngineCore.bin` (`v1`), `OldHelper.dat`, & remove `NewFeature.txt`!
+                const DWORD faultRc = runCli(rsPatchExe, L"apply \"" + patchFile.wstring() + L"\" \"" + liveDir.wstring() + L"\" /s --simulate-fault=2");
+                std::string expShaV1, expShaV2, curShaAfterFault;
+                rsw::ComputeFileSha256Hex(snapV070 / L"EngineCore.bin", expShaV1);
+                rsw::ComputeFileSha256Hex(snapV080 / L"EngineCore.bin", expShaV2);
+                rsw::ComputeFileSha256Hex(liveDir  / L"EngineCore.bin", curShaAfterFault);
+                const bool rolledBackCleanly =
+                    rsw::EqualsIgnoreCase(curShaAfterFault, expShaV1) &&
+                    std::filesystem::exists(liveDir / L"OldHelper.dat", ec) &&
+                    !std::filesystem::exists(liveDir / L"NewFeature.txt", ec);
+
+                Check(bldPatchRc == 0 && pBytes.size() < 4096u /* 32 KB -> < 4 KB binary delta! */ &&
+                      tamperRc != 0 && faultRc != 0 && rolledBackCleanly,
+                      "v0.8.0 RsPatch.exe msdelta.dll .rswpatch (< 4 KB for 32 KB file), SHA-256 tamper rejection, & atomic LIFO rollback verified",
+                      "patchBytes=" + std::to_string(pBytes.size()) + " tamper=" + std::to_string(tamperRc) + " fault=" + std::to_string(faultRc) + " rb=" + std::to_string(rolledBackCleanly));
+
+                // Now test `RsUpdate.exe` consuming a 100% DRY `RaggieSoft Launcher` `apps-manifest.json`!
+                std::string patchSha, fullSha;
+                rsw::ComputeFileSha256Hex(patchFile, patchSha);
+                rsw::ComputeFileSha256Hex(fullSetup, fullSha);
+                const auto manifestJson = deltaDir / L"apps-manifest.json";
+                {
+                    std::ofstream mj(manifestJson, std::ios::binary | std::ios::trunc);
+                    mj << "[\n"
+                       << "  {\n"
+                       << "    \"id\": \"delta-studio-app\",\n"
+                       << "    \"innoAppId\": \"" << upgGuid << "\",\n"
+                       << "    \"title\": \"Delta Studio App\",\n"
+                       << "    \"imprint\": \"RaggieSoft Studio\",\n"
+                       << "    \"category\": \"Studio\",\n"
+                       << "    \"description\": \"Test app for DRY Launcher & RsUpdate manifest\",\n"
+                       << "    \"latestVersion\": \"0.8.0\",\n"
+                       << "    \"exeName\": \"EngineCore.bin\",\n"
+                       << "    \"defaultSubFolder\": \"RaggieSoft\\\\DeltaStudio\",\n"
+                       << "    \"installerFileName\": \"HelloRaggieSoft.exe\",\n"
+                       << "    \"installerDownloadUrl\": \"file:///" << rsw::WideToUtf8(fullSetup.generic_wstring()) << "\",\n"
+                       << "    \"sha256\": \"" << fullSha << "\",\n"
+                       << "    \"sizeBytes\": " << std::filesystem::file_size(fullSetup, ec) << ",\n"
+                       << "    \"webUrl\": \"https://raggiesoftstudio.com/download\",\n"
+                       << "    \"patches\": [\n"
+                       << "      {\n"
+                       << "        \"fromVersion\": \"0.7.0\",\n"
+                       << "        \"arch\": \"" << hostArch << "\",\n"
+                       << "        \"kind\": \"rswpatch\",\n"
+                       << "        \"url\": \"file:///" << rsw::WideToUtf8(patchFile.generic_wstring()) << "\",\n"
+                       << "        \"sha256\": \"" << patchSha << "\",\n"
+                       << "        \"sizeBytes\": " << std::filesystem::file_size(patchFile, ec) << "\n"
+                       << "      }\n"
+                       << "    ]\n"
+                       << "  }\n"
+                       << "]\n";
+                }
+
+                const auto json070 = deltaDir / L"check-070.json";
+                const auto json060 = deltaDir / L"check-060.json";
+                const DWORD chk070Rc = runCli(
+                    rsUpdExe,
+                    L"--check --manifest=\"" + manifestJson.wstring() + L"\" --app-id=delta-studio-app --installed-version=0.7.0 --arch=" +
+                    rsw::Utf8ToWide(hostArch) + L" --json-out=\"" + json070.wstring() + L"\"");
+                const DWORD chk060Rc = runCli(
+                    rsUpdExe,
+                    L"--check --manifest=\"" + manifestJson.wstring() + L"\" --app-id=delta-studio-app --installed-version=0.6.0 --arch=" +
+                    rsw::Utf8ToWide(hostArch) + L" --json-out=\"" + json060.wstring() + L"\"");
+
+                std::vector<std::uint8_t> j070Raw, j060Raw;
+                rsw::ReadBinaryFileBytes(json070, j070Raw, surgErr);
+                rsw::ReadBinaryFileBytes(json060, j060Raw, surgErr);
+                const std::string j070Str(reinterpret_cast<const char*>(j070Raw.data()), j070Raw.size());
+                const std::string j060Str(reinterpret_cast<const char*>(j060Raw.data()), j060Raw.size());
+
+                // Apply the `.rswpatch` delta end-to-end via `RsUpdate.exe --apply /s`!
+                const DWORD applyUpdRc = runCli(
+                    rsUpdExe,
+                    L"--apply /s --manifest=\"" + manifestJson.wstring() + L"\" --app-id=delta-studio-app --installed-version=0.7.0 --arch=" +
+                    rsw::Utf8ToWide(hostArch) + L" --install-dir=\"" + liveDir.wstring() + L"\"");
+                std::string shaAfterUpd;
+                rsw::ComputeFileSha256Hex(liveDir / L"EngineCore.bin", shaAfterUpd);
+                const DWORD chk080Rc = runCli(
+                    rsUpdExe,
+                    L"--check --manifest=\"" + manifestJson.wstring() + L"\" --app-id=delta-studio-app --installed-version=0.8.0 --arch=" +
+                    rsw::Utf8ToWide(hostArch));
+
+                Check(chk070Rc == 10 && j070Str.find("\"selectedKind\": \"rswpatch\"") != std::string::npos &&
+                      chk060Rc == 10 && j060Str.find("\"selectedKind\": \"installer\"") != std::string::npos &&
+                      applyUpdRc == 0 && rsw::EqualsIgnoreCase(shaAfterUpd, expShaV2) &&
+                      std::filesystem::exists(liveDir / L"NewFeature.txt", ec) &&
+                      !std::filesystem::exists(liveDir / L"OldHelper.dat", ec) &&
+                      chk080Rc == 0,
+                      "v0.8.0 RsUpdate.exe DRY Launcher apps-manifest.json auto-selects .rswpatch delta vs full installer, verifies SHA-256, & applies cleanly",
+                      "c070=" + std::to_string(chk070Rc) + " c060=" + std::to_string(chk060Rc) + " app=" + std::to_string(applyUpdRc) + " c080=" + std::to_string(chk080Rc));
+            }
         }
 
         if (rsscVirtReg) {

@@ -1419,7 +1419,13 @@ inline bool ExecuteNativeOrSfxTransaction(
     // Optional `UpdateConfig.json` (`[Upgrade] UpdateFeedUrl`) consumed zero-config by `RsUpdate.exe`!
     if (!manifest.updateFeedUrl.empty()) {
         const auto updCfgPath = opts.targetDir / L"UpdateConfig.json";
-        std::string appId = SlugifyName(manifest.productName);
+        std::string appId;
+        for (char ch : manifest.productName) {
+            if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) appId.push_back(ch);
+            else if (ch >= 'A' && ch <= 'Z') appId.push_back(static_cast<char>(ch - 'A' + 'a'));
+            else if (!appId.empty() && appId.back() != '-') appId.push_back('-');
+        }
+        while (!appId.empty() && appId.back() == '-') appId.pop_back();
         if (appId.rfind("raggiesoft-", 0) == 0 && appId.size() > 11) appId = appId.substr(11);
         std::ofstream uc(updCfgPath, std::ios::binary | std::ios::trunc);
         if (uc) {

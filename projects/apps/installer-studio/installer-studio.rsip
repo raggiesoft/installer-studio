@@ -1,16 +1,17 @@
 ; ==============================================================================
 ; FILE: projects/apps/installer-studio/installer-studio.rsip
-; APPLICATION: RaggieSoft Installer Studio (v0.7.0 Private Staged Milestone)
+; APPLICATION: RaggieSoft Installer Studio (v0.8.0 Release)
 ; COMPILER: RaggieSoft Installer Studio (instbuild.exe -> .msi + Universal Setup.exe)
 ; ==============================================================================
 
 @include "..\..\shared\raggiesoft-defaults.rsii"
 
 [Package]
+SchemaVersion            = 0.8
 Name                     = RaggieSoft Installer Studio
-Tagline                  = Install Without Limits - Tree-First AeroWizard IDE, MSI Compiler, Prism & Help
+Tagline                  = Install Without Limits - Tree-First IDE, MSI/MSP Compiler, RsPatch, RsUpdate & Prism
 WebsiteLabel             = raggiesoftstudio.com
-Version                  = 0.7.0
+Version                  = 0.8.0
 Manufacturer             = RaggieSoft
 UpgradeCode              = {D9C0EF36-990C-519C-A9C7-D7E19FDD5627}
 Architecture             = $(ARCH)
@@ -22,6 +23,13 @@ UniversalDownloadBaseUrl = https://assets.raggiesoft.com/desktop-apps/windows/ap
 OutputDir                = out
 BuildBootstrapper        = true
 AboutUrl                 = https://raggiesoftstudio.com
+
+[Upgrade]
+Strategy                 = major
+Schedule                 = early
+MigrateFeatures          = true
+AllowSameVersion         = false
+UpdateFeedUrl            = https://assets.raggiesoft.com/desktop-apps/windows/studio-apps-manifest.json
 
 [Install]
 DefaultSubdir         = RaggieSoft\Installer Studio
@@ -40,8 +48,8 @@ FinishLaunchCheckbox  = &Open RaggieSoft Installer Studio when setup finishes
 
 ; Hierarchical MSI SelectionTree Features with plain-English `Inclusion` tiers (`minimal` vs `typical`)!
 [Feature.Main]
-Title                 = Visual IDE, CLI Compiler, MSI Prism & Help Viewer
-Description           = Core 64-bit native Win32 C++20 executables (InstallerStudio.exe, instbuild.exe, SetupWizard.exe, msiprism.exe, RaggieSoftHelp.exe).
+Title                 = Visual IDE, CLI Compiler, RsPatch, RsUpdate, MSI Prism & Help Viewer
+Description           = Core 64-bit native Win32 C++20 executables (InstallerStudio.exe, instbuild.exe, SetupWizard.exe, raggiescript.exe, RsPatch.exe, RsUpdate.exe, rswsfx.exe, msiprism.exe, RaggieSoftHelp.exe).
 Inclusion             = minimal
 DisallowAbsent        = true
 
@@ -149,6 +157,11 @@ Location              = StartMenu
 [Shortcut.SelfExtractor]
 Name                  = RaggieSoft Self-Extractor
 TargetFile            = rswsfx.exe
+Location              = StartMenu
+
+[Shortcut.RsUpdater]
+Name                  = RaggieSoft Updater
+TargetFile            = RsUpdate.exe
 Location              = StartMenu
 
 [Shortcut.HelpViewer]

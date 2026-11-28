@@ -47,6 +47,7 @@
 #include "RswLzmsCompression.hpp"
 #include "RswNativeAndSuiteEngine.hpp"
 #include "RswPlatform.hpp"
+#include "RswRaggieScript.hpp"
 #include "RswVersion.hpp"
 #include "RswZipAndPak.hpp"
 
@@ -279,11 +280,36 @@ inline bool ReadStr(const std::uint8_t* p, std::size_t n, std::size_t& off, std:
     return true;
 }
 
-/// Computes SHA-256 hex digest directly over an in-memory buffer via `bcrypt.dll`.
+/// Computes SHA-256 hex digest directly over an in-memory buffer via Windows CNG (`bcrypt.dll`).
 inline std::string Sha256BufferHex(const std::uint8_t* ptr, std::size_t len) {
-    std::string hex;
-    ComputeBufferSha256Hex(ptr, len, hex);
-    return AsciiLower(hex);
+    BCRYPT_ALG_HANDLE hAlg  = nullptr;
+    BCRYPT_HASH_HANDLE hHash = nullptr;
+    std::array<std::uint8_t, 32> digest{};
+    bool ok = false;
+    if (::BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) == 0) {
+        DWORD objLen = 0, cbRes = 0;
+        ::BCryptGetProperty(hAlg, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&objLen), sizeof(objLen), &cbRes, 0);
+        std::vector<UCHAR> hashObj(objLen);
+        if (::BCryptCreateHash(hAlg, &hHash, hashObj.data(), objLen, nullptr, 0, 0) == 0) {
+            static const std::uint8_t kDummy = 0;
+            if (::BCryptHashData(
+                    hHash,
+                    const_cast<PUCHAR>((ptr && len > 0) ? ptr : &kDummy),
+                    static_cast<ULONG>(len),
+                    0) == 0 &&
+                ::BCryptFinishHash(hHash, digest.data(), static_cast<ULONG>(digest.size()), 0) == 0) {
+                ok = true;
+            }
+            ::BCryptDestroyHash(hHash);
+        }
+        ::BCryptCloseAlgorithmProvider(hAlg, 0);
+    }
+    if (!ok) return {};
+    char hex[65]{};
+    for (std::size_t i = 0; i < digest.size(); ++i) {
+        std::snprintf(hex + i * 2, 3, "%02x", digest[i]);
+    }
+    return std::string(hex, 64);
 }
 
 /// Normalizes an archive path from `RSWPAK1` (stripping a leading `"INSTALLDIR/"` prefix when present)

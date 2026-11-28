@@ -14,10 +14,11 @@
 @include "..\..\shared\raggiesoft-defaults.rsii"
 
 [Package]
+SchemaVersion            = 0.8
 Name                     = RaggieSoft Training Studio
 Tagline                  = Bandwidth-Resilient WCAG 2.2 AA SCORM 1.2 & 2004 Courseware IDE
 WebsiteLabel             = raggiesoftstudio.com/training-studio
-Version                  = 0.5.0
+Version                  = 0.5.1
 Manufacturer             = RaggieSoft
 UpgradeCode              = {8A41F27B-6C3D-48E9-A11B-9F5C22D04E81}
 Architecture             = $(ARCH)
@@ -30,6 +31,12 @@ UniversalDownloadBaseUrl = https://assets.raggiesoft.com/desktop-apps/windows/ap
 OutputDir                = out
 BuildBootstrapper        = true
 AboutUrl                 = https://raggiesoftstudio.com/training-studio
+
+[Upgrade]
+Strategy                 = major
+Schedule                 = early
+MigrateFeatures          = true
+UpdateFeedUrl            = https://assets.raggiesoft.com/desktop-apps/windows/studio-apps-manifest.json
 
 [Install]
 DefaultSubdir            = RaggieSoft\RaggieSoft Studio\Training Studio

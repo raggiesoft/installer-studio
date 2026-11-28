@@ -23,7 +23,7 @@ $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Set-Location $RepoRoot
 
 Write-Host "======================================================================" -ForegroundColor Cyan
-Write-Host "  RaggieSoft Installer Studio v0.7.0 - x64 + ARM64 Build & Test Suite" -ForegroundColor Cyan
+Write-Host "  RaggieSoft Installer Studio v0.8.0 - x64 + ARM64 Build & Test Suite" -ForegroundColor Cyan
 Write-Host "======================================================================" -ForegroundColor Cyan
 
 # Step 1: Locate Visual Studio `vcvarsall.bat` for `cl.exe`, `rc.exe`, & Windows 11 SDK
@@ -73,6 +73,8 @@ foreach ($targetArch in @("arm64", "x64")) {
         "rc.exe /nologo /fo `"$objDir\RswHelp.res`" `"$RepoRoot\src\help\RswHelpViewer.rc`" || exit /b 1",
         "rc.exe /nologo /fo `"$objDir\RswScript.res`" `"$RepoRoot\src\script\RswScript.rc`" || exit /b 1",
         "rc.exe /nologo /fo `"$objDir\RswSfx.res`" `"$RepoRoot\src\sfx\RswSfx.rc`" || exit /b 1",
+        "rc.exe /nologo /fo `"$objDir\RswPatch.res`" `"$RepoRoot\src\patch\RswPatch.rc`" || exit /b 1",
+        "rc.exe /nologo /fo `"$objDir\RswUpdate.res`" `"$RepoRoot\src\updater\RswUpdate.rc`" || exit /b 1",
         "rc.exe /nologo /fo `"$objDir\Hello.res`" `"$RepoRoot\examples\hello-raggiesoft\HelloRaggieSoft.rc`" || exit /b 1",
         "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 `"$RepoRoot\src\compiler\RswBuildMain.cpp`" `"$objDir\RswBuild.res`" /Fo`"$objDir\RswBuildMain.obj`" /Fe`"$outBinDir\instbuild.exe`" /link /INCREMENTAL:NO || exit /b 1",
         "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 `"$RepoRoot\src\bootstrapper\RswSetupMain.cpp`" `"$objDir\RswSetup.res`" /Fo`"$objDir\RswSetupMain.obj`" /Fe`"$outBinDir\SetupWizard.exe`" /link /INCREMENTAL:NO /SUBSYSTEM:WINDOWS || exit /b 1",
@@ -81,6 +83,8 @@ foreach ($targetArch in @("arm64", "x64")) {
         "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 `"$RepoRoot\src\help\RswHelpMain.cpp`" `"$objDir\RswHelp.res`" /Fo`"$objDir\RswHelpMain.obj`" /Fe`"$outBinDir\RaggieSoftHelp.exe`" /link /INCREMENTAL:NO /SUBSYSTEM:WINDOWS || exit /b 1",
         "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 `"$RepoRoot\src\script\RswScriptMain.cpp`" `"$objDir\RswScript.res`" /Fo`"$objDir\RswScriptMain.obj`" /Fe`"$outBinDir\raggiescript.exe`" /link /INCREMENTAL:NO || exit /b 1",
         "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 `"$RepoRoot\src\sfx\RswSfxMain.cpp`" `"$objDir\RswSfx.res`" /Fo`"$objDir\RswSfxMain.obj`" /Fe`"$outBinDir\rswsfx.exe`" /link /INCREMENTAL:NO /SUBSYSTEM:WINDOWS || exit /b 1",
+        "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 `"$RepoRoot\src\patch\RswPatchMain.cpp`" `"$objDir\RswPatch.res`" /Fo`"$objDir\RswPatchMain.obj`" /Fe`"$outBinDir\RsPatch.exe`" /link /INCREMENTAL:NO || exit /b 1",
+        "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 `"$RepoRoot\src\updater\RswUpdateMain.cpp`" `"$objDir\RswUpdate.res`" /Fo`"$objDir\RswUpdateMain.obj`" /Fe`"$outBinDir\RsUpdate.exe`" /link /INCREMENTAL:NO /SUBSYSTEM:WINDOWS || exit /b 1",
         "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 /I`"$RepoRoot\..\studio-shared\include`" `"$RepoRoot\src\tests\RswSelfTests.cpp`" /Fo`"$objDir\RswSelfTests.obj`" /Fe`"$outBinDir\insttests.exe`" /link /INCREMENTAL:NO || exit /b 1",
         "cl.exe /nologo /std:c++20 /O2 /MT /EHsc /utf-8 /W4 `"$RepoRoot\examples\hello-raggiesoft\HelloRaggieSoft.cpp`" `"$objDir\Hello.res`" /Fo`"$objDir\Hello.obj`" /Fe`"$outBinDir\HelloRaggieSoft.exe`" /link /INCREMENTAL:NO /SUBSYSTEM:WINDOWS || exit /b 1"
     )
@@ -103,6 +107,8 @@ $instBuild  = Join-Path $RepoRoot "bin\$nativeArch\instbuild.exe"
 $instStudio = Join-Path $RepoRoot "bin\$nativeArch\InstallerStudio.exe"
 $rswHelp    = Join-Path $RepoRoot "bin\$nativeArch\RaggieSoftHelp.exe"
 $rswSfx     = Join-Path $RepoRoot "bin\$nativeArch\rswsfx.exe"
+$rsPatch    = Join-Path $RepoRoot "bin\$nativeArch\RsPatch.exe"
+$rsUpdate   = Join-Path $RepoRoot "bin\$nativeArch\RsUpdate.exe"
 $instTests  = Join-Path $RepoRoot "bin\$nativeArch\insttests.exe"
 
 # Step 3: Emit AI Specs (`specs/` + `.agents/skills/raggiesoft-installer-studio/`)
@@ -147,7 +153,11 @@ if ($LASTEXITCODE -ne 0) { throw "InstallerStudio.exe headless smoke test failed
 if ($LASTEXITCODE -ne 0) { throw "RaggieSoftHelp.exe headless smoke test failed ($LASTEXITCODE)!" }
 & $rswSfx --headless-smoke-test
 if ($LASTEXITCODE -ne 0) { throw "rswsfx.exe headless smoke test failed ($LASTEXITCODE)!" }
-Write-Host "      [OK] InstallerStudio.exe, RaggieSoftHelp.exe, & rswsfx.exe headless smoke tests passed." -ForegroundColor Green
+& $rsPatch --headless-smoke-test
+if ($LASTEXITCODE -ne 0) { throw "RsPatch.exe headless smoke test failed ($LASTEXITCODE)!" }
+& $rsUpdate --headless-smoke-test
+if ($LASTEXITCODE -ne 0) { throw "RsUpdate.exe headless smoke test failed ($LASTEXITCODE)!" }
+Write-Host "      [OK] InstallerStudio.exe, RaggieSoftHelp.exe, rswsfx.exe, RsPatch.exe, & RsUpdate.exe headless smoke tests passed." -ForegroundColor Green
 
 # Step 6: Run automated C++20 self-test suite (`insttests.exe`)
 Write-Host "[6/6] Running automated C++20 self-test suite (insttests.exe)..." -ForegroundColor Cyan
@@ -155,4 +165,4 @@ Write-Host "[6/6] Running automated C++20 self-test suite (insttests.exe)..." -F
 if ($LASTEXITCODE -ne 0) { throw "insttests.exe reported failures!" }
 
 Write-Host ""
-Write-Host "ALL RAGGIESOFT INSTALLER STUDIO v0.7.0 x64 + ARM64 BINARIES, UNIVERSAL EXE, HELP VIEWER, AI SPECS, SUITE, VPAT, AND TESTS PASSED!" -ForegroundColor Green
+Write-Host "ALL RAGGIESOFT INSTALLER STUDIO v0.8.0 x64 + ARM64 BINARIES, RSPATCH, RSUPDATE, UNIVERSAL EXE, HELP VIEWER, AI SPECS, SUITE, VPAT, AND TESTS PASSED!" -ForegroundColor Green

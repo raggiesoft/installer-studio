@@ -1616,12 +1616,12 @@ inline INT_PTR CALLBACK SfxSimpleAeroPageProc(HWND hDlg, UINT msg, WPARAM wParam
         auto& d = *ctx->data;
 
         if (ctx->pageIndex == 0) {
-            b.AddLabel(L"Build an ultra-compact single-dialog Self-Extractor or Simple Native Setup:", 6, 4, 296, 14);
+            b.AddLabel(L"Build an ultra-compact single-dialog Self-Extractor or RaggieScript EXE Setup:", 6, 4, 296, 14);
             b.AddLabel(L"Package &Mode:", 6, 22, 90);
             b.AddCombo(951, {
                 L"Self-Extracting Archive .EXE (Portable Folder / .ZIP Unpacker)",
                 L"Self-Extractor for Software Installation (%TEMP% -> Run Setup -> Auto-Clean)",
-                L"Simple Native Setup Project (Engine = native — Instant Rollback + Uninstall.exe)"
+                L"RaggieScript EXE Setup Project (Engine = raggiescript — Instant Rollback + Uninstall.exe)"
             }, d.modeIdx, 98, 20, 204);
             b.AddLabel(L"&Product / Archive:", 6, 46, 90); b.AddEdit(952, Utf8ToWide(d.productName),  98, 44, 204);
             b.AddLabel(L"&Version (X.Y.Z):",   6, 68, 90); b.AddEdit(953, Utf8ToWide(d.version),      98, 66, 86);
@@ -1762,7 +1762,7 @@ inline bool RunSfxAndSimpleSetupAeroWizard(
         lParams[i] = reinterpret_cast<LPARAM>(&ctxs[i]);
     }
     RunThemedAeroWizard(
-        hOwner, L"Self-Extracting .EXE & Simple Native Setup Wizard",
+        hOwner, L"Self-Extracting .EXE & RaggieScript EXE Setup Wizard",
         3, headers, &SfxSimpleAeroPageProc, lParams,
         ui::GlassGlyph::Cube, ui::brand::kRaggieBlue, exportShotPath);
     if (!data.completed) return false;
@@ -1773,7 +1773,7 @@ inline bool RunSfxAndSimpleSetupAeroWizard(
 
     std::ostringstream s;
     s << "; ==============================================================================\r\n"
-      << "; RaggieSoft " << (isSfx ? "Self-Extracting Archive (.EXE)" : "Simple Native Setup Project") << " (.rsip)\r\n"
+      << "; RaggieSoft " << (isSfx ? "Self-Extracting Archive (.EXE)" : "RaggieScript EXE Setup Project") << " (.rsip)\r\n"
       << "; Ultra-compact single-dialog UI (WizardLayout = simple) with LZMS compression!\r\n"
       << "; ==============================================================================\r\n\r\n"
       << "[Package]\r\n"
@@ -1784,7 +1784,7 @@ inline bool RunSfxAndSimpleSetupAeroWizard(
         s << "PackageKind             = sfx\r\n";
     } else {
         s << "PackageKind             = msi\r\n"
-          << "Engine                  = native\r\n"
+          << "Engine                  = raggiescript\r\n"
           << "UpgradeCode             = " << GenerateRandomMsiGuid() << "\r\n"
           << "Scope                   = " << (data.perUserScope ? "user" : "machine") << "\r\n";
     }
@@ -1903,7 +1903,7 @@ inline INT_PTR CALLBACK SuiteProjectAeroPageProc(HWND hDlg, UINT msg, WPARAM wPa
             b.AddCheck(987, L"Build &Universal Combined Installer (x64 + ARM64 in one EXE)", d.buildUniversal, 6, 104, 296);
             b.AddCheck(988, L"Show &Component Progress Bar beneath monotonic Overall Suite Bar", d.showCompProgressBar, 6, 124, 296);
         } else {
-            b.AddLabel(L"Add your first Suite member packages (.msi or Engine = native -setup.exe):", 6, 4, 296, 14);
+            b.AddLabel(L"Add your first Suite member packages (.msi or RaggieScript EXE -setup.exe):", 6, 4, 296, 14);
             b.AddLabel(L"Member &1 Title:", 6, 24, 86);  b.AddEdit(991, Utf8ToWide(d.child1Name),   94, 22, 208);
             b.AddLabel(L"Member 1 &Path:",  6, 46, 86);  b.AddEdit(992, Utf8ToWide(d.child1Source), 94, 44, 156);
             b.AddButton(993, L"&Browse...", 254, 43, 48);

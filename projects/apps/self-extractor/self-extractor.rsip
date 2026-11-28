@@ -16,10 +16,11 @@
 @include "..\..\shared\raggiesoft-defaults.rsii"
 
 [Package]
+SchemaVersion            = 0.8
 Name                     = RaggieSoft Self-Extractor
 Tagline                  = Standalone LZMS Folder & .ZIP Self-Extractor with %TEMP% Setup Wrapper
 WebsiteLabel             = raggiesoftstudio.com
-Version                  = 0.6.0
+Version                  = 0.8.0
 Manufacturer             = RaggieSoft
 UpgradeCode              = {7C48E1A5-62D4-4B9E-8F13-524147534658}
 Architecture             = $(ARCH)
@@ -31,6 +32,12 @@ UniversalDownloadBaseUrl = https://assets.raggiesoft.com/desktop-apps/windows/ap
 OutputDir                = out
 BuildBootstrapper        = true
 AboutUrl                 = https://raggiesoftstudio.com/installer-studio
+
+[Upgrade]
+Strategy                 = major
+Schedule                 = early
+MigrateFeatures          = true
+UpdateFeedUrl            = https://assets.raggiesoft.com/desktop-apps/windows/studio-apps-manifest.json
 
 [Install]
 DefaultSubdir         = RaggieSoft\RaggieSoft Studio\Self-Extractor

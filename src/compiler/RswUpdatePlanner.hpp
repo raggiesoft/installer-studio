@@ -323,6 +323,7 @@ inline bool AnalyzeInstallerUpdatePlan(
             }
         }
         for (const auto& [k, of] : oldMap) {
+            (void)of;
             if (newMap.find(k) == newMap.end()) {
                 ++outPlan.removedFiles;
             }

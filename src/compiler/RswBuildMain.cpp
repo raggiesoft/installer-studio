@@ -31,6 +31,8 @@
 #include "RswBootstrapperPackager.hpp"
 #include "RswExtraPackages.hpp"
 #include "RswMsiCompiler.hpp"
+#include "RswUpdateManifestEmitter.hpp"
+#include "RswUpdatePlanner.hpp"
 #include "RswValidator.hpp"
 #include "RswVpatEmitter.hpp"
 
@@ -45,16 +47,18 @@ namespace {
 void PrintUsageBanner() {
     std::cout
         << rsw::kSuiteTitle << " — " << rsw::kProductTagline << " (v" << rsw::kVersionString << ")\n"
-        << "Zero-Dependency Native Win32 C++20 Compiler (`instbuild.exe` -> MSI, MSM, MST, MSP, RaggieScript .rssc, Universal Setup.exe & VPAT 2.5)\n\n"
+        << "Zero-Dependency Native Win32 C++20 Compiler (`instbuild.exe` -> MSI, MSM, MST, MSP, RaggieScript EXE, Universal Setup.exe & VPAT 2.5)\n\n"
         << "Usage:\n"
         << "  instbuild.exe <project.rsip | suite.rsis | script.rssc> [--arch=x64|arm64] [--universal] [--with-vpat] [--out-dir=<dir>]\n"
         << "                [--edition=community|essentials|developer|architect] [--version-override=<X.Y.Z>] [--output-name=<stem>]\n"
         << "  instbuild.exe --validate [--diagnostics=json] [--edition=<tier>] <project.rsip | suite.rsis | script.rssc> [--arch=x64|arm64]\n"
+        << "  instbuild.exe --plan-update <old.msi|.exe> <new.msi|.exe> [--allow-small-update] [--diagnostics=json]\n"
+        << "  instbuild.exe --emit-update-manifest <project.rsip> <artifact-dir> <out-manifest.json> [--web-base-url=<https://...>]\n"
         << "  instbuild.exe --emit-ai-spec <output-dir>\n"
         << "  instbuild.exe --emit-vpat <project.rsip> <output-dir>\n"
         << "  instbuild.exe --emit-msm <project.rsip> <output.msm> [--arch=x64|arm64]\n"
         << "  instbuild.exe --generate-mst <base.msi> <target.msi> <output.mst>\n"
-        << "  instbuild.exe --generate-msp <base.msi> <upgraded.msi> <output.msp>\n"
+        << "  instbuild.exe --generate-msp <base.msi> <upgraded.msi> <output.msp> [--allow-small-update]\n"
         << "  instbuild.exe --verify-msi <file.msi>\n"
         << "  instbuild.exe --version | --help\n";
 }
@@ -131,6 +135,7 @@ int ProcessSingleProject(
 
     const std::string pkgKind = rsw::AsciiLower(rsw::TrimAscii(doc.GetString("Package", "", "PackageKind", "msi")));
     const std::string engine  = rsw::AsciiLower(rsw::TrimAscii(doc.GetString("Package", "", "Engine", "msi")));
+    const bool isRsscExeEng   = (engine == "raggiescript" || engine == "native");
     const bool buildUniversal = archOverride.empty() &&
                                 pkgKind != "msm" &&
                                 (forceUniversal || doc.GetBool("Package", "", "BuildUniversal", false));
@@ -161,7 +166,7 @@ int ProcessSingleProject(
                 std::cerr << "[ERROR] " << buildErr << "\n";
                 return 1;
             }
-        } else if (pkgKind == "sfx" || engine == "native") {
+        } else if (pkgKind == "sfx" || isRsscExeEng) {
             if (!rsw::PackageNativeOrSfxExecutable(doc, "x64", compilerExeDir, x64Sum, x64Setup, buildErr) ||
                 !rsw::PackageNativeOrSfxExecutable(doc, "arm64", compilerExeDir, arm64Sum, arm64Setup, buildErr)) {
                 std::cerr << "[ERROR] " << buildErr << "\n";
@@ -185,11 +190,11 @@ int ProcessSingleProject(
         }
 
         std::cout << "[OK] Compiled Multi-Arch & Universal Installers (" << x64Sum.productName << " v" << x64Sum.productVersion << "):\n";
-        if (pkgKind == "msi" && engine != "native") {
+        if (pkgKind == "msi" && !isRsscExeEng) {
             std::cout << "     X64 MSI         : " << rsw::WideToUtf8(x64Sum.msiPath.wstring()) << "\n";
         }
         std::cout << "     X64 SETUP       : " << rsw::WideToUtf8(x64Setup.wstring()) << " (SHA-256: " << univOut.sha256X64.substr(0, 16) << "...)\n";
-        if (pkgKind == "msi" && engine != "native") {
+        if (pkgKind == "msi" && !isRsscExeEng) {
             std::cout << "     ARM64 MSI       : " << rsw::WideToUtf8(arm64Sum.msiPath.wstring()) << "\n";
         }
         std::cout << "     ARM64 SETUP     : " << rsw::WideToUtf8(arm64Setup.wstring()) << " (SHA-256: " << univOut.sha256Arm64.substr(0, 16) << "...)\n"
@@ -233,7 +238,7 @@ int ProcessSingleProject(
         return 0;
     }
 
-    if (pkgKind == "sfx" || engine == "native") {
+    if (pkgKind == "sfx" || isRsscExeEng) {
         rsw::CompiledMsiSummary natSum{};
         std::filesystem::path outExe;
         std::string buildErr;
@@ -241,7 +246,7 @@ int ProcessSingleProject(
             std::cerr << "[ERROR] " << buildErr << "\n";
             return 1;
         }
-        std::cout << "[OK] Compiled " << (pkgKind == "sfx" ? "Self-Extracting Archive (.exe)" : "Native Direct Installer (-setup.exe)")
+        std::cout << "[OK] Compiled " << (pkgKind == "sfx" ? "Self-Extracting Archive (.exe)" : "RaggieScript EXE Installer (-setup.exe)")
                   << " (" << natSum.architecture << ", " << natSum.fileCount << " file(s)):\n"
                   << "     EXE  : " << rsw::WideToUtf8(outExe.wstring()) << "\n";
         for (const auto& fp : natSum.featurePacks) {
@@ -317,10 +322,11 @@ int wmain(int argc, wchar_t* argv[]) {
         args.push_back(rsw::WideToUtf8(argv[i]));
     }
 
-    bool validateOnly = false;
+    bool validateOnly    = false;
     bool jsonDiagnostics = false;
-    bool emitVpatFlag = false;
-    bool universalFlag = false;
+    bool allowSmallUpd   = false;
+    bool emitVpatFlag    = false;
+    bool universalFlag   = false;
     std::string archOverride;
     std::string cliEditionFlag;
     std::string categoryFilter;
@@ -329,11 +335,16 @@ int wmain(int argc, wchar_t* argv[]) {
     std::map<std::string, std::string> cliVariables;
     std::vector<std::string> positional;
 
-    // Pre-scan `--edition=<tier>` so standalone flags (`--emit-vpat`, `--emit-msm`, `--generate-msp`, `--generate-mst`)
-    // honor explicit CLI edition selection regardless of argument position!
+    // Pre-scan `--edition=<tier>`, `--diagnostics=json`, `--allow-small-update`, & `--web-base-url=`
+    // so standalone subcommands (`--plan-update`, `--generate-msp`, `--emit-update-manifest`, etc.)
+    // honor switches regardless of position on the command line!
     for (const auto& rawArg : args) {
-        if (rawArg.rfind("--edition=", 0) == 0) {
-            cliEditionFlag = rawArg.substr(10);
+        if (rawArg.rfind("--edition=", 0) == 0)     cliEditionFlag = rawArg.substr(10);
+        else if (rawArg == "--diagnostics=json")    jsonDiagnostics = true;
+        else if (rawArg == "--allow-small-update")  allowSmallUpd = true;
+        else if (rawArg.rfind("--web-base-url=", 0) == 0) {
+            pkgOverrides.hasWebBaseUrl = true;
+            pkgOverrides.webBaseUrl    = rawArg.substr(15);
         }
     }
     rsw::RswIdeEdition activeEdition = rsw::RswIdeEdition::Community;
@@ -492,9 +503,56 @@ int wmain(int argc, wchar_t* argv[]) {
             std::cout << "[OK] Generated Windows Installer Transform (.mst): " << args[i + 3] << "\n";
             return 0;
         }
+        if (a == "--plan-update") {
+            if (i + 2 >= args.size()) {
+                std::cerr << "[ERROR] Usage: instbuild.exe --plan-update <old.msi|.exe> <new.msi|.exe> [--allow-small-update] [--diagnostics=json]\n";
+                return 2;
+            }
+            if (!rsw::EditionSupportsMspPatchesAndMstTransforms(activeEdition)) {
+                std::cerr << "[RSW095] Update diff & patch planning (--plan-update) requires Architect or Community Edition (currently running "
+                          << rsw::WideToUtf8(rsw::EditionDisplayName(activeEdition)) << ").\n";
+                return 1;
+            }
+            rsw::UpdatePlanReport plan{};
+            std::string err;
+            if (!rsw::AnalyzeInstallerUpdatePlan(
+                    std::filesystem::path(rsw::Utf8ToWide(args[i + 1])),
+                    std::filesystem::path(rsw::Utf8ToWide(args[i + 2])),
+                    allowSmallUpd, plan, err)) {
+                std::cerr << "[ERROR] " << err << "\n";
+                return 1;
+            }
+            std::cout << (jsonDiagnostics ? rsw::FormatUpdatePlanAsJson(plan) : rsw::FormatUpdatePlanAsText(plan));
+            return plan.HasBlockingErrors() ? 1 : 0;
+        }
+        if (a == "--emit-update-manifest") {
+            if (i + 3 >= args.size()) {
+                std::cerr << "[ERROR] Usage: instbuild.exe --emit-update-manifest <project.rsip> <artifact-dir> <out-manifest.json> [--web-base-url=<https://...>]\n";
+                return 2;
+            }
+            if (!rsw::EditionSupportsRsUpdater(activeEdition)) {
+                std::cerr << "[RSW092] RaggieSoft Updater manifest generation (--emit-update-manifest) requires Developer, Architect, or Community Edition.\n";
+                return 1;
+            }
+            rsw::RswManifestDocument rawDoc, uDoc;
+            std::string err;
+            if (!rsw::LoadManifestFile(std::filesystem::path(rsw::Utf8ToWide(args[i + 1])), rawDoc, err) ||
+                !rsw::ResolveManifestIncludesAndVars(rawDoc, cliVariables, uDoc, err) ||
+                !rsw::EmitLauncherCompatibleUpdateManifest(
+                    uDoc,
+                    std::filesystem::path(rsw::Utf8ToWide(args[i + 2])),
+                    std::filesystem::path(rsw::Utf8ToWide(args[i + 3])),
+                    pkgOverrides.hasWebBaseUrl ? std::string_view(pkgOverrides.webBaseUrl) : std::string_view{},
+                    err)) {
+                std::cerr << "[ERROR] " << err << "\n";
+                return 1;
+            }
+            std::cout << "[OK] Emitted DRY Launcher & RsUpdate JSON manifest: " << args[i + 3] << "\n";
+            return 0;
+        }
         if (a == "--generate-msp") {
             if (i + 3 >= args.size()) {
-                std::cerr << "[ERROR] Usage: instbuild.exe --generate-msp <base.msi> <upgraded.msi> <output.msp>\n";
+                std::cerr << "[ERROR] Usage: instbuild.exe --generate-msp <base.msi> <upgraded.msi> <output.msp> [--allow-small-update]\n";
                 return 2;
             }
             if (!rsw::EditionSupportsMspPatchesAndMstTransforms(activeEdition)) {
@@ -507,7 +565,8 @@ int wmain(int argc, wchar_t* argv[]) {
                     std::filesystem::path(rsw::Utf8ToWide(args[i + 1])),
                     std::filesystem::path(rsw::Utf8ToWide(args[i + 2])),
                     std::filesystem::path(rsw::Utf8ToWide(args[i + 3])),
-                    err)) {
+                    err,
+                    allowSmallUpd)) {
                 std::cerr << "[ERROR] " << err << "\n";
                 return 1;
             }
@@ -546,6 +605,7 @@ int wmain(int argc, wchar_t* argv[]) {
         }
         if (a == "--validate") { validateOnly = true; continue; }
         if (a == "--diagnostics=json") { jsonDiagnostics = true; continue; }
+        if (a == "--allow-small-update") { allowSmallUpd = true; continue; }
         if (a == "--with-vpat") { emitVpatFlag = true; continue; }
         if (a == "--universal") { universalFlag = true; continue; }
         if (a.rfind("--edition=", 0) == 0) { continue; }
@@ -775,6 +835,7 @@ int wmain(int argc, wchar_t* argv[]) {
                 if (mKind == "msm" || mKind == "sfx" || mKind == "suite") continue;
 
                 const std::string mEng  = rsw::AsciiLower(mDoc.GetString("Package", "", "Engine", "msi"));
+                const bool mIsRsscExe   = (mEng == "raggiescript" || mEng == "native");
                 const std::string mName = mDoc.GetString("Package", "", "Name", proj.id);
                 const std::string mVer  = mDoc.GetString("Package", "", "Version", "1.0.0");
                 const std::string mUpg  = mDoc.GetString("Package", "", "UpgradeCode");
@@ -782,7 +843,7 @@ int wmain(int argc, wchar_t* argv[]) {
                 const std::string mStem = mRawOut.empty() ? (rsw::SlugifyName(mName) + "-$(ARCH)") : mRawOut;
                 const std::filesystem::path mProjDir = proj.resolvedPath.parent_path();
                 const std::filesystem::path mOutDir  = mProjDir / rsw::Utf8ToWide(mDoc.GetString("Package", "", "OutputDir", "out"));
-                const std::string artLeaf = (mEng == "native") ? (mStem + "-setup.exe") : (mStem + ".msi");
+                const std::string artLeaf = mIsRsscExe ? (mStem + "-setup.exe") : (mStem + ".msi");
                 const std::filesystem::path artFull = (mOutDir / rsw::Utf8ToWide(artLeaf)).lexically_normal();
 
                 synthDoc.SetString("SuitePackage", proj.id, "Name",              mName);
@@ -791,7 +852,7 @@ int wmain(int argc, wchar_t* argv[]) {
                 synthDoc.SetString("SuitePackage", proj.id, "Version",           mVer);
                 synthDoc.SetString("SuitePackage", proj.id, "Source",            rsw::WideToUtf8(artFull.wstring()));
                 if (!mUpg.empty()) synthDoc.SetString("SuitePackage", proj.id, "UpgradeCode", mUpg);
-                synthDoc.SetString("SuitePackage", proj.id, "Engine",            (mEng == "native") ? "native" : "msi");
+                synthDoc.SetString("SuitePackage", proj.id, "Engine",            mIsRsscExe ? "raggiescript" : "msi");
                 synthDoc.SetString("SuitePackage", proj.id, "Required",          proj.requiredInSuite ? "true" : "false");
                 synthDoc.SetString("SuitePackage", proj.id, "SelectedByDefault", proj.selectedByDefault ? "true" : "false");
                 ++bundledChildren;

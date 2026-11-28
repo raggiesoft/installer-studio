@@ -44,8 +44,12 @@ $nativeArch  = if ($hostIsArm64) { "arm64" } else { "x64" }
 $binDir      = Join-Path $RepoRoot "bin\$nativeArch"
 $projPath    = Join-Path $RepoRoot "projects\apps\installer-studio\installer-studio.rsip"
 $projOutDir  = Join-Path $RepoRoot "projects\apps\installer-studio\out"
-$msiPath     = Join-Path $projOutDir "raggiesoft-installer-studio-$nativeArch.msi"
-$setupExe    = Join-Path $projOutDir "raggiesoft-installer-studio-$nativeArch-setup.exe"
+$verMatch    = Select-String -Path $projPath -Pattern '^\s*Version\s*=\s*([0-9]+\.[0-9]+\.[0-9]+)' | Select-Object -First 1
+$projVer     = if ($null -ne $verMatch) { $verMatch.Matches[0].Groups[1].Value } else { "0.8.0" }
+$msiPath     = Join-Path $projOutDir "raggiesoft-installer-studio-v$projVer-$nativeArch.msi"
+$setupExe    = Join-Path $projOutDir "raggiesoft-installer-studio-v$projVer-$nativeArch-setup.exe"
+if (-not (Test-Path $msiPath))  { $msiPath  = Join-Path $projOutDir "raggiesoft-installer-studio-$nativeArch.msi" }
+if (-not (Test-Path $setupExe)) { $setupExe = Join-Path $projOutDir "raggiesoft-installer-studio-$nativeArch-setup.exe" }
 $shotsDir    = Join-Path $RepoRoot "..\..\raggiesoft-servers\raggiesoft-assets\desktop-apps\windows\apps\installer-studio\screenshots"
 
 # Verify that all required native executables and packages exist before capturing screenshots.
