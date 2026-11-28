@@ -1,24 +1,26 @@
 ; ==============================================================================
 ; FILE: projects/apps/raggiesoft-studio-suite/raggiesoft-studio-suite.rsip
-; APPLICATION: RaggieSoft Studio Unified Workload Suite (v0.9.0)
-; COMPILER: RaggieSoft Installer Studio v0.9.0 (`PackageKind = suite`, `Delivery = web`)
+; APPLICATION: RaggieSoft Studio Unified Workload Suite (v0.9.1)
+; COMPILER: RaggieSoft Installer Studio v0.9.1 (`PackageKind = suite`, `Delivery = web`)
 ; WEBSITE: https://raggiesoftstudio.com  |  DEV HUB: https://raggiesoft.dev
 ; LICENSE: MIT License (Copyright (c) 2026 Michael P. Ragsdale / RaggieSoft)
 ; ==============================================================================
 ; PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
 ;   What is this file?
 ;     This `.rsip` manifest compiles the official **RaggieSoft Studio Unified
-;     Workload Suite (`v0.9.0`)**—a lightweight (<2 MB) Visual Studio Installer-
-;     style Workload Chainer that lets developers, technical writers, and
-;     compliance engineers pick any combination of our 7 shipped Windows 11
-;     (`x64` & `ARM64`) RaggieSoft Studio tools in one checklist:
-;       1. RaggieSoft Installer Studio (`v0.9.0`)
+;     Workload Suite (`v0.9.1`)**—a lightweight (<2 MB) multi-step Suite Wizard &
+;     Workload Chainer (`Welcome -> SetupType -> CustomSuite -> VerifyReady ->
+;     Installing -> Finished`, plus `Maintenance` mode on re-launch or `Settings ->
+;     Apps`) that lets developers, technical writers, and compliance engineers
+;     pick any combination of our 7 shipped Windows 11 (`x64` & `ARM64`)
+;     RaggieSoft Studio tools:
+;       1. RaggieSoft Installer Studio (`v0.9.1`)
 ;       2. RaggieSoft Accessibility Studio (`v1.0.1`)
 ;       3. RaggieSoft Help Studio (`v0.7.0`)
 ;       4. RaggieSoft Training Studio (`v0.7.0`)
 ;       5. RaggieSoft Showcase Studio (`v0.5.1`)
-;       6. RaggieSoft MSI Prism (`v0.9.0` Standalone SQL Editor)
-;       7. RaggieSoft Self-Extractor (`v0.9.0` Standalone LZMS Builder)
+;       6. RaggieSoft MSI Prism (`v0.9.1` Standalone SQL Editor)
+;       7. RaggieSoft Self-Extractor (`v0.9.1` Standalone LZMS Builder)
 ;
 ;   How does `Delivery = web` work under the hood?
 ;     - Instead of forcing users to download a 45+ MB bundle containing tools
@@ -31,9 +33,9 @@
 ;     - Every selected tool installs under ONE single UAC elevation, tracks
 ;       strictly monotonic Dual-Bar progress (`Overall Suite Progress` +
 ;       `Current Component`), dynamically adopts any already-installed
-;       standalone sibling (`RS_SUITE_MANAGED=1`), and unwinds newly installed
-;       session packages in LIFO order (`SuiteRollbackPolicy = rollback_new`)
-;       if cancelled!
+;       standalone sibling (`RS_SUITE_MANAGED=1`), and unwinds 100% of newly
+;       installed session packages in LIFO order (`SuiteRollbackPolicy =
+;       rollback_new`) when the user confirms Cancel!
 ; ==============================================================================
 
 @include "..\..\shared\raggiesoft-defaults.rsii"
@@ -46,7 +48,7 @@ SchemaVersion            = 0.9
 Name                     = RaggieSoft Studio Suite
 Tagline                  = Unified Workload Installer — Pick Any RaggieSoft Studio IDEs & Compilers
 WebsiteLabel             = raggiesoftstudio.com
-Version                  = 0.9.0
+Version                  = 0.9.1
 Manufacturer             = RaggieSoft
 PackageKind              = suite
 SuiteRollbackPolicy      = rollback_new
@@ -73,30 +75,34 @@ DefaultSubdir            = RaggieSoft\RaggieSoft Studio
 StartMenuFolder          = RaggieSoft Studio
 
 ; `[UI]` configures Royal Cobalt (`#2563EB`) and Amber (`#FBBF24`) branding that
-; passes WCAG 2.2 Level AA contrast in both Light Mode and Dark Mode.
+; passes WCAG 2.2 Level AA contrast in both Light Mode and Dark Mode, along with
+; Classic Setup Types (`Typical`, `Compact`, `Complete`, and `Custom`).
 [UI]
 WizardLayout             = aerowizard
+SetupTypePreset          = win95_classic
+AllowChangeFolder        = true
 AccentPrimaryHex         = #2563EB
 AccentSecondaryHex       = #FBBF24
 IconFile                 = ..\..\..\..\windows\RaggieSoftApps\RaggieSoftLauncher\Assets\RaggieSoftLauncher.ico
-InstallButtonText        = &Install Selected
+InstallButtonText        = &Install
 
 ; ==============================================================================
 ; 7 SELECTABLE STUDIO WORKLOADS (`Delivery = web` + `bcrypt.dll` SHA-256 Gate)
 ; ==============================================================================
 
-; Workload 1: RaggieSoft Installer Studio v0.9.0 (Flagship Packaging IDE & CLI)
+; Workload 1: RaggieSoft Installer Studio v0.9.1 (Flagship Packaging IDE & CLI)
 [SuitePackage.InstallerStudio]
 Name                     = RaggieSoft Installer Studio
 Description              = Tree-First Win32 C++20 IDE & CLI for .MSI, .MSP, RaggieScript EXE, Add-Ons & Suites.
 Category                 = Packaging
+Inclusion                = minimal
 Engine                   = msi
 Delivery                 = web
-DownloadUrl              = https://assets.raggiesoft.com/desktop-apps/windows/apps/installer-studio/releases/v0.9.0/raggiesoft-installer-studio-v0.9.0-$(ARCH).msi
-Sha256X64                = 1c30863c9cb7e3999225f421b13ec1e5c165704539f14ad5755c7f1693d9104b
-Sha256Arm64              = b6e8765ec2e7ffdf7193520e69aa9c3828ca99803913999cfe225888b8f75d05
-Version                  = 0.9.0
-EstimatedSizeKB          = 4022
+DownloadUrl              = https://assets.raggiesoft.com/desktop-apps/windows/apps/installer-studio/releases/v0.9.1/raggiesoft-installer-studio-v0.9.1-$(ARCH).msi
+Sha256X64                = d5552251a718af1ce634d92059323a347119995226a16e0bcae14813ff7b9c4a
+Sha256Arm64              = 65c060c10bb22bbc9e12eb0a6ec66561b809f3af32966fb2e46c9daff43d897b
+Version                  = 0.9.1
+EstimatedSizeKB          = 3980
 UpgradeCode              = {D9C0EF36-990C-519C-A9C7-D7E19FDD5627}
 Required                 = true
 SelectedByDefault        = true
@@ -107,6 +113,7 @@ RollbackBoundary         = true
 Name                     = RaggieSoft Accessibility Studio
 Description              = Source-level WCAG 2.2 AA & Section 508 HTML5, ARIA, CSS & WebVTT IDE + SARIF CLI.
 Category                 = Compliance
+Inclusion                = typical
 Engine                   = msi
 Delivery                 = web
 DownloadUrl              = https://assets.raggiesoft.com/desktop-apps/windows/apps/accessibility-studio/releases/v1.0.1/raggiesoft-accessibility-studio-v1.0.1-$(ARCH).msi
@@ -123,6 +130,7 @@ RollbackBoundary         = false
 Name                     = RaggieSoft Help Studio
 Description              = Static C++20 9-view F1 Help IDE, RaggieScript ('use help;'), Reference Portals & .CHM/.HLP importer.
 Category                 = Documentation
+Inclusion                = typical
 Engine                   = msi
 Delivery                 = web
 DownloadUrl              = https://assets.raggiesoft.com/desktop-apps/windows/apps/help-studio/releases/v0.7.0/raggiesoft-help-studio-v0.7.0-$(ARCH).msi
@@ -139,6 +147,7 @@ RollbackBoundary         = false
 Name                     = RaggieSoft Training Studio
 Description              = Bandwidth-proof WCAG 2.2 AA SCORM 1.2/2004, xAPI & cmi5 courseware IDE + PowerPoint importer.
 Category                 = Training
+Inclusion                = typical
 Engine                   = msi
 Delivery                 = web
 DownloadUrl              = https://assets.raggiesoft.com/desktop-apps/windows/apps/training-studio/releases/v0.7.0/raggiesoft-training-studio-v0.7.0-$(ARCH).msi
@@ -155,6 +164,7 @@ RollbackBoundary         = false
 Name                     = RaggieSoft Showcase Studio
 Description              = Accessible 1990s painted .BMP CD-ROM menus, Windows 11 FluentMica launchpads & _support\ setups.
 Category                 = Publishing
+Inclusion                = typical
 Engine                   = msi
 Delivery                 = web
 DownloadUrl              = https://assets.raggiesoft.com/desktop-apps/windows/apps/showcase-studio/releases/v0.5.1/raggiesoft-showcase-studio-v0.5.1-$(ARCH).msi
@@ -166,34 +176,36 @@ UpgradeCode              = {7A94E2C1-5D83-4B61-9E42-524147474957}
 SelectedByDefault        = true
 RollbackBoundary         = false
 
-; Workload 6: RaggieSoft MSI Prism v0.9.0 (Standalone 64-Bit SQL Database Editor)
+; Workload 6: RaggieSoft MSI Prism v0.9.1 (Standalone 64-Bit SQL Database Editor)
 [SuitePackage.MsiPrism]
 Name                     = RaggieSoft MSI Prism
 Description              = Standalone 64-bit read/write relational SQL table editor for .MSI, .MSM, .MST & .MSP databases.
 Category                 = Utilities
+Inclusion                = complete
 Engine                   = msi
 Delivery                 = web
-DownloadUrl              = https://assets.raggiesoft.com/desktop-apps/windows/apps/msi-prism/releases/v0.9.0/raggiesoft-msi-prism-v0.9.0-$(ARCH).msi
-Sha256X64                = 8d7e6dd2b83f49bcd52c1f3705c11f662d9d85bbc97ff3a54e33740990fdc784
-Sha256Arm64              = d7399fadbcb557abdae2051e081347d60fb5f3516f4dfe242f10252b8d3bb292
-Version                  = 0.9.0
-EstimatedSizeKB          = 995
+DownloadUrl              = https://assets.raggiesoft.com/desktop-apps/windows/apps/msi-prism/releases/v0.9.1/raggiesoft-msi-prism-v0.9.1-$(ARCH).msi
+Sha256X64                = 648d61ed831c5531930038a600e67595c23659248b3445d3548e24d2c3852e15
+Sha256Arm64              = ae4adea462bb1e06465a5c0eb4575b80efa6a906881370e0dfb1971bbf70921a
+Version                  = 0.9.1
+EstimatedSizeKB          = 972
 UpgradeCode              = {3E94B7C2-84A1-4F6D-9B28-524147505249}
 SelectedByDefault        = false
 RollbackBoundary         = false
 
-; Workload 7: RaggieSoft Self-Extractor v0.9.0 (Standalone LZMS Archive & %TEMP% Wrapper)
+; Workload 7: RaggieSoft Self-Extractor v0.9.1 (Standalone LZMS Archive & %TEMP% Wrapper)
 [SuitePackage.SelfExtractor]
 Name                     = RaggieSoft Self-Extractor
 Description              = Standalone LZMS folder/.zip self-extractor and _ISDEL.EXE-aware %TEMP% software wrapper.
 Category                 = Utilities
+Inclusion                = complete
 Engine                   = msi
 Delivery                 = web
-DownloadUrl              = https://assets.raggiesoft.com/desktop-apps/windows/apps/self-extractor/releases/v0.9.0/raggiesoft-self-extractor-v0.9.0-$(ARCH).msi
-Sha256X64                = a75a1d942fadd0bcdd86141cafed7a38f576f2d4bc6706df88ea980119930115
-Sha256Arm64              = e16831c2b00f17fb85b678795a82772cd69fe61acb7a3dbe5ea5929c56d2e279
-Version                  = 0.9.0
-EstimatedSizeKB          = 1540
+DownloadUrl              = https://assets.raggiesoft.com/desktop-apps/windows/apps/self-extractor/releases/v0.9.1/raggiesoft-self-extractor-v0.9.1-$(ARCH).msi
+Sha256X64                = 45b76f90651b6ad114ec16440ec71647256db9329b1d0bc4b43acda81bf94e18
+Sha256Arm64              = 4428f10b1dfab163cb652e746e9737d111bf816045fff37e4bc261108b6a4124
+Version                  = 0.9.1
+EstimatedSizeKB          = 1532
 UpgradeCode              = {7C48E1A5-62D4-4B9E-8F13-524147534658}
 SelectedByDefault        = false
 RollbackBoundary         = false
