@@ -47,8 +47,8 @@ void PrintUsage() {
         << "Zero-Dependency Win32 C++20 Binary-Delta Patch Compiler & Applier (`msdelta.dll` .MSP & RaggieScript EXE .rswpatch)\n\n"
         << "Usage:\n"
         << "  RsPatch.exe plan <old.msi|.exe> <new.msi|.exe> [--allow-small-update] [--diagnostics=json]\n"
-        << "  RsPatch.exe build-msp <base.msi> <upgraded.msi> <out.msp> [--allow-small-update] [--targets=<{GUID1};{GUID2}>] [--edition=<tier>]\n"
-        << "  RsPatch.exe build-exe <old-dir-or-exe> <new-dir-or-exe> <out.rswpatch> [--version-from=<X.Y.Z>] [--version-to=<X.Y.Z>] [--upgrade-code=<{GUID}>] [--edition=<tier>]\n"
+        << "  RsPatch.exe build-msp <base.msi> <upgraded.msi> <out.msp> [--allow-small-update] [--targets=<{GUID1};{GUID2}>] [--license-file=<file.rswlic>]\n"
+        << "  RsPatch.exe build-exe <old-dir-or-exe> <new-dir-or-exe> <out.rswpatch> [--version-from=<X.Y.Z>] [--version-to=<X.Y.Z>] [--upgrade-code=<{GUID}>] [--license-file=<file.rswlic>]\n"
         << "  RsPatch.exe apply <patch.rswpatch> <install-dir> [/s]\n"
         << "  RsPatch.exe inspect <patch.rswpatch> [--diagnostics=json]\n"
         << "  RsPatch.exe --headless-smoke-test | --version | --help\n\n"
@@ -86,7 +86,7 @@ int wmain(int argc, wchar_t* argv[]) {
     bool jsonDiag     = false;
     bool quietMode    = false;
     int  simFaultOps  = 0;
-    std::string cliEdition;
+    std::string cliLicenseFile;
     std::string verFrom;
     std::string verTo;
     std::string upgCode;
@@ -125,7 +125,7 @@ int wmain(int argc, wchar_t* argv[]) {
         if (a == "--allow-small-update") { allowSmall = true; continue; }
         if (a == "--diagnostics=json")   { jsonDiag   = true; continue; }
         if (a == "/s" || a == "/S" || a == "--silent") { quietMode = true; continue; }
-        if (a.rfind("--edition=", 0) == 0)      { cliEdition   = a.substr(10); continue; }
+        if (a.rfind("--license-file=", 0) == 0) { cliLicenseFile = a.substr(15); continue; }
         if (a.rfind("--version-from=", 0) == 0) { verFrom      = a.substr(15); continue; }
         if (a.rfind("--version-to=", 0) == 0)   { verTo        = a.substr(13); continue; }
         if (a.rfind("--upgrade-code=", 0) == 0) { upgCode      = a.substr(15); continue; }
@@ -139,14 +139,17 @@ int wmain(int argc, wchar_t* argv[]) {
         return 2;
     }
 
-    rsw::RswIdeEdition activeEd = rsw::RswIdeEdition::Community;
+    wchar_t exePathBuf[MAX_PATH * 4]{};
+    ::GetModuleFileNameW(nullptr, exePathBuf, static_cast<DWORD>(std::size(exePathBuf)));
+    rsw::RswLicenseStatus licStatus{};
     {
-        std::string edErr;
-        if (!rsw::ResolveEffectiveCliEdition(cliEdition, activeEd, edErr)) {
-            std::cerr << "[ERROR] " << edErr << "\n";
+        std::string licErr;
+        if (!rsw::ResolveActiveProductLicense(cliLicenseFile, std::filesystem::path(exePathBuf).parent_path(), licStatus, licErr)) {
+            std::cerr << licErr << "\n";
             return 2;
         }
     }
+    const rsw::RswIdeEdition activeEd = licStatus.edition;
 
     const std::string cmd = rsw::AsciiLower(pos[0]);
 

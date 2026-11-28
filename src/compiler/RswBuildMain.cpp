@@ -50,8 +50,9 @@ void PrintUsageBanner() {
         << "Zero-Dependency Native Win32 C++20 Compiler (`instbuild.exe` -> MSI, MSM, MST, MSP, RaggieScript EXE, Universal Setup.exe & VPAT 2.5)\n\n"
         << "Usage:\n"
         << "  instbuild.exe <project.rsip | suite.rsis | script.rssc> [--arch=x64|arm64] [--universal] [--with-vpat] [--out-dir=<dir>]\n"
-        << "                [--edition=community|essentials|developer|architect] [--version-override=<X.Y.Z>] [--output-name=<stem>]\n"
-        << "  instbuild.exe --validate [--diagnostics=json] [--edition=<tier>] <project.rsip | suite.rsis | script.rssc> [--arch=x64|arm64]\n"
+        << "                [--license-file=<file.rswlic>] [--version-override=<X.Y.Z>] [--output-name=<stem>]\n"
+        << "  instbuild.exe --validate [--diagnostics=json] [--license-file=<file.rswlic>] <project.rsip | suite.rsis | script.rssc> [--arch=x64|arm64]\n"
+        << "  instbuild.exe --license-status [--license-file=<file.rswlic>] [--diagnostics=json]\n"
         << "  instbuild.exe --plan-update <old.msi|.exe> <new.msi|.exe> [--allow-small-update] [--diagnostics=json]\n"
         << "  instbuild.exe --emit-update-manifest <project.rsip> <artifact-dir> <out-manifest.json> [--web-base-url=<https://...>]\n"
         << "  instbuild.exe --emit-ai-spec <output-dir>\n"
@@ -328,38 +329,54 @@ int wmain(int argc, wchar_t* argv[]) {
     bool emitVpatFlag    = false;
     bool universalFlag   = false;
     std::string archOverride;
-    std::string cliEditionFlag;
+    std::string cliLicenseFile;
     std::string categoryFilter;
     std::string projectFilter;
     CliPackageOverrides pkgOverrides{};
     std::map<std::string, std::string> cliVariables;
     std::vector<std::string> positional;
 
-    // Pre-scan `--edition=<tier>`, `--diagnostics=json`, `--allow-small-update`, & `--web-base-url=`
-    // so standalone subcommands (`--plan-update`, `--generate-msp`, `--emit-update-manifest`, etc.)
-    // honor switches regardless of position on the command line!
+    // Pre-scan `--license-file=<path.rswlic>`, `--diagnostics=json`, `--allow-small-update`, & `--web-base-url=`
+    // so standalone subcommands (`--license-status`, `--plan-update`, `--generate-msp`, etc.) honor switches anywhere!
     for (const auto& rawArg : args) {
-        if (rawArg.rfind("--edition=", 0) == 0)     cliEditionFlag = rawArg.substr(10);
-        else if (rawArg == "--diagnostics=json")    jsonDiagnostics = true;
-        else if (rawArg == "--allow-small-update")  allowSmallUpd = true;
+        if (rawArg.rfind("--license-file=", 0) == 0) cliLicenseFile = rawArg.substr(15);
+        else if (rawArg == "--diagnostics=json")     jsonDiagnostics = true;
+        else if (rawArg == "--allow-small-update")   allowSmallUpd = true;
         else if (rawArg.rfind("--web-base-url=", 0) == 0) {
             pkgOverrides.hasWebBaseUrl = true;
             pkgOverrides.webBaseUrl    = rawArg.substr(15);
         }
     }
-    rsw::RswIdeEdition activeEdition = rsw::RswIdeEdition::Community;
+    rsw::RswLicenseStatus licenseStatus{};
     {
-        std::string edErr;
-        if (!rsw::ResolveEffectiveCliEdition(cliEditionFlag, activeEdition, edErr)) {
-            std::cerr << "[ERROR] " << edErr << "\n";
+        std::string licErr;
+        if (!rsw::ResolveActiveProductLicense(cliLicenseFile, compilerExeDir, licenseStatus, licErr)) {
+            std::cerr << licErr << "\n";
             return 2;
         }
     }
+    const rsw::RswIdeEdition activeEdition = licenseStatus.edition;
 
     for (std::size_t i = 0; i < args.size(); ++i) {
         const std::string& a = args[i];
         if (a == "--help" || a == "-h" || a == "/?") {
             PrintUsageBanner();
+            return 0;
+        }
+        if (a == "--license-status") {
+            if (jsonDiagnostics) {
+                std::cout
+                    << "{\n"
+                    << "  \"isCommercialLicensed\": " << (licenseStatus.isCommercialLicensed ? "true" : "false") << ",\n"
+                    << "  \"edition\": \"" << rsw::EditionSlug(licenseStatus.edition) << "\",\n"
+                    << "  \"editionDisplayName\": \"" << rsw::JsonEscapeString(rsw::WideToUtf8(rsw::EditionDisplayName(licenseStatus.edition))) << "\",\n"
+                    << "  \"licenseId\": \"" << rsw::JsonEscapeString(licenseStatus.cert.licenseId) << "\",\n"
+                    << "  \"licensee\": \"" << rsw::JsonEscapeString(licenseStatus.cert.licensee) << "\",\n"
+                    << "  \"source\": \"" << rsw::JsonEscapeString(licenseStatus.sourceDescription) << "\"\n"
+                    << "}\n";
+            } else {
+                std::cout << rsw::WideToUtf8(rsw::BuildLicenseStatusSummaryText(licenseStatus)) << "\n";
+            }
             return 0;
         }
         if (a == "--version" || a == "-v") {
@@ -608,7 +625,7 @@ int wmain(int argc, wchar_t* argv[]) {
         if (a == "--allow-small-update") { allowSmallUpd = true; continue; }
         if (a == "--with-vpat") { emitVpatFlag = true; continue; }
         if (a == "--universal") { universalFlag = true; continue; }
-        if (a.rfind("--edition=", 0) == 0) { continue; }
+        if (a.rfind("--license-file=", 0) == 0) { continue; }
         if (a.rfind("--arch=", 0) == 0) { archOverride = a.substr(7); continue; }
         if (a.rfind("--category=", 0) == 0) { categoryFilter = a.substr(11); continue; }
         if (a.rfind("--project=", 0) == 0) { projectFilter = a.substr(10); continue; }

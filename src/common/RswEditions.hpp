@@ -37,22 +37,23 @@
 //          Media (`msiexec /a`), `.rswpak` CDN feature packs, and automated HTML5
 //          VPAT 2.5 conformance reports (`--emit-vpat`).
 //
-//   Zero-Telemetry Offline Persistence:
-//     Selected/activated edition state is stored locally in:
-//       `%LOCALAPPDATA%\RaggieSoft\Installer Studio\edition.json`
-//     (and overridable per command via `--edition=<tier>` or `RSW_EDITION=<tier>`),
-//     with zero network phone-home or cloud account lock-in.
+//   Zero-Telemetry Cryptographic `.rswlic` Licensing (`RswLicensing.hpp`):
+//     - **No `.rswlic` license file present == `Community Edition`** (`RswIdeEdition::Community`).
+//     - Commercial tiers (`Essentials`, `Developer`, `Architect`, and All-Access
+//       `RaggieSoft Studio` Suite keys) are verified 100% offline in `< 0.2ms` via
+//       Windows `System32\bcrypt.dll` (`BCRYPT_ECDSA_P256_ALGORITHM`) across
+//       `--license-file=<path.rswlic>`, `RSW_LICENSE_KEY`, `<ExeDir>\`,
+//       `%LOCALAPPDATA%\RaggieSoft\Licenses\`, and `%PROGRAMDATA%\RaggieSoft\Licenses\`.
+//     - Zero backdoor edition-switcher menus, zero plaintext `edition.json`, zero
+//       activation servers, and zero hardware/motherboard fingerprinting!
 // ================================================================================
 
 #pragma once
 
+#include "RswLicensing.hpp"
 #include "RswPlatform.hpp"
 #include "RswVersion.hpp"
 
-#include <shlobj.h>
-
-#include <filesystem>
-#include <fstream>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -138,115 +139,46 @@ inline constexpr bool EditionSupportsAutoVpatExport(RswIdeEdition ed) noexcept {
     return ed == RswIdeEdition::Community || ed == RswIdeEdition::Architect;
 }
 
-/// Resolves `%LOCALAPPDATA%\RaggieSoft\Installer Studio\edition.json` for offline persistence.
-inline std::filesystem::path GetEditionConfigFilePath() {
-    PWSTR rawLocalAppData = nullptr;
-    std::filesystem::path baseDir;
-    if (SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &rawLocalAppData)) && rawLocalAppData) {
-        baseDir = rawLocalAppData;
-        ::CoTaskMemFree(rawLocalAppData);
+/// Builds a rich plain-English license & edition status summary for the IDE's `Help -> License & Edition Status...` dialog.
+inline std::wstring BuildLicenseStatusSummaryText(const RswLicenseStatus& status) {
+    std::wostringstream oss;
+    oss << L"Active Edition: " << EditionDisplayName(status.edition) << L"\n";
+    if (status.isCommercialLicensed) {
+        oss << L"License State : Cryptographically Verified Commercial License (ECDSA P-256)\n"
+            << L"Licensed To   : " << Utf8ToWide(status.cert.licensee)
+            << (status.cert.email.empty() ? L"" : (L" <" + Utf8ToWide(status.cert.email) + L">")) << L"\n"
+            << L"License ID    : " << Utf8ToWide(status.cert.licenseId) << L"\n"
+            << L"Product Scope : " << Utf8ToWide(status.cert.product) << L" (" << status.cert.seats << L" seat(s))\n"
+            << L"Issued Date   : " << Utf8ToWide(status.cert.issuedDate)
+            << (status.cert.maintenanceThru.empty() ? L"" : (L"  •  Maintenance Thru: " + Utf8ToWide(status.cert.maintenanceThru))) << L"\n"
+            << L"License File  : " << Utf8ToWide(status.sourceDescription) << L"\n\n"
+            << L"Zero-Telemetry Guarantee: Verified 100% offline via Windows System32\\bcrypt.dll with zero activation servers and zero hardware fingerprinting.";
     } else {
-        wchar_t envBuf[MAX_PATH * 2]{};
-        if (::GetEnvironmentVariableW(L"LOCALAPPDATA", envBuf, static_cast<DWORD>(std::size(envBuf))) > 0) {
-            baseDir = envBuf;
-        } else {
-            std::error_code ec;
-            baseDir = std::filesystem::temp_directory_path(ec);
-        }
+        oss << L"License State : No .rswlic commercial license file found — running Community Edition\n\n"
+            << L"Community Edition Eligibility & Full Architect Parity:\n"
+            << L"  Free for hobbyists, solo creators, students, educators, non-profits, and open-source maintainers.\n"
+            << L"  Permanently maintains 100% technical feature parity with Architect Edition with zero watermarks.\n\n"
+            << L"Have a Commercial License (.rswlic)?\n"
+            << L"  • Drag and drop your .rswlic file directly onto this window, OR\n"
+            << L"  • Choose Help -> Activate / Import License File (.rswlic)..., OR\n"
+            << L"  • Place installer-studio.rswlic in %PROGRAMDATA%\\RaggieSoft\\Licenses\\ (or set RSW_LICENSE_KEY in CI/CD).";
     }
-    return baseDir / L"RaggieSoft" / L"Installer Studio" / L"edition.json";
+    return oss.str();
 }
 
-/// Loads the locally persisted edition from `edition.json`, defaulting cleanly to `Community Edition`.
-inline RswIdeEdition LoadPersistedEdition() noexcept {
-    std::error_code ec;
-    const auto cfgPath = GetEditionConfigFilePath();
-    if (!std::filesystem::exists(cfgPath, ec)) {
-        return RswIdeEdition::Community;
-    }
-    std::ifstream in(cfgPath, std::ios::binary);
-    if (!in) return RswIdeEdition::Community;
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    const std::string txt = ss.str();
-
-    // Lightweight zero-allocation scan for `"edition": "<slug>"` (valid strict JSON, zero comments!)
-    const auto keyPos = txt.find("\"edition\"");
-    if (keyPos == std::string::npos) return RswIdeEdition::Community;
-    const auto colonPos = txt.find(':', keyPos + 9);
-    if (colonPos == std::string::npos) return RswIdeEdition::Community;
-    const auto q1 = txt.find('"', colonPos + 1);
-    if (q1 == std::string::npos) return RswIdeEdition::Community;
-    const auto q2 = txt.find('"', q1 + 1);
-    if (q2 == std::string::npos) return RswIdeEdition::Community;
-
-    RswIdeEdition parsed = RswIdeEdition::Community;
-    if (ParseEditionToken(std::string_view(txt).substr(q1 + 1, q2 - q1 - 1), parsed)) {
-        return parsed;
-    }
-    return RswIdeEdition::Community;
-}
-
-/// Saves the active edition to `%LOCALAPPDATA%\RaggieSoft\Installer Studio\edition.json` (strict JSON, zero comments).
-inline bool SavePersistedEdition(RswIdeEdition ed) noexcept {
-    std::error_code ec;
-    const auto cfgPath = GetEditionConfigFilePath();
-    std::filesystem::create_directories(cfgPath.parent_path(), ec);
-    std::ofstream out(cfgPath, std::ios::binary | std::ios::trunc);
-    if (!out) return false;
-    out << "{\n"
-        << "  \"product\": \"RaggieSoft Installer Studio\",\n"
-        << "  \"edition\": \"" << EditionSlug(ed) << "\",\n"
-        << "  \"architectParity\": " << (EditionHasFullArchitectParity(ed) ? "true" : "false") << "\n"
-        << "}\n";
-    return out.good();
-}
-
-/// Resolves the effective edition for CLI invocations:
-///   1. Explicit `--edition=<slug>` flag (highest priority)
-///   2. `RSW_EDITION` environment variable (CI/CD & automated test harnesses)
-///   3. Locally saved `edition.json` (or `Community` default)
-inline bool ResolveEffectiveCliEdition(
-    std::string_view cliEditionFlag,
-    RswIdeEdition& outEdition,
-    std::string& outError)
-{
-    if (!cliEditionFlag.empty()) {
-        if (!ParseEditionToken(cliEditionFlag, outEdition)) {
-            outError = "Unknown --edition='" + std::string(cliEditionFlag) +
-                       "'. Expected 'community', 'essentials', 'developer', or 'architect'.";
-            return false;
-        }
-        return true;
-    }
-    wchar_t envBuf[64]{};
-    const DWORD n = ::GetEnvironmentVariableW(L"RSW_EDITION", envBuf, static_cast<DWORD>(std::size(envBuf)));
-    if (n > 0 && n < std::size(envBuf)) {
-        const std::string envStr = WideToUtf8(envBuf);
-        if (!ParseEditionToken(envStr, outEdition)) {
-            outError = "Invalid RSW_EDITION='" + envStr +
-                       "'. Expected 'community', 'essentials', 'developer', or 'architect'.";
-            return false;
-        }
-        return true;
-    }
-    outEdition = LoadPersistedEdition();
-    return true;
-}
-
-/// Builds a rich plain-English comparison summary for the IDE's `Compare Editions & Capabilities` dialog.
+/// Builds a rich plain-English comparison summary for the IDE's `Compare All 4 Editions & Capabilities` dialog.
 inline std::wstring BuildEditionsComparisonText(RswIdeEdition activeEd) {
     std::wostringstream oss;
     oss << L"Active IDE Edition: " << EditionDisplayName(activeEd) << L"\n\n"
-        << L"• Community Edition (Free — Hobbyist, Solo, EDU, Non-Profit & OSS):\n"
+        << L"• Community Edition (Presented Automatically When No .rswlic File Is Present — Free):\n"
         << L"  100% technical feature parity with Architect Edition forever — zero locked views, zero watermarks.\n\n"
-        << L"• Essentials Edition (Commercial Tier 1 — 1 Workstation):\n"
+        << L"• Essentials Edition (.rswlic Commercial Tier 1 — 1 Workstation):\n"
         << L"  Guided .MSI + Universal Setup.exe (x64 & ARM64), Basic Folder/.ZIP Self-Extractor (%TEMP% wrapper),\n"
         << L"  11 Wizard Styles, Pre-MSI Runtimes, .MSM consumption, Major Upgrades, WCAG 2.2 AA & Code Signing.\n\n"
-        << L"• Developer Edition (Commercial Tier 2 — Workstation + CI/CD Build Agents):\n"
+        << L"• Developer Edition (.rswlic Commercial Tier 2 — Workstation + CI/CD Build Agents):\n"
         << L"  Adds compiling new .MSM Merge Modules, RaggieScript (.rssc) & RaggieScript EXE, RsUpdate.exe\n"
         << L"  (Launcher-compatible JSON updater), Custom C++ & MSI.DLL Dialog Designers, MSI Prism, & CI/CD rights.\n\n"
-        << L"• Architect Edition (Commercial Tier 3 — Enterprise Suites & Procurement):\n"
+        << L"• Architect Edition (.rswlic Commercial Tier 3 — Enterprise Suites & Procurement):\n"
         << L"  Adds Unified Multi-Product Suites (.rsis Dual-Bar Progress + ARPSYSTEMCOMPONENT adoption), RsPatch.exe\n"
         << L"  .MSP & .rswpatch binary-delta patches (--plan-update), .MST GPO transforms, Disk Spanning, Loose Media\n"
         << L"  (msiexec /a), .rswpak CDN packs, and automated HTML5 VPAT 2.5 conformance reports (--emit-vpat).";
