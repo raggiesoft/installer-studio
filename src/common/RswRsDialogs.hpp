@@ -649,17 +649,18 @@ inline int ExecuteRsDialog(
         }
     }
 
-    if (ioSpec.showBackButton) {
+    const bool isFinishKind = (ioSpec.kind == RsDialogKind::Finish || ioSpec.kind == RsDialogKind::FinishReboot);
+    if (ioSpec.showBackButton && !isFinishKind) {
         mkBtn(detail::IDC_RSD_BACK, "< &Back", 262, 360, 86, 28, false);
     }
-    st.hNextBtn = mkBtn(detail::IDC_RSD_NEXT, ioSpec.primaryBtnText, 356, 360, 92, 28, true);
+    st.hNextBtn = mkBtn(detail::IDC_RSD_NEXT, ioSpec.primaryBtnText, isFinishKind ? 448 : 356, 360, 92, 28, true);
     if (ioSpec.showUacShield) {
         ::SendMessageW(st.hNextBtn, BCM_SETSHIELD, 0, TRUE);
     }
     if (ioSpec.kind == RsDialogKind::License && !ioSpec.boolA) {
         ::EnableWindow(st.hNextBtn, FALSE);
     }
-    if (ioSpec.kind != RsDialogKind::Finish && ioSpec.kind != RsDialogKind::FinishReboot) {
+    if (!isFinishKind) {
         mkBtn(detail::IDC_RSD_CANCEL, "Cancel", 458, 360, 82, 28, false);
     }
 

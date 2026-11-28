@@ -317,8 +317,14 @@ public:
             ::MoveWindow(hChkLaunch, S(18), footY + S(3), W - S(238), S(24), TRUE);
             ::ShowWindow(hChkLaunch, HasPostAction() ? SW_SHOW : SW_HIDE);
         }
-        ::MoveWindow(hBtnPrimary, W - S(210), footY, S(104), S(32), TRUE);
-        ::MoveWindow(hBtnClose,   W - S(98),  footY, S(80),  S(32), TRUE);
+        if (finished.load()) {
+            ::EnableWindow(hBtnClose, FALSE);
+            ::ShowWindow(hBtnClose, SW_HIDE);
+            ::MoveWindow(hBtnPrimary, W - S(122), footY, S(104), S(32), TRUE);
+        } else {
+            ::MoveWindow(hBtnPrimary, W - S(210), footY, S(104), S(32), TRUE);
+            ::MoveWindow(hBtnClose,   W - S(98),  footY, S(80),  S(32), TRUE);
+        }
         ::SendMessageW(hBtnPrimary, BCM_SETSHIELD, 0, (!finished.load() && NeedsAdminElevation()) ? TRUE : FALSE);
     }
 
@@ -558,8 +564,9 @@ public:
                                          ? (L"Verified Host: " + Utf8ToWide(self->manifest.hostName) + L" \u2014 Content folder:")
                                          : (L"Host Not Installed: Please install " + Utf8ToWide(self->manifest.hostName) + L" first:"))
                                   : L"&Destination folder:"));
+                const DWORD dirLblNoPrefix = (tempInst || isAddon) ? SS_NOPREFIX : 0u;
                 self->hDirLbl = ::CreateWindowExW(
-                    0, L"STATIC", dirCaptionW.c_str(), WS_CHILD | WS_VISIBLE | SS_NOPREFIX,
+                    0, L"STATIC", dirCaptionW.c_str(), WS_CHILD | WS_VISIBLE | dirLblNoPrefix,
                     0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SMP_DIR_LBL)), hInst, nullptr);
                 self->hDirEdit = ::CreateWindowExW(
                     WS_EX_CLIENTEDGE, L"EDIT", self->targetDir.wstring().c_str(),
@@ -695,7 +702,9 @@ public:
                     ::SetWindowTextW(self->hBtnPrimary, L"&Finish");
                     ::SendMessageW(self->hBtnPrimary, BCM_SETSHIELD, 0, FALSE);
                     ::EnableWindow(self->hBtnPrimary, TRUE);
-                    ::SetWindowTextW(self->hBtnClose, L"Close");
+                    ::EnableWindow(self->hBtnClose, FALSE);
+                    ::ShowWindow(self->hBtnClose, SW_HIDE);
+                    self->LayoutControls();
                     ::SetFocus(self->hBtnPrimary);
                 } else {
                     std::string errCopy;
@@ -1162,7 +1171,74 @@ struct SuiteTaskbarProgress {
     }
 };
 
-/// Live `MsiSetExternalUIRecord` state streaming `0..1000` component progress for child `.msi` installs!
+/// Strips unexpanded Windows Installer `[1]`..`[99]` field placeholders and trailing `: ` separators
+/// so Suite progress bars NEVER display raw `"Copying New Files: [1]"`!
+inline std::wstring SanitizeSuiteMsiTokens(std::wstring s) {
+    std::wstring out;
+    out.reserve(s.size());
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == L'[') {
+            std::size_t j = i + 1;
+            while (j < s.size() && s[j] >= L'0' && s[j] <= L'9') ++j;
+            if (j > i + 1 && j < s.size() && s[j] == L']') {
+                i = j;
+                continue;
+            }
+        }
+        out.push_back(s[i]);
+    }
+    while (!out.empty() && (out.back() == L' ' || out.back() == L':' || out.back() == L'-')) {
+        out.pop_back();
+    }
+    return out;
+}
+
+/// Condenses multiline formatted MSI `ActionData` (`"File: BookReader.exe\r\nDirectory: ..."`)
+/// into a crisp single-line status (`"Copying new files: BookReader.exe"`).
+inline std::wstring FormatSuiteMsiActionDataSingleLine(
+    const std::wstring& actionDesc,
+    const std::wstring& actionTemplate,
+    MSIHANDLE hRecord)
+{
+    std::wstring detail;
+    if (!actionTemplate.empty()) {
+        ::MsiRecordSetStringW(hRecord, 0, actionTemplate.c_str());
+        wchar_t fmtBuf[1024]{};
+        DWORD cch = static_cast<DWORD>(std::size(fmtBuf));
+        if (::MsiFormatRecordW(0, hRecord, fmtBuf, &cch) == ERROR_SUCCESS && fmtBuf[0] != L'\0') {
+            detail = SanitizeSuiteMsiTokens(fmtBuf);
+        }
+    }
+    if (detail.empty() && ::MsiRecordGetFieldCount(hRecord) >= 1) {
+        wchar_t f1Buf[512]{};
+        DWORD cch = static_cast<DWORD>(std::size(f1Buf));
+        if (::MsiRecordGetStringW(hRecord, 1, f1Buf, &cch) == ERROR_SUCCESS && f1Buf[0] != L'\0') {
+            detail = SanitizeSuiteMsiTokens(f1Buf);
+        }
+    }
+    // Extract the first meaningful line (stripping `"File: "` / `"Shortcut: "` / `"Key: "` prefixes)
+    const auto nl = detail.find_first_of(L"\r\n");
+    if (nl != std::wstring::npos) {
+        detail.resize(nl);
+    }
+    for (const wchar_t* pfx : {L"File: ", L"Folder: ", L"Shortcut: ", L"Key: ", L"Feature: ", L"Application: "}) {
+        const std::size_t pLen = std::wcslen(pfx);
+        if (detail.compare(0, pLen, pfx) == 0) {
+            detail.erase(0, pLen);
+            break;
+        }
+    }
+    detail = SanitizeSuiteMsiTokens(detail);
+
+    std::wstring base = SanitizeSuiteMsiTokens(actionDesc);
+    while (!base.empty() && base.back() == L'.') base.pop_back();
+    if (detail.empty()) {
+        return base.empty() ? L"Applying system changes..." : (base + L"...");
+    }
+    return base.empty() ? detail : (base + L": " + detail);
+}
+
+/// Live `MsiSetExternalUIRecord` state streaming `0..1000` component progress & formatted filenames for child `.msi` installs!
 struct SuiteChildMsiTracker {
     long long                           totalTicks = 1000;
     long long                           curTicks   = 0;
@@ -1170,6 +1246,8 @@ struct SuiteChildMsiTracker {
     bool                                forward    = true;
     int                                 highWater  = 0;
     std::wstring                        actionDesc;
+    std::wstring                        actionTemplate;
+    std::wstring                        liveStatus;
     std::string                         errorUtf8;
     const std::atomic<bool>*            cancelFlag = nullptr;
     std::function<void(int, const std::wstring&)> emitUpdate;
@@ -1181,12 +1259,28 @@ struct SuiteChildMsiTracker {
 
         const UINT mt = iMessageType & 0xFF000000u;
         if (mt == INSTALLMESSAGE_ACTIONSTART && hRecord != 0) {
+            const UINT nFields = ::MsiRecordGetFieldCount(hRecord);
             wchar_t descBuf[512]{};
-            DWORD cch = static_cast<DWORD>(std::size(descBuf));
-            if (::MsiRecordGetFieldCount(hRecord) >= 2 &&
-                ::MsiRecordGetStringW(hRecord, 2, descBuf, &cch) == ERROR_SUCCESS && descBuf[0] != L'\0') {
-                st->actionDesc = descBuf;
-                if (st->emitUpdate) st->emitUpdate(st->highWater, st->actionDesc);
+            DWORD cchDesc = static_cast<DWORD>(std::size(descBuf));
+            if (nFields >= 2 && ::MsiRecordGetStringW(hRecord, 2, descBuf, &cchDesc) == ERROR_SUCCESS && descBuf[0] != L'\0') {
+                st->actionDesc = SanitizeSuiteMsiTokens(descBuf);
+                st->liveStatus = st->actionDesc;
+            }
+            st->actionTemplate.clear();
+            wchar_t tmplBuf[512]{};
+            DWORD cchTmpl = static_cast<DWORD>(std::size(tmplBuf));
+            if (nFields >= 3 && ::MsiRecordGetStringW(hRecord, 3, tmplBuf, &cchTmpl) == ERROR_SUCCESS && tmplBuf[0] != L'\0') {
+                st->actionTemplate = tmplBuf;
+            }
+            if (!st->liveStatus.empty() && st->emitUpdate) {
+                st->emitUpdate(st->highWater, st->liveStatus);
+            }
+            return IDOK;
+        }
+        if (mt == INSTALLMESSAGE_ACTIONDATA && hRecord != 0) {
+            st->liveStatus = FormatSuiteMsiActionDataSingleLine(st->actionDesc, st->actionTemplate, hRecord);
+            if (!st->liveStatus.empty() && st->emitUpdate) {
+                st->emitUpdate(st->highWater, st->liveStatus);
             }
             return IDOK;
         }
@@ -1217,7 +1311,9 @@ struct SuiteChildMsiTracker {
             const int rawPerm = static_cast<int>(
                 std::clamp<long long>((st->curTicks * 1000LL) / std::max<long long>(1, st->totalTicks), 0, 995));
             st->highWater = std::max(st->highWater, rawPerm);
-            if (st->emitUpdate) st->emitUpdate(st->highWater, st->actionDesc);
+            if (st->emitUpdate) {
+                st->emitUpdate(st->highWater, st->liveStatus.empty() ? st->actionDesc : st->liveStatus);
+            }
             return IDOK;
         }
         return 0;
@@ -1445,7 +1541,7 @@ inline int ExecuteSuiteChainerOperationDetailed(
 
         constexpr DWORD kFilter =
             INSTALLLOGMODE_FATALEXIT | INSTALLLOGMODE_ERROR |
-            INSTALLLOGMODE_ACTIONSTART | INSTALLLOGMODE_PROGRESS;
+            INSTALLLOGMODE_ACTIONSTART | INSTALLLOGMODE_ACTIONDATA | INSTALLLOGMODE_PROGRESS;
         INSTALLUI_HANDLER_RECORD prevHandler = nullptr;
         ::MsiSetExternalUIRecord(&suite_detail::SuiteChildMsiTracker::OnRecord, kFilter, &tracker, &prevHandler);
         UINT rc = ERROR_INSTALL_FAILURE;
@@ -1988,14 +2084,15 @@ inline int RunElevatedSuiteWorkerJob(const std::filesystem::path& jobFilePath) {
 //         of every package newly installed during this Suite session!
 // ================================================================================
 enum class SuiteWizardPage : int {
-    Welcome     = 0,
-    Maintenance = 1,
-    License     = 2,
-    SetupType   = 3,
-    CustomSuite = 4,
-    VerifyReady = 5,
-    Installing  = 6,
-    Finished    = 7
+    Welcome       = 0,
+    Maintenance   = 1,
+    License       = 2,
+    SetupType     = 3,
+    CustomSuite   = 4,
+    VerifyReady   = 5,
+    Installing    = 6,
+    Finished      = 7,
+    AutorunReadMe = 8
 };
 
 namespace suite_detail {
@@ -2090,11 +2187,12 @@ inline std::wstring StripBasicRtfToPlainWide(std::string_view rawBytes) {
 
 class SuiteSetupWizardApp {
 public:
-    static constexpr UINT WM_SUITE_PROGRESS    = WM_APP + 70;
-    static constexpr UINT WM_SUITE_DONE        = WM_APP + 71;
-    static constexpr UINT WM_SUITE_REQUEST_UAC = WM_APP + 72;
-    static constexpr UINT_PTR kBillboardTimer  = 88;
-    static constexpr int  kUacDeclinedSentinel = 99091;
+    static constexpr UINT WM_SUITE_PROGRESS       = WM_APP + 70;
+    static constexpr UINT WM_SUITE_DONE           = WM_APP + 71;
+    static constexpr UINT WM_SUITE_REQUEST_UAC    = WM_APP + 72;
+    static constexpr UINT_PTR kBillboardTimer     = 88;
+    static constexpr UINT_PTR kPassiveStartTimer  = 89;
+    static constexpr int  kUacDeclinedSentinel    = 99091;
 
     // Accessible Win32 Control IDs (`IsDialogMessageW` keyboard traversal + `&` mnemonics!)
     static constexpr int IDC_SWZ_LIC_EDIT    = 1601;
@@ -2124,6 +2222,12 @@ public:
     static constexpr int IDC_SWZ_BACK        = 1670;
     static constexpr int IDC_SWZ_PRIMARY     = 1671;
     static constexpr int IDC_SWZ_CANCEL      = 1672;
+    static constexpr int IDC_SWZ_ONECLICK_CS = 1673;
+    static constexpr int IDC_SWZ_AR_CARD_0   = 1680;
+    static constexpr int IDC_SWZ_AR_CARD_1   = 1681;
+    static constexpr int IDC_SWZ_AR_CARD_2   = 1682;
+    static constexpr int IDC_SWZ_AR_CARD_3   = 1683;
+    static constexpr int IDC_SWZ_README_EDIT = 1684;
 
     struct SuiteUacLaunchCtx {
         std::wstring jobPath;
@@ -2173,10 +2277,15 @@ public:
     HWND                                 hCmpLbl      = nullptr;
     HWND                                 hCmpPct      = nullptr;
     HWND                                 hCmpBar      = nullptr;
-    HWND                                 hChkLaunch   = nullptr;
-    HWND                                 hBtnBack     = nullptr;
-    HWND                                 hBtnPrimary  = nullptr;
-    HWND                                 hBtnCancel   = nullptr;
+    HWND                                 hChkLaunch    = nullptr;
+    HWND                                 hBtnCustomize = nullptr;
+    HWND                                 hArCards[4]{};
+    HWND                                 hReadMeEdit   = nullptr;
+    HWND                                 hBtnBack      = nullptr;
+    HWND                                 hBtnPrimary   = nullptr;
+    HWND                                 hBtnCancel    = nullptr;
+    bool                                 oneClickCustomized = false;
+    int                                  autorunChoiceIdx   = 0;
 
     HICON                                hIconBig     = nullptr;
     HICON                                hIconSmall   = nullptr;
@@ -2221,6 +2330,44 @@ public:
     }
 
     bool IsHeadlessExport() const noexcept { return !exportShotDir.empty(); }
+
+    bool IsOneClickSplashActive() const noexcept {
+        return wizardStyle == WizardStyleKind::OneClick && !oneClickCustomized && !openedForMaintenance;
+    }
+
+    bool IsPassiveToastActive() const noexcept {
+        return wizardStyle == WizardStyleKind::PassiveToast;
+    }
+
+    bool IsSimpleDirectChecklist() const noexcept {
+        return wizardStyle == WizardStyleKind::Simple && !openedForMaintenance && !openedDirectUninstall;
+    }
+
+    bool IsAutorun16x9Style() const noexcept {
+        return wizardStyle == WizardStyleKind::Autorun16x9;
+    }
+
+    void ComputeLogicalSuiteWindowSize(int& outLogW, int& outLogH) const noexcept {
+        if (IsPassiveToastActive()) {
+            outLogW = 540;
+            outLogH = 264;
+        } else if (IsOneClickSplashActive() &&
+                   (currentPage == SuiteWizardPage::Welcome ||
+                    currentPage == SuiteWizardPage::Installing ||
+                    currentPage == SuiteWizardPage::Finished)) {
+            outLogW = 580;
+            outLogH = 368;
+        } else if (IsAutorun16x9Style()) {
+            outLogW = 680;
+            outLogH = 504;
+        } else if (wizardStyle == WizardStyleKind::FluentMica) {
+            outLogW = 720;
+            outLogH = 492;
+        } else {
+            outLogW = 660;
+            outLogH = 492;
+        }
+    }
 
     bool NeedsAdminElevation() const noexcept {
         return suite.perMachine && !QueryProcessPrivilegeState().HasEffectiveAdminRights();
@@ -2438,9 +2585,48 @@ public:
         for (HWND h : {hListLbl, hDirLbl, hOvrLbl, hOvrPct, hCmpPct, hBtnPrimary}) {
             if (h) ::SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(hFontBold), TRUE);
         }
-        for (HWND h : {hLicEdit, hLicAccept, hList, hBtnSelAll, hBtnReset, hDirEdit, hBtnBrowse,
-                       hChkDetach, hCmpLbl, hChkLaunch, hBtnBack, hBtnCancel}) {
+        for (HWND h : {hLicEdit, hLicAccept, hReadMeEdit, hList, hBtnSelAll, hBtnReset, hDirEdit, hBtnBrowse,
+                       hChkDetach, hCmpLbl, hChkLaunch, hBtnCustomize, hBtnBack, hBtnCancel}) {
             if (h) ::SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(hFontBody), TRUE);
+        }
+    }
+
+    void RefreshAutorunCardSubclasses() {
+        if (!hArCards[0]) return;
+        if (openedForMaintenance) {
+            ui::AttachAccessibleOptionCardSubclass(
+                hArCards[0], &theme, ui::GlassGlyph::Sliders, ui::brand::kSkyCyan, ui::brand::kWarmGold,
+                L"Add, repair, or manage installed Suite applications");
+            ui::AttachAccessibleOptionCardSubclass(
+                hArCards[1], &theme, ui::GlassGlyph::ReadMeBook, ui::brand::kEmeraldOk, ui::brand::kSkyCyan,
+                L"View Suite edition liner notes & included titles");
+            ui::AttachAccessibleOptionCardSubclass(
+                hArCards[2], &theme, ui::GlassGlyph::Uninstall, ui::brand::kCoralRose, ui::brand::kWarmGold,
+                L"Uninstall Suite cleanly from this computer");
+            ui::AttachAccessibleOptionCardSubclass(
+                hArCards[3], &theme, ui::GlassGlyph::Gear, ui::brand::kVioletTune, ui::brand::kSkyCyan,
+                L"Close launcher without making changes");
+            ::SetWindowTextW(hArCards[0], L"&Modify / Repair Suite");
+            ::SetWindowTextW(hArCards[1], L"View &ReadMe");
+            ::SetWindowTextW(hArCards[2], L"&Uninstall Suite");
+            ::SetWindowTextW(hArCards[3], L"E&xit Launcher");
+        } else {
+            ui::AttachAccessibleOptionCardSubclass(
+                hArCards[0], &theme, ui::GlassGlyph::Play, ui::brand::kEmeraldOk, ui::brand::kWarmGold,
+                L"Recommended Express Suite installation");
+            ui::AttachAccessibleOptionCardSubclass(
+                hArCards[1], &theme, ui::GlassGlyph::ReadMeBook, ui::brand::kSkyCyan, ui::brand::kWarmGold,
+                L"View Suite edition liner notes & included titles");
+            ui::AttachAccessibleOptionCardSubclass(
+                hArCards[2], &theme, ui::GlassGlyph::Sliders, ui::brand::kVioletTune, ui::brand::kSkyCyan,
+                L"Pick individual apps, books, albums & folder");
+            ui::AttachAccessibleOptionCardSubclass(
+                hArCards[3], &theme, ui::GlassGlyph::Gear, ui::brand::kCoralRose, ui::brand::kWarmGold,
+                L"Close launcher without making changes");
+            ::SetWindowTextW(hArCards[0], L"&Install Suite");
+            ::SetWindowTextW(hArCards[1], L"View &ReadMe");
+            ::SetWindowTextW(hArCards[2], L"C&ustomize Suite...");
+            ::SetWindowTextW(hArCards[3], L"E&xit Launcher");
         }
     }
 
@@ -2483,23 +2669,34 @@ public:
                 hMntRemove, &theme, ui::GlassGlyph::Uninstall, ui::brand::kCoralRose, ui::brand::kWarmGold,
                 L"Uninstall the entire Suite and its managed applications cleanly from this computer.");
         }
+        if (hReadMeEdit) {
+            ui::ApplyDarkScrollbarTheme(hReadMeEdit, theme);
+        }
+        RefreshAutorunCardSubclasses();
+    }
+
+    bool ShowsLeftGraphicRailOnActivePage() const noexcept {
+        if (UsesClassic3dDialogSheet(wizardStyle)) {
+            return true; // Authentic `Wizard95` / `FullScreenBlue` / `FullScreenTeal`: left 3D rail on all pages!
+        }
+        if (wizardStyle == WizardStyleKind::Wizard97) {
+            return currentPage == SuiteWizardPage::Welcome || currentPage == SuiteWizardPage::Finished;
+        }
+        return false;
     }
 
     int ContentLeftLogicalPx() const noexcept {
         if (wizardStyle == WizardStyleKind::FluentMica) return 186;
-        if (UsesClassic3dDialogSheet(wizardStyle) &&
-            (currentPage == SuiteWizardPage::Welcome || currentPage == SuiteWizardPage::Finished)) {
-            return 182;
-        }
+        if (ShowsLeftGraphicRailOnActivePage()) return 182;
+        if (wizardStyle == WizardStyleKind::AeroWizard) return 38;
         return 22;
     }
 
     int HeaderHeightLogicalPx() const noexcept {
+        if (IsPassiveToastActive()) return 54;
         if (wizardStyle == WizardStyleKind::FluentMica) return 58;
-        if (UsesClassic3dDialogSheet(wizardStyle) &&
-            (currentPage == SuiteWizardPage::Welcome || currentPage == SuiteWizardPage::Finished)) {
-            return 14;
-        }
+        if (ShowsLeftGraphicRailOnActivePage()) return 14;
+        if (IsAutorun16x9Style() && currentPage == SuiteWizardPage::Welcome) return 260;
         return 64;
     }
 
@@ -2516,7 +2713,7 @@ public:
         const int contentX = S(ContentLeftLogicalPx());
         const int contentW = std::max(S(260), W - contentX - S(22));
         const int bodyTop  = S(HeaderHeightLogicalPx()) + S(12);
-        const int footerH  = S(52);
+        const int footerH  = IsPassiveToastActive() ? S(14) : S(52);
         const int footerY  = H - footerH;
         const int bodyBot  = footerY - S(12);
 
@@ -2524,13 +2721,44 @@ public:
         for (HWND h : {hLicEdit, hLicAccept, hTypeCards[0], hTypeCards[1], hTypeCards[2], hTypeCards[3],
                        hMntModify, hMntRepair, hMntRemove, hListLbl, hList, hBtnSelAll, hBtnReset,
                        hDirLbl, hDirEdit, hBtnBrowse, hChkDetach, hOvrLbl, hOvrPct, hOvrBar,
-                       hCmpLbl, hCmpPct, hCmpBar, hChkLaunch}) {
+                       hCmpLbl, hCmpPct, hCmpBar, hChkLaunch, hBtnCustomize, hReadMeEdit,
+                       hArCards[0], hArCards[1], hArCards[2], hArCards[3]}) {
             if (h) ::ShowWindow(h, SW_HIDE);
         }
 
         switch (currentPage) {
-            case SuiteWizardPage::Welcome:
-                break; // Painted cleanly in `PaintWindow` with Hero Card + Overview Card!
+            case SuiteWizardPage::Welcome: {
+                if (IsAutorun16x9Style()) {
+                    const int cellW = (W - S(52)) / 2;
+                    const int cellH = S(64);
+                    const int row1Y = S(278);
+                    const int row2Y = row1Y + cellH + S(10);
+                    ::MoveWindow(hArCards[0], S(22),                row1Y, cellW, cellH, TRUE);
+                    ::MoveWindow(hArCards[1], S(30) + cellW,        row1Y, cellW, cellH, TRUE);
+                    ::MoveWindow(hArCards[2], S(22),                row2Y, cellW, cellH, TRUE);
+                    ::MoveWindow(hArCards[3], S(30) + cellW,        row2Y, cellW, cellH, TRUE);
+                    for (HWND ha : hArCards) if (ha) ::ShowWindow(ha, SW_SHOW);
+                } else if (IsOneClickSplashActive()) {
+                    if (HasLicenseStep() && hLicAccept) {
+                        ::MoveWindow(hLicAccept, contentX + S(16), bodyBot - S(34), contentW - S(32), S(26), TRUE);
+                        ::ShowWindow(hLicAccept, SW_SHOW);
+                    }
+                    if (hBtnCustomize) {
+                        const int btnY = footerY + (footerH - S(32)) / 2;
+                        ::MoveWindow(hBtnCustomize, S(18), btnY, S(124), S(32), TRUE);
+                        ::ShowWindow(hBtnCustomize, SW_SHOW);
+                    }
+                }
+                break;
+            }
+
+            case SuiteWizardPage::AutorunReadMe: {
+                if (hReadMeEdit) {
+                    ::MoveWindow(hReadMeEdit, contentX, bodyTop, contentW, std::max(S(140), bodyBot - bodyTop), TRUE);
+                    ::ShowWindow(hReadMeEdit, SW_SHOW);
+                }
+                break;
+            }
 
             case SuiteWizardPage::Maintenance: {
                 const int cardH = S(78);
@@ -2619,8 +2847,14 @@ public:
             }
 
             case SuiteWizardPage::Installing: {
-                const bool hasBillboards = !suite.billboards.empty();
-                const int progTop = hasBillboards ? (bodyBot - S(128)) : (bodyTop + S(96));
+                const bool passiveMode   = IsPassiveToastActive();
+                const bool compactSplash = IsOneClickSplashActive();
+                const bool hasBillboards = !passiveMode && !compactSplash && !suite.billboards.empty();
+                const int progTop = passiveMode
+                    ? (bodyTop + S(12))
+                    : (compactSplash
+                           ? (bodyTop + S(74))
+                           : (hasBillboards ? (bodyBot - S(128)) : (bodyTop + S(96))));
                 ::MoveWindow(hOvrLbl, contentX + S(16), progTop,         contentW - S(206), S(20), TRUE);
                 ::MoveWindow(hOvrPct, contentX + contentW - S(186), progTop, S(170), S(20), TRUE);
                 ::MoveWindow(hOvrBar, contentX + S(16), progTop + S(22), contentW - S(32), S(22), TRUE);
@@ -2650,16 +2884,18 @@ public:
         }
 
         // Footer Navigation Buttons (`< &Back`, Primary Action, `&Cancel`)
-        const int btnY   = footerY + (footerH - S(32)) / 2;
+        // Note: On `Finished`, `Cancel` is BOTH disabled and hidden, and `&Finish` slides cleanly into the rightmost slot!
+        const int btnY    = footerY + (footerH - S(32)) / 2;
         const bool isAero = (wizardStyle == WizardStyleKind::AeroWizard);
+        const bool isFin  = (currentPage == SuiteWizardPage::Finished);
         ui::SetPushButtonAeroCircleBackMode(hBtnBack, isAero);
         if (isAero) {
             ::MoveWindow(hBtnBack, S(14), S(15), S(32), S(32), TRUE);
         } else {
             ::MoveWindow(hBtnBack, W - S(338), btnY, S(92), S(32), TRUE);
         }
-        ::MoveWindow(hBtnPrimary, W - S(236), btnY, S(124), S(32), TRUE);
-        ::MoveWindow(hBtnCancel,  W - S(102), btnY, S(84),  S(32), TRUE);
+        ::MoveWindow(hBtnPrimary, isFin ? (W - S(142)) : (W - S(236)), btnY, S(124), S(32), TRUE);
+        ::MoveWindow(hBtnCancel,  W - S(102), btnY, S(84), S(32), TRUE);
 
         SyncNavigationButtonStates();
     }
@@ -2668,78 +2904,133 @@ public:
         if (!hBtnBack || !hBtnPrimary || !hBtnCancel) return;
 
         bool canBack      = false;
-        bool showBack     = true;
+        bool showBack     = !IsPassiveToastActive() && !IsOneClickSplashActive();
+        bool showPrim     = !IsPassiveToastActive();
         bool enablePrim   = true;
         bool showShield   = false;
-        bool showCancel   = true;
-        bool enableCancel = true;
-        std::wstring primText = L"&Next >";
+        bool showCancel   = !IsPassiveToastActive();
+        bool enableCancel = !IsPassiveToastActive();
+        std::wstring primText = (wizardStyle == WizardStyleKind::AeroWizard) ? L"&Next" : L"&Next >";
         std::wstring cancText = L"&Cancel";
 
         switch (currentPage) {
             case SuiteWizardPage::Welcome:
-                canBack  = false;
-                primText = L"&Next >";
+                canBack = false;
+                if (IsAutorun16x9Style()) {
+                    showBack = false;
+                    if (autorunChoiceIdx == 0) {
+                        primText   = openedForMaintenance ? L"&Continue >" : Utf8ToWide(suite.installBtnText);
+                        showShield = !openedForMaintenance && !HasLicenseStep() && NeedsAdminElevation();
+                    } else if (autorunChoiceIdx == 1) {
+                        primText = L"&Read Notes";
+                    } else if (autorunChoiceIdx == 2) {
+                        primText = openedForMaintenance ? L"&Continue >" : L"C&ustomize...";
+                    } else {
+                        primText = L"E&xit";
+                    }
+                } else if (IsOneClickSplashActive()) {
+                    showBack   = false;
+                    primText   = Utf8ToWide(suite.installBtnText);
+                    enablePrim = !HasLicenseStep() || (::SendMessageW(hLicAccept, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                    showShield = NeedsAdminElevation();
+                }
+                break;
+
+            case SuiteWizardPage::AutorunReadMe:
+                canBack  = true;
+                primText = L"&Done";
                 break;
 
             case SuiteWizardPage::Maintenance:
-                canBack  = false;
-                primText = L"&Next >";
+                canBack  = IsAutorun16x9Style();
+                showBack = IsAutorun16x9Style() || wizardStyle != WizardStyleKind::Simple;
                 break;
 
             case SuiteWizardPage::License:
                 canBack    = true;
                 enablePrim = (::SendMessageW(hLicAccept, BM_GETCHECK, 0, 0) == BST_CHECKED);
-                primText   = L"&Next >";
+                if (IsAutorun16x9Style()) {
+                    primText   = Utf8ToWide(suite.installBtnText);
+                    showShield = NeedsAdminElevation();
+                }
                 break;
 
             case SuiteWizardPage::SetupType:
-                canBack  = true;
-                primText = L"&Next >";
+                canBack = true;
                 break;
 
             case SuiteWizardPage::CustomSuite: {
-                canBack = true;
+                canBack  = !IsSimpleDirectChecklist();
+                showBack = !IsSimpleDirectChecklist();
                 std::size_t selCount = 0, instCount = 0;
                 std::uint64_t selBytes = 0;
                 CountSelectedItems(selCount, selBytes, instCount);
                 enablePrim = (selCount > 0);
-                primText   = L"&Next >";
+                if (IsSimpleDirectChecklist()) {
+                    primText   = Utf8ToWide(suite.installBtnText);
+                    showShield = NeedsAdminElevation();
+                }
                 break;
             }
 
             case SuiteWizardPage::VerifyReady:
                 canBack    = true;
                 showShield = NeedsAdminElevation();
-                if (activeOp == SuiteOperationKind::FullUninstall)           primText = L"&Uninstall";
-                else if (activeOp == SuiteOperationKind::DetachKeepStandalone) primText = L"&Detach Suite";
-                else if (activeOp == SuiteOperationKind::RepairInstalled)    primText = L"&Repair";
-                else if (openedForMaintenance)                               primText = L"&Apply Changes";
-                else                                                         primText = Utf8ToWide(suite.installBtnText);
+                if (activeOp == SuiteOperationKind::FullUninstall)              primText = L"&Uninstall";
+                else if (activeOp == SuiteOperationKind::DetachKeepStandalone)  primText = L"&Detach Suite";
+                else if (activeOp == SuiteOperationKind::RepairInstalled)       primText = L"&Repair";
+                else if (openedForMaintenance)                                  primText = L"&Apply Changes";
+                else                                                            primText = Utf8ToWide(suite.installBtnText);
                 break;
 
             case SuiteWizardPage::Installing:
                 canBack      = false;
                 enablePrim   = false;
                 primText     = (activeOp == SuiteOperationKind::FullUninstall) ? L"&Uninstalling" : L"&Installing";
-                enableCancel = !cancelFlag.load();
+                enableCancel = !IsPassiveToastActive() && !cancelFlag.load();
                 break;
 
             case SuiteWizardPage::Finished:
-                showBack   = false;
-                showCancel = false;
-                primText   = L"&Finish";
+                showBack     = false;
+                canBack      = false;
+                showCancel   = false;
+                enableCancel = false;
+                primText     = L"&Finish";
                 break;
         }
 
         ::ShowWindow(hBtnBack, showBack ? SW_SHOW : SW_HIDE);
         ::EnableWindow(hBtnBack, canBack ? TRUE : FALSE);
         ::SetWindowTextW(hBtnPrimary, primText.c_str());
+        ::ShowWindow(hBtnPrimary, showPrim ? SW_SHOW : SW_HIDE);
         ::EnableWindow(hBtnPrimary, enablePrim ? TRUE : FALSE);
         ::SendMessageW(hBtnPrimary, BCM_SETSHIELD, 0, (showShield && enablePrim) ? TRUE : FALSE);
-        ::ShowWindow(hBtnCancel, showCancel ? SW_SHOW : SW_HIDE);
         ::EnableWindow(hBtnCancel, enableCancel ? TRUE : FALSE);
+        ::ShowWindow(hBtnCancel, showCancel ? SW_SHOW : SW_HIDE);
         ::SetWindowTextW(hBtnCancel, cancText.c_str());
+    }
+
+    void ResizeWindowForActiveWizardStyle() {
+        if (!hWnd) return;
+        const UINT dpi = ::GetDpiForWindow(hWnd);
+        int logW = 660, logH = 492;
+        ComputeLogicalSuiteWindowSize(logW, logH);
+        RECT wRc{0, 0,
+                 ui::ScalePx(logW, dpi, theme.textScalePercent),
+                 ui::ScalePx(logH, dpi, theme.textScalePercent)};
+        const DWORD kStyle   = static_cast<DWORD>(::GetWindowLongPtrW(hWnd, GWL_STYLE));
+        const DWORD kExStyle = static_cast<DWORD>(::GetWindowLongPtrW(hWnd, GWL_EXSTYLE));
+        ::AdjustWindowRectExForDpi(&wRc, kStyle, FALSE, kExStyle, dpi);
+        const int targetW = wRc.right - wRc.left;
+        const int targetH = wRc.bottom - wRc.top;
+        RECT curW{};
+        ::GetWindowRect(hWnd, &curW);
+        if ((curW.right - curW.left) != targetW || (curW.bottom - curW.top) != targetH) {
+            const int nx = curW.left + ((curW.right - curW.left) - targetW) / 2;
+            const int ny = curW.top  + ((curW.bottom - curW.top) - targetH) / 2;
+            ::SetWindowPos(hWnd, nullptr, std::max(0, nx), std::max(0, ny), targetW, targetH,
+                           SWP_NOZORDER | SWP_NOACTIVATE);
+        }
     }
 
     void NavigateToPage(SuiteWizardPage next) {
@@ -2752,6 +3043,7 @@ public:
         if (next != SuiteWizardPage::Installing) {
             ::KillTimer(hWnd, kBillboardTimer);
         }
+        ResizeWindowForActiveWizardStyle();
         LayoutAndSyncVisibility();
         ::InvalidateRect(hWnd, nullptr, TRUE);
         if (hBackdropWnd) ::InvalidateRect(hBackdropWnd, nullptr, FALSE);
@@ -2760,28 +3052,42 @@ public:
     void OnBackClicked() {
         if (running.load()) return;
         switch (currentPage) {
+            case SuiteWizardPage::AutorunReadMe:
+                NavigateToPage(SuiteWizardPage::Welcome);
+                break;
+            case SuiteWizardPage::Maintenance:
+                if (IsAutorun16x9Style()) NavigateToPage(SuiteWizardPage::Welcome);
+                break;
             case SuiteWizardPage::License:
                 NavigateToPage(SuiteWizardPage::Welcome);
                 break;
             case SuiteWizardPage::SetupType:
-                NavigateToPage(HasLicenseStep() ? SuiteWizardPage::License : SuiteWizardPage::Welcome);
+                if (wizardStyle == WizardStyleKind::OneClick) {
+                    oneClickCustomized = false;
+                    NavigateToPage(SuiteWizardPage::Welcome);
+                } else {
+                    NavigateToPage(HasLicenseStep() ? SuiteWizardPage::License : SuiteWizardPage::Welcome);
+                }
                 break;
             case SuiteWizardPage::CustomSuite:
-                NavigateToPage(openedForMaintenance ? SuiteWizardPage::Maintenance : SuiteWizardPage::SetupType);
+                if (IsAutorun16x9Style() && !openedForMaintenance) {
+                    NavigateToPage(SuiteWizardPage::Welcome);
+                } else {
+                    NavigateToPage(openedForMaintenance ? SuiteWizardPage::Maintenance : SuiteWizardPage::SetupType);
+                }
                 break;
             case SuiteWizardPage::VerifyReady:
                 if (openedForMaintenance) {
                     if (activeOp == SuiteOperationKind::InstallOrModify) {
                         NavigateToPage(SuiteWizardPage::CustomSuite);
                     } else {
-                        // Even when launched via `Settings -> Apps -> Uninstall` (`--suite-uninstall`),
-                        // clicking `< &Back` lets the user return to the Maintenance hub (`Modify`/`Repair`/`Remove`)!
                         NavigateToPage(SuiteWizardPage::Maintenance);
                     }
                 } else {
-                    const bool isCustom = (selectedTypeIdx >= 0 &&
-                        static_cast<std::size_t>(selectedTypeIdx) < setupTypeCards.size() &&
-                        EqualsIgnoreCase(setupTypeCards[static_cast<std::size_t>(selectedTypeIdx)].tier, "custom"));
+                    const bool isCustom = IsAutorun16x9Style() ||
+                        (selectedTypeIdx >= 0 &&
+                         static_cast<std::size_t>(selectedTypeIdx) < setupTypeCards.size() &&
+                         EqualsIgnoreCase(setupTypeCards[static_cast<std::size_t>(selectedTypeIdx)].tier, "custom"));
                     NavigateToPage(isCustom ? SuiteWizardPage::CustomSuite : SuiteWizardPage::SetupType);
                 }
                 break;
@@ -2794,7 +3100,42 @@ public:
         if (running.load()) return;
         switch (currentPage) {
             case SuiteWizardPage::Welcome:
-                NavigateToPage(HasLicenseStep() ? SuiteWizardPage::License : SuiteWizardPage::SetupType);
+                if (IsAutorun16x9Style()) {
+                    if (autorunChoiceIdx == 0) {
+                        if (openedForMaintenance) {
+                            NavigateToPage(SuiteWizardPage::Maintenance);
+                        } else if (HasLicenseStep() && ::SendMessageW(hLicAccept, BM_GETCHECK, 0, 0) != BST_CHECKED) {
+                            NavigateToPage(SuiteWizardPage::License);
+                        } else {
+                            activeOp = SuiteOperationKind::InstallOrModify;
+                            ApplyTierToChecklist("typical");
+                            StartSuiteExecution();
+                        }
+                    } else if (autorunChoiceIdx == 1) {
+                        NavigateToPage(SuiteWizardPage::AutorunReadMe);
+                    } else if (autorunChoiceIdx == 2) {
+                        if (openedForMaintenance) {
+                            activeOp = SuiteOperationKind::FullUninstall;
+                            NavigateToPage(SuiteWizardPage::VerifyReady);
+                        } else {
+                            activeOp = SuiteOperationKind::InstallOrModify;
+                            UpdateSelectionSummaryLabel();
+                            NavigateToPage(SuiteWizardPage::CustomSuite);
+                        }
+                    } else {
+                        PromptAndHandleCancel();
+                    }
+                } else if (IsOneClickSplashActive()) {
+                    activeOp = SuiteOperationKind::InstallOrModify;
+                    ApplyTierToChecklist("typical");
+                    StartSuiteExecution();
+                } else {
+                    NavigateToPage(HasLicenseStep() ? SuiteWizardPage::License : SuiteWizardPage::SetupType);
+                }
+                break;
+
+            case SuiteWizardPage::AutorunReadMe:
+                NavigateToPage(SuiteWizardPage::Welcome);
                 break;
 
             case SuiteWizardPage::Maintenance: {
@@ -2815,7 +3156,13 @@ public:
 
             case SuiteWizardPage::License:
                 if (::SendMessageW(hLicAccept, BM_GETCHECK, 0, 0) == BST_CHECKED) {
-                    NavigateToPage(SuiteWizardPage::SetupType);
+                    if (IsAutorun16x9Style()) {
+                        activeOp = SuiteOperationKind::InstallOrModify;
+                        ApplyTierToChecklist("typical");
+                        StartSuiteExecution();
+                    } else {
+                        NavigateToPage(SuiteWizardPage::SetupType);
+                    }
                 }
                 break;
 
@@ -2836,7 +3183,11 @@ public:
 
             case SuiteWizardPage::CustomSuite:
                 activeOp = SuiteOperationKind::InstallOrModify;
-                NavigateToPage(SuiteWizardPage::VerifyReady);
+                if (IsSimpleDirectChecklist()) {
+                    StartSuiteExecution();
+                } else {
+                    NavigateToPage(SuiteWizardPage::VerifyReady);
+                }
                 break;
 
             case SuiteWizardPage::VerifyReady:
@@ -3187,27 +3538,72 @@ public:
         g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
         g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
 
-        const int footerH   = S(52);
+        const int footerH   = IsPassiveToastActive() ? S(14) : S(52);
         const int footerY   = H - footerH;
         const bool isWin95  = UsesClassic3dDialogSheet(wizardStyle);
+        const bool isWiz97  = (wizardStyle == WizardStyleKind::Wizard97);
+        const bool showRail = ShowsLeftGraphicRailOnActivePage();
         const int contentX  = S(ContentLeftLogicalPx());
         const int contentW  = std::max(S(260), W - contentX - S(22));
         const int hdrH      = S(HeaderHeightLogicalPx());
         const int bodyTop   = hdrH + S(12);
         const int bodyBot   = footerY - S(12);
 
-        // 1. Top Header Banner or Classic 1995 Left Sidebar Rail
-        if (isWin95 && (currentPage == SuiteWizardPage::Welcome || currentPage == SuiteWizardPage::Finished)) {
+        // 1. Top Header Banner, 16:9 Autorun Hero, or Classic Left Graphic Rail (`Wizard95` & `Wizard97`)
+        if (showRail) {
             RECT railRc{S(12), S(12), S(170), footerY - S(10)};
             ui::DrawClassicLeftSidebarRail(
                 dc, g, railRc, dpi, theme,
                 wizardStyle == WizardStyleKind::FullScreenTeal,
                 hIconBig, hArtworkBmp, artworkW, artworkH, Utf8ToWide(suite.manufacturer));
+        } else if (IsAutorun16x9Style() && currentPage == SuiteWizardPage::Welcome) {
+            RECT arRc{0, 0, W, hdrH};
+            if (hArtworkBmp && artworkW > 0 && artworkH > 0) {
+                HDC artDc = ::CreateCompatibleDC(dc);
+                HGDIOBJ oldArt = ::SelectObject(artDc, hArtworkBmp);
+                ::SetStretchBltMode(dc, HALFTONE);
+                ::StretchBlt(dc, 0, 0, W, hdrH - S(3), artDc, 0, 0, artworkW, artworkH, SRCCOPY);
+                ::SelectObject(artDc, oldArt);
+                ::DeleteDC(artDc);
+                Gdiplus::LinearGradientBrush scrim(
+                    Gdiplus::Point(0, hdrH - S(104)), Gdiplus::Point(0, hdrH),
+                    Gdiplus::Color(0, 8, 13, 26), Gdiplus::Color(235, 8, 13, 26));
+                g.FillRectangle(&scrim, 0, hdrH - S(104), W, S(104));
+            } else {
+                ui::FillHorizontalGradient(dc, arRc, theme.bannerNavyLeft, theme.bannerNavyRight);
+                if (hIconBig) {
+                    ::DrawIconEx(dc, S(24), S(28), hIconBig, S(64), S(64), 0, nullptr, DI_NORMAL);
+                }
+            }
+            RECT accRc{0, hdrH - S(3), W, hdrH};
+            HBRUSH hAcc = ::CreateSolidBrush(theme.accentPrimary);
+            ::FillRect(dc, &accRc, hAcc);
+            ::DeleteObject(hAcc);
+
+            HGDIOBJ oldAF = ::SelectObject(dc, hFontTitle);
+            ::SetTextColor(dc, RGB(248, 250, 252));
+            const std::wstring arTitle = Utf8ToWide(suite.suiteName + " v" + suite.version);
+            RECT atRc{S(24), hdrH - S(72), W - S(24), hdrH - S(38)};
+            ::DrawTextW(dc, arTitle.c_str(), -1, &atRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            ::SelectObject(dc, hFontBody);
+            ::SetTextColor(dc, RGB(203, 213, 225));
+            const std::wstring arSub = !suite.tagline.empty() ? Utf8ToWide(suite.tagline) : Utf8ToWide(suite.manufacturer + " Collector's Suite");
+            RECT asRc{S(24), hdrH - S(38), W - S(24), hdrH - S(10)};
+            ::DrawTextW(dc, arSub.c_str(), -1, &asRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            ::SelectObject(dc, oldAF);
         } else {
             RECT hdrRc{0, 0, W, hdrH};
-            if (theme.isHighContrast || isWin95) {
-                ::FillRect(dc, &hdrRc, isWin95 ? theme.hbrCard : theme.hbrFooter);
-                if (isWin95) ui::DrawClassicEtchedHorizontalRule(dc, 0, W, hdrH - 2, theme);
+            if (theme.isHighContrast || isWin95 || isWiz97) {
+                ::FillRect(dc, &hdrRc, (isWin95 || isWiz97) ? theme.hbrCard : theme.hbrFooter);
+                if (isWin95 || isWiz97) ui::DrawClassicEtchedHorizontalRule(dc, 0, W, hdrH - 2, theme);
+            } else if (wizardStyle == WizardStyleKind::AeroWizard) {
+                ui::DrawAeroWizardTopHeader(
+                    dc, g, W, dpi, theme,
+                    Utf8ToWide(suite.suiteName + " Setup"),
+                    Utf8ToWide(suite.suiteName + " v" + suite.version),
+                    hIconSmall ? hIconSmall : hIconBig,
+                    ui::GlassGlyph::Blocks, theme.accentPrimary,
+                    Utf8ToWide(suite.manufacturer), false, false);
             } else {
                 ui::FillHorizontalGradient(dc, hdrRc, theme.bannerNavyLeft, theme.bannerNavyRight);
                 RECT accRc{0, hdrH - S(3), W, hdrH};
@@ -3216,74 +3612,79 @@ public:
                 ::DeleteObject(hAcc);
             }
 
-            const int titleLeft = (wizardStyle == WizardStyleKind::AeroWizard) ? S(56) : S(58);
-            if (hIconBig && wizardStyle != WizardStyleKind::AeroWizard) {
-                ::DrawIconEx(dc, S(16), (hdrH - S(32)) / 2, hIconBig, S(32), S(32), 0, nullptr, DI_NORMAL);
-            } else if (hIconBig) {
-                ::DrawIconEx(dc, W - S(44), (hdrH - S(28)) / 2, hIconBig, S(28), S(28), 0, nullptr, DI_NORMAL);
+            if (wizardStyle != WizardStyleKind::AeroWizard) {
+                if (hIconBig) {
+                    ::DrawIconEx(dc, S(16), (hdrH - S(32)) / 2, hIconBig, S(32), S(32), 0, nullptr, DI_NORMAL);
+                }
+
+                std::wstring stepHead = Utf8ToWide(suite.suiteName + " v" + suite.version);
+                std::wstring stepSub  = !suite.tagline.empty() ? Utf8ToWide(suite.tagline) : Utf8ToWide(suite.manufacturer + " Unified Suite Setup");
+                switch (currentPage) {
+                    case SuiteWizardPage::AutorunReadMe:
+                        stepHead = L"Edition Liner Notes & Contents";
+                        stepSub  = Utf8ToWide(suite.suiteName + " v" + suite.version);
+                        break;
+                    case SuiteWizardPage::Maintenance:
+                        stepHead = L"Modify, Repair, or Remove Suite";
+                        stepSub  = L"Currently installed: " + Utf8ToWide(suite.suiteName) +
+                                   (installedReg.displayVersion.empty() ? L"" : (L" (v" + Utf8ToWide(installedReg.displayVersion) + L")"));
+                        break;
+                    case SuiteWizardPage::License:
+                        stepHead = L"License Agreement";
+                        stepSub  = L"Please review the terms below before installing " + Utf8ToWide(suite.suiteName) + L".";
+                        break;
+                    case SuiteWizardPage::SetupType:
+                        stepHead = L"Choose Setup Type";
+                        stepSub  = suite.bannerTitle.empty()
+                            ? (L"Select the installation option that best fits how you use " + Utf8ToWide(suite.suiteName) + L".")
+                            : Utf8ToWide(suite.bannerTitle);
+                        break;
+                    case SuiteWizardPage::CustomSuite:
+                        stepHead = openedForMaintenance ? L"Modify Installed Suite Components" : L"Select Suite Components";
+                        stepSub  = L"Check the applications and add-ons you want installed on this computer.";
+                        break;
+                    case SuiteWizardPage::VerifyReady:
+                        if (activeOp == SuiteOperationKind::FullUninstall || activeOp == SuiteOperationKind::DetachKeepStandalone) {
+                            stepHead = L"Ready to Remove " + Utf8ToWide(suite.suiteName);
+                            stepSub  = L"Review the removal summary below, then click Uninstall to proceed.";
+                        } else if (activeOp == SuiteOperationKind::RepairInstalled) {
+                            stepHead = L"Ready to Repair " + Utf8ToWide(suite.suiteName);
+                            stepSub  = L"Setup will verify and restore installed Suite components and shortcuts.";
+                        } else {
+                            stepHead = openedForMaintenance ? L"Ready to Update Suite" : L"Ready to Install Suite";
+                            stepSub  = L"Review your selections below. Setup is ready to configure your computer.";
+                        }
+                        break;
+                    case SuiteWizardPage::Installing:
+                        stepHead = (activeOp == SuiteOperationKind::FullUninstall)
+                            ? (L"Removing " + Utf8ToWide(suite.suiteName) + L"...")
+                            : ((activeOp == SuiteOperationKind::RepairInstalled)
+                                   ? (L"Repairing " + Utf8ToWide(suite.suiteName) + L"...")
+                                   : (L"Configuring " + Utf8ToWide(suite.suiteName) + L"..."));
+                        stepSub  = IsPassiveToastActive()
+                            ? L"Applying Suite components automatically..."
+                            : L"Please wait while Suite components are configured. Click Cancel at any time to roll back.";
+                        break;
+                    case SuiteWizardPage::Finished:
+                        stepHead = (finalExitCode == ERROR_INSTALL_USEREXIT)
+                            ? L"Setup Canceled — Changes Rolled Back"
+                            : L"Suite Setup Complete";
+                        break;
+                    default:
+                        break;
+                }
+
+                HGDIOBJ oldHF = ::SelectObject(dc, hFontSection);
+                ::SetTextColor(dc, (theme.isHighContrast || isWin95 || isWiz97) ? theme.textPrimary : theme.bannerTitleText);
+                RECT tRc{S(58), S(8), W - S(24), S(32)};
+                ::DrawTextW(dc, stepHead.c_str(), -1, &tRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+                ::SelectObject(dc, hFontBody);
+                ::SetTextColor(dc, (theme.isHighContrast || isWin95 || isWiz97) ? theme.textSecondary : RGB(203, 213, 225));
+                RECT sRc{S(58), S(34), W - S(24), hdrH - S(6)};
+                ::DrawTextW(dc, stepSub.c_str(), -1, &sRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                ::SelectObject(dc, oldHF);
             }
-
-            std::wstring stepHead = Utf8ToWide(suite.suiteName + " v" + suite.version);
-            std::wstring stepSub  = !suite.tagline.empty() ? Utf8ToWide(suite.tagline) : Utf8ToWide(suite.manufacturer + " Unified Suite Setup");
-            switch (currentPage) {
-                case SuiteWizardPage::Maintenance:
-                    stepHead = L"Modify, Repair, or Remove Suite";
-                    stepSub  = L"Currently installed: " + Utf8ToWide(suite.suiteName) +
-                               (installedReg.displayVersion.empty() ? L"" : (L" (v" + Utf8ToWide(installedReg.displayVersion) + L")"));
-                    break;
-                case SuiteWizardPage::License:
-                    stepHead = L"License Agreement";
-                    stepSub  = L"Please review the terms below before installing " + Utf8ToWide(suite.suiteName) + L".";
-                    break;
-                case SuiteWizardPage::SetupType:
-                    stepHead = L"Choose Setup Type";
-                    stepSub  = suite.bannerTitle.empty()
-                        ? (L"Select the installation option that best fits how you use " + Utf8ToWide(suite.suiteName) + L".")
-                        : Utf8ToWide(suite.bannerTitle);
-                    break;
-                case SuiteWizardPage::CustomSuite:
-                    stepHead = openedForMaintenance ? L"Modify Installed Suite Components" : L"Custom Suite Selection";
-                    stepSub  = L"Check the applications and add-ons you want installed on this computer.";
-                    break;
-                case SuiteWizardPage::VerifyReady:
-                    if (activeOp == SuiteOperationKind::FullUninstall || activeOp == SuiteOperationKind::DetachKeepStandalone) {
-                        stepHead = L"Ready to Remove " + Utf8ToWide(suite.suiteName);
-                        stepSub  = L"Review the removal summary below, then click Uninstall to proceed.";
-                    } else if (activeOp == SuiteOperationKind::RepairInstalled) {
-                        stepHead = L"Ready to Repair " + Utf8ToWide(suite.suiteName);
-                        stepSub  = L"Setup will verify and restore installed Suite components and shortcuts.";
-                    } else {
-                        stepHead = openedForMaintenance ? L"Ready to Update Suite" : L"Ready to Install Suite";
-                        stepSub  = L"Review your selections below. Setup is ready to configure your computer.";
-                    }
-                    break;
-                case SuiteWizardPage::Installing:
-                    stepHead = (activeOp == SuiteOperationKind::FullUninstall)
-                        ? (L"Removing " + Utf8ToWide(suite.suiteName) + L"...")
-                        : ((activeOp == SuiteOperationKind::RepairInstalled)
-                               ? (L"Repairing " + Utf8ToWide(suite.suiteName) + L"...")
-                               : (L"Configuring " + Utf8ToWide(suite.suiteName) + L"..."));
-                    stepSub  = L"Please wait while Suite components are configured. Click Cancel at any time to roll back.";
-                    break;
-                case SuiteWizardPage::Finished:
-                    stepHead = (finalExitCode == ERROR_INSTALL_USEREXIT)
-                        ? L"Setup Canceled — Changes Rolled Back"
-                        : L"Suite Setup Complete";
-                    break;
-                default:
-                    break;
-            }
-
-            HGDIOBJ oldHF = ::SelectObject(dc, hFontSection);
-            ::SetTextColor(dc, (theme.isHighContrast || isWin95) ? theme.textPrimary : theme.bannerTitleText);
-            RECT tRc{titleLeft, S(8), W - S(52), S(32)};
-            ::DrawTextW(dc, stepHead.c_str(), -1, &tRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-
-            ::SelectObject(dc, hFontBody);
-            ::SetTextColor(dc, (theme.isHighContrast || isWin95) ? theme.textSecondary : RGB(203, 213, 225));
-            RECT sRc{titleLeft, S(34), W - S(52), hdrH - S(6)};
-            ::DrawTextW(dc, stepSub.c_str(), -1, &sRc, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-            ::SelectObject(dc, oldHF);
         }
 
         if (wizardStyle == WizardStyleKind::FluentMica) {
@@ -3294,8 +3695,11 @@ public:
         HGDIOBJ oldF = ::SelectObject(dc, hFontBody);
         switch (currentPage) {
             case SuiteWizardPage::Welcome: {
+                if (IsAutorun16x9Style()) {
+                    break; // 4 interactive 16:9 Autorun option cards fill the lower canvas!
+                }
                 int cardTop = bodyTop;
-                if (!isWin95) {
+                if (!showRail && !IsOneClickSplashActive()) {
                     RECT heroRc{contentX, bodyTop, contentX + contentW, bodyTop + S(68)};
                     ui::DrawHeroBrandCard(
                         dc, g, heroRc, dpi, theme,
@@ -3320,15 +3724,26 @@ public:
                 std::wstring intro = suite.welcomeIntro.empty()
                     ? (L"This wizard guides you through installing " + Utf8ToWide(suite.suiteName) + L" (v" + Utf8ToWide(suite.version) + L") on your computer.")
                     : Utf8ToWide(suite.welcomeIntro);
-                intro += L"\r\n\r\nIncluded in this Suite: " + std::to_wstring(suite.children.size()) +
-                         L" verified packages (up to " + suite_detail::FormatSuiteBytesShort(totalBytes) + L")."
-                         L"\r\n\r\n• Single-prompt installation with automatic standalone adoption."
-                         L"\r\n• Full rollback protection if you cancel setup at any point."
-                         L"\r\n\r\nClick Next to choose Express, Compact, or Custom installation options.";
+                if (IsOneClickSplashActive()) {
+                    std::size_t expCnt = 0;
+                    std::uint64_t expBytes = 0;
+                    ComputeTierMetrics("typical", expCnt, expBytes);
+                    intro += L"\r\n\r\nReady for Express Suite Setup: " + std::to_wstring(expCnt) + L" of " +
+                             std::to_wstring(suite.children.size()) + L" packages (" +
+                             suite_detail::FormatSuiteBytesShort(expBytes) + L") into " + suiteInstallDir.wstring() +
+                             L".\r\n\r\nClick Install to begin right away, or click Customize... to pick individual items.";
+                } else {
+                    intro += L"\r\n\r\nIncluded in this Suite: " + std::to_wstring(suite.children.size()) +
+                             L" verified packages (up to " + suite_detail::FormatSuiteBytesShort(totalBytes) + L")."
+                             L"\r\n\r\n• Single-prompt installation with automatic standalone adoption."
+                             L"\r\n• Full rollback protection if you cancel setup at any point."
+                             L"\r\n\r\nClick Next to choose Express, Compact, or Custom installation options.";
+                }
 
                 ::SelectObject(dc, hFontBody);
                 ::SetTextColor(dc, theme.textSecondary);
-                RECT bRc{mainCard.left + S(18), mainCard.top + S(72), mainCard.right - S(18), mainCard.bottom - S(16)};
+                const int bBotPad = (IsOneClickSplashActive() && HasLicenseStep()) ? S(44) : S(16);
+                RECT bRc{mainCard.left + S(18), mainCard.top + S(72), mainCard.right - S(18), mainCard.bottom - bBotPad};
                 ::DrawTextW(dc, intro.c_str(), -1, &bRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
                 break;
             }
@@ -3418,7 +3833,18 @@ public:
             }
 
             case SuiteWizardPage::Installing: {
-                if (!suite.billboards.empty()) {
+                if (IsPassiveToastActive()) {
+                    RECT progCard{contentX, bodyTop, contentX + contentW, bodyBot};
+                    DrawStepSurfaceCard(dc, g, progCard, S(10));
+                } else if (IsOneClickSplashActive()) {
+                    RECT heroRc{contentX, bodyTop, contentX + contentW, bodyTop + S(58)};
+                    ui::DrawHeroBrandCard(
+                        dc, g, heroRc, dpi, theme,
+                        Utf8ToWide(suite.manufacturer), Utf8ToWide(suite.tagline), Utf8ToWide(suite.websiteLabel),
+                        L"EXPRESS SUITE", hIconBig);
+                    RECT progCard{contentX, bodyTop + S(66), contentX + contentW, bodyBot};
+                    DrawStepSurfaceCard(dc, g, progCard, S(10));
+                } else if (!suite.billboards.empty()) {
                     const auto& bb = suite.billboards[billboardIdx % suite.billboards.size()];
                     RECT bbCard{contentX, bodyTop, contentX + contentW, bodyBot - S(142)};
                     DrawStepSurfaceCard(dc, g, bbCard, S(10));
@@ -3444,13 +3870,16 @@ public:
                     RECT progCard{contentX, bodyBot - S(134), contentX + contentW, bodyBot};
                     DrawStepSurfaceCard(dc, g, progCard, S(10));
                 } else {
-                    RECT heroRc{contentX, bodyTop, contentX + contentW, bodyTop + S(68)};
-                    ui::DrawHeroBrandCard(
-                        dc, g, heroRc, dpi, theme,
-                        Utf8ToWide(suite.manufacturer), Utf8ToWide(suite.tagline), Utf8ToWide(suite.websiteLabel),
-                        L"CONFIGURING SUITE", hIconBig);
-
-                    RECT progCard{contentX, bodyTop + S(80), contentX + contentW, bodyBot};
+                    int progCardTop = bodyTop;
+                    if (!showRail) {
+                        RECT heroRc{contentX, bodyTop, contentX + contentW, bodyTop + S(68)};
+                        ui::DrawHeroBrandCard(
+                            dc, g, heroRc, dpi, theme,
+                            Utf8ToWide(suite.manufacturer), Utf8ToWide(suite.tagline), Utf8ToWide(suite.websiteLabel),
+                            L"CONFIGURING SUITE", hIconBig);
+                        progCardTop = bodyTop + S(80);
+                    }
+                    RECT progCard{contentX, progCardTop, contentX + contentW, bodyBot};
                     DrawStepSurfaceCard(dc, g, progCard, S(10));
                 }
                 break;
@@ -3464,7 +3893,7 @@ public:
                     : (userCanceled ? L"ROLLED BACK" : L"SETUP ISSUE");
 
                 int cardTop = bodyTop;
-                if (!isWin95) {
+                if (!showRail && !IsOneClickSplashActive()) {
                     RECT heroRc{contentX, bodyTop, contentX + contentW, bodyTop + S(68)};
                     ui::DrawHeroBrandCard(
                         dc, g, heroRc, dpi, theme,
@@ -3527,12 +3956,26 @@ public:
         }
 
         // 3. Footer Bar
-        if (isWin95) {
-            ui::DrawClassicEtchedHorizontalRule(dc, S(12), W - S(12), footerY, theme);
-        } else {
-            ui::DrawGlassFooterBar(
-                dc, g, W, H, footerH, W - S(348), dpi, theme,
-                Utf8ToWide(suite.manufacturer), Utf8ToWide(suite.websiteLabel));
+        if (!IsPassiveToastActive()) {
+            if (isWin95 || isWiz97) {
+                ui::DrawClassicEtchedHorizontalRule(dc, S(12), W - S(12), footerY, theme);
+            } else if (wizardStyle == WizardStyleKind::AeroWizard) {
+                ui::DrawAeroWizardCommandFooter(dc, W, H, footerH, theme);
+            } else if (hBtnCustomize && ::IsWindowVisible(hBtnCustomize)) {
+                RECT footerRc{0, footerY, W, H};
+                ::FillRect(dc, &footerRc, theme.hbrFooter);
+                HPEN divPen = ::CreatePen(PS_SOLID, 1, theme.borderSubtle);
+                HGDIOBJ oP = ::SelectObject(dc, divPen);
+                ::MoveToEx(dc, 0, footerY, nullptr);
+                ::LineTo(dc, W, footerY);
+                ::SelectObject(dc, oP);
+                ::DeleteObject(divPen);
+            } else {
+                const int rightBtnReserve = (currentPage == SuiteWizardPage::Finished) ? (W - S(158)) : (W - S(348));
+                ui::DrawGlassFooterBar(
+                    dc, g, W, H, footerH, rightBtnReserve, dpi, theme,
+                    Utf8ToWide(suite.manufacturer), Utf8ToWide(suite.websiteLabel));
+            }
         }
 
         ::SelectObject(dc, oldF);
@@ -3738,6 +4181,38 @@ public:
                     0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SWZ_FIN_LAUNCH)), hInst, nullptr);
                 ::SendMessageW(self->hChkLaunch, BM_SETCHECK, BST_CHECKED, 0);
 
+                // 5B. `OneClick` `[C&ustomize...]` Button + `Autorun16x9` 2x2 Launcher Grid & ReadMe Box!
+                self->hBtnCustomize = ::CreateWindowExW(
+                    0, L"BUTTON", L"C&ustomize...", WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON,
+                    0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SWZ_ONECLICK_CS)), hInst, nullptr);
+                for (int ai = 0; ai < 4; ++ai) {
+                    const DWORD arGrp = (ai == 0) ? WS_GROUP : 0u;
+                    self->hArCards[ai] = ::CreateWindowExW(
+                        0, L"BUTTON", L"", WS_CHILD | WS_TABSTOP | BS_AUTORADIOBUTTON | arGrp,
+                        0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SWZ_AR_CARD_0 + ai)), hInst, nullptr);
+                    ::SendMessageW(self->hArCards[ai], BM_SETCHECK, (ai == self->autorunChoiceIdx) ? BST_CHECKED : BST_UNCHECKED, 0);
+                }
+                {
+                    std::wostringstream rm;
+                    rm << Utf8ToWide(self->suite.suiteName) << L" (v" << Utf8ToWide(self->suite.version) << L")\r\n"
+                       << L"Published by " << Utf8ToWide(self->suite.manufacturer) << L"\r\n"
+                       << L"============================================================\r\n\r\n";
+                    if (!self->suite.welcomeIntro.empty()) {
+                        rm << Utf8ToWide(self->suite.welcomeIntro) << L"\r\n\r\n";
+                    }
+                    rm << L"Included Suite Packages (" << self->suite.children.size() << L"):\r\n";
+                    for (std::size_t ci = 0; ci < self->suite.children.size(); ++ci) {
+                        const auto& ch = self->suite.children[ci];
+                        rm << L"  " << (ci + 1) << L". " << Utf8ToWide(ch.name);
+                        if (!ch.version.empty()) rm << L" (v" << Utf8ToWide(ch.version) << L")";
+                        rm << L" — " << suite_detail::FormatSuiteBytesShort(ch.uncompressedBytes) << L"\r\n";
+                    }
+                    self->hReadMeEdit = ::CreateWindowExW(
+                        WS_EX_CLIENTEDGE, L"EDIT", rm.str().c_str(),
+                        WS_CHILD | WS_TABSTOP | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
+                        0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SWZ_README_EDIT)), hInst, nullptr);
+                }
+
                 // 6. Wizard Footer Navigation Buttons (`< &Back`, Primary, `&Cancel`)
                 self->hBtnBack = ::CreateWindowExW(
                     0, L"BUTTON", L"< &Back", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
@@ -3749,9 +4224,10 @@ public:
                     0, L"BUTTON", L"&Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                     0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SWZ_CANCEL)), hInst, nullptr);
 
-                const bool classicFoot = UsesClassic3dDialogSheet(self->wizardStyle);
-                ui::AttachAccessibleCheckboxSubclass(self->hChkDetach, &self->theme, true);
-                ui::AttachAccessibleCheckboxSubclass(self->hChkLaunch, &self->theme, true);
+                const bool classicFoot = UsesClassic3dDialogSheet(self->wizardStyle) || (self->wizardStyle == WizardStyleKind::Wizard97);
+                ui::AttachAccessibleCheckboxSubclass(self->hChkDetach,    &self->theme, true);
+                ui::AttachAccessibleCheckboxSubclass(self->hChkLaunch,    &self->theme, true);
+                ui::AttachAccessiblePushButtonSubclass(self->hBtnCustomize,&self->theme, false, !classicFoot);
                 ui::AttachAccessiblePushButtonSubclass(self->hBtnSelAll,  &self->theme, false, false);
                 ui::AttachAccessiblePushButtonSubclass(self->hBtnReset,   &self->theme, false, false);
                 ui::AttachAccessiblePushButtonSubclass(self->hBtnBrowse,  &self->theme, false, false);
@@ -3767,6 +4243,13 @@ public:
             }
 
             case WM_TIMER:
+                if (wParam == kPassiveStartTimer) {
+                    ::KillTimer(hWnd, kPassiveStartTimer);
+                    if (!self->IsHeadlessExport() && !self->running.load() && !self->finished.load()) {
+                        self->StartSuiteExecution();
+                    }
+                    return 0;
+                }
                 if (wParam == kBillboardTimer && self->currentPage == SuiteWizardPage::Installing && !self->suite.billboards.empty()) {
                     ++self->billboardIdx;
                     ::InvalidateRect(hWnd, nullptr, FALSE);
@@ -3813,7 +4296,7 @@ public:
                 const bool onCard =
                     (msg == WM_CTLCOLOREDIT) ||
                     (msg == WM_CTLCOLORLISTBOX) ||
-                    (hChild != nullptr && (hChild == self->hDirEdit || hChild == self->hLicEdit ||
+                    (hChild != nullptr && (hChild == self->hDirEdit || hChild == self->hLicEdit || hChild == self->hReadMeEdit ||
                                            hChild == self->hOvrLbl || hChild == self->hOvrPct ||
                                            hChild == self->hCmpLbl || hChild == self->hCmpPct));
                 ::SetTextColor(hdc, self->theme.textPrimary);
@@ -3916,6 +4399,10 @@ public:
                 } else {
                     self->taskbar.SetError(hWnd);
                 }
+                if (self->IsPassiveToastActive()) {
+                    ::DestroyWindow(hWnd);
+                    return 0;
+                }
                 self->RefreshInstalledChildrenSnapshot(false);
                 self->NavigateToPage(SuiteWizardPage::Finished);
                 if (self->hBtnPrimary) ::SetFocus(self->hBtnPrimary);
@@ -3924,6 +4411,19 @@ public:
 
             case WM_COMMAND: {
                 const int id = LOWORD(wParam);
+                if (id >= IDC_SWZ_AR_CARD_0 && id <= IDC_SWZ_AR_CARD_3) {
+                    self->autorunChoiceIdx = id - IDC_SWZ_AR_CARD_0;
+                    for (HWND ha : self->hArCards) {
+                        if (ha) ::InvalidateRect(ha, nullptr, FALSE);
+                    }
+                    self->SyncNavigationButtonStates();
+                    return 0;
+                }
+                if (id == IDC_SWZ_ONECLICK_CS && !self->running.load()) {
+                    self->oneClickCustomized = true;
+                    self->NavigateToPage(SuiteWizardPage::SetupType);
+                    return 0;
+                }
                 if (id >= IDC_SWZ_TYPE_CARD_0 && id <= IDC_SWZ_TYPE_CARD_3) {
                     self->selectedTypeIdx = id - IDC_SWZ_TYPE_CARD_0;
                     for (int k = 0; k < 4; ++k) {
@@ -4127,10 +4627,6 @@ inline int RunSuiteChainerEntrypoint(
         app.suite                 = suite;
         app.installedReg          = existingReg;
         app.wizardStyle           = ParseWizardStyleKind(cliStyleOverride.empty() ? suite.wizardLayout : cliStyleOverride);
-        if (app.wizardStyle == WizardStyleKind::Simple || app.wizardStyle == WizardStyleKind::OneClick ||
-            app.wizardStyle == WizardStyleKind::PassiveToast || app.wizardStyle == WizardStyleKind::Autorun16x9) {
-            app.wizardStyle = WizardStyleKind::StandardGlass;
-        }
         app.suiteInstallDir       = resolvedSuiteInstallDir;
         app.exportShotDir         = exportShotDir;
         app.activeOp              = op;
@@ -4146,10 +4642,14 @@ inline int RunSuiteChainerEntrypoint(
         app.BuildSetupTypeCardSpecs();
         app.RefreshInstalledChildrenSnapshot(true);
 
-        if (app.openedDirectUninstall || cliForceRepair) {
+        if (app.IsPassiveToastActive()) {
+            app.currentPage = SuiteWizardPage::Installing;
+        } else if (app.openedDirectUninstall || cliForceRepair) {
             app.currentPage = SuiteWizardPage::VerifyReady;
         } else if (app.openedForMaintenance) {
-            app.currentPage = SuiteWizardPage::Maintenance;
+            app.currentPage = app.IsAutorun16x9Style() ? SuiteWizardPage::Welcome : SuiteWizardPage::Maintenance;
+        } else if (app.IsSimpleDirectChecklist()) {
+            app.currentPage = SuiteWizardPage::CustomSuite;
         } else {
             app.currentPage = SuiteWizardPage::Welcome;
         }
@@ -4209,8 +4709,8 @@ inline int RunSuiteChainerEntrypoint(
         }
 
         const UINT dpi = ::GetDpiForSystem();
-        const int logW = (app.wizardStyle == WizardStyleKind::FluentMica) ? 720 : 660;
-        const int logH = 492;
+        int logW = 660, logH = 492;
+        app.ComputeLogicalSuiteWindowSize(logW, logH);
         RECT wRc{0, 0,
                  ui::ScalePx(logW, dpi, app.theme.textScalePercent),
                  ui::ScalePx(logH, dpi, app.theme.textScalePercent)};
@@ -4232,8 +4732,11 @@ inline int RunSuiteChainerEntrypoint(
         } else {
             ::ShowWindow(hWnd, nCmdShow);
             ::UpdateWindow(hWnd);
+            if (app.IsPassiveToastActive() && exportShotDir.empty()) {
+                ::SetTimer(hWnd, SuiteSetupWizardApp::kPassiveStartTimer, 120, nullptr);
+            }
             if (!exportShotDir.empty()) {
-                // Export all key multi-step Suite Wizard screens (`SetupType`, `CustomSuite`, `Maintenance`, and `Installing` Dual Bars)!
+                // Export all key multi-step Suite Wizard screens (`SetupType`, `CustomSuite`, `Maintenance`, `Installing`, & `Finished`)!
                 app.NavigateToPage(SuiteWizardPage::SetupType);
                 const bool okType = ui::CaptureWindowToPngFile(hWnd, exportShotDir / L"setupwizard-suite-setup-type.png");
 
@@ -4256,12 +4759,38 @@ inline int RunSuiteChainerEntrypoint(
                 demo.componentName     = !suite.children.empty()
                     ? Utf8ToWide(suite.children[demo.stepIndex].name)
                     : L"RaggieSoft Showcase Studio";
-                demo.detailStatus      = L"Copying verified binaries...";
+                demo.detailStatus      = L"Copying new files: BookReader.exe";
                 app.ApplyProgressSnapshotToUi(demo);
                 ::RedrawWindow(hWnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
                 const bool okProg = ui::CaptureWindowToPngFile(hWnd, exportShotDir / L"setupwizard-suite-dual-progress.png");
+
+                app.finalExitCode = 0;
+                app.finished.store(true);
+                app.NavigateToPage(SuiteWizardPage::Finished);
+                const bool cancelHiddenAndDisabled =
+                    !::IsWindowVisible(app.hBtnCancel) && !::IsWindowEnabled(app.hBtnCancel);
+                const bool okFin = ui::CaptureWindowToPngFile(hWnd, exportShotDir / L"setupwizard-suite-finished.png");
+
+                // Exercise all 11 WizardLayout styles on `SuiteSetupWizardApp` to guarantee zero crashes or missing layouts!
+                bool all11StylesOk = true;
+                for (WizardStyleKind st : {
+                         WizardStyleKind::StandardGlass, WizardStyleKind::Wizard95, WizardStyleKind::Wizard97,
+                         WizardStyleKind::AeroWizard, WizardStyleKind::FluentMica, WizardStyleKind::OneClick,
+                         WizardStyleKind::PassiveToast, WizardStyleKind::FullScreenBlue, WizardStyleKind::FullScreenTeal,
+                         WizardStyleKind::Autorun16x9, WizardStyleKind::Simple}) {
+                    app.wizardStyle = st;
+                    app.oneClickCustomized = false;
+                    ApplyWizardStyleThemeOverrides(app.wizardStyle, app.theme);
+                    app.ApplyControlThemes();
+                    app.NavigateToPage(
+                        (st == WizardStyleKind::PassiveToast) ? SuiteWizardPage::Installing
+                        : ((st == WizardStyleKind::Simple) ? SuiteWizardPage::CustomSuite : SuiteWizardPage::Welcome));
+                    ::RedrawWindow(hWnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+                    if (!::IsWindow(hWnd)) all11StylesOk = false;
+                }
+
                 ::DestroyWindow(hWnd);
-                exitRc = (okType && okList && okMaint && okProg) ? 0 : 2;
+                exitRc = (okType && okList && okMaint && okProg && okFin && cancelHiddenAndDisabled && all11StylesOk) ? 0 : 2;
             } else {
                 MSG msg{};
                 while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {

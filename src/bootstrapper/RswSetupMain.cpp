@@ -2271,7 +2271,11 @@ public:
         } else {
             ::MoveWindow(hBtnBack, W - S(320), btnY, S(94), S(32), TRUE);
         }
-        ::MoveWindow(hBtnPrimary,      W - S(218), btnY, S(112), S(32), TRUE);
+        if (currentPage == WizardPage::Finished) {
+            ::MoveWindow(hBtnPrimary, W - S(130), btnY, S(112), S(32), TRUE);
+        } else {
+            ::MoveWindow(hBtnPrimary, W - S(218), btnY, S(112), S(32), TRUE);
+        }
         ::MoveWindow(hBtnCancel,       W - S(98),  btnY, S(80),  S(32), TRUE);
 
         if (cfg.isAutorun16x9) {
@@ -2530,7 +2534,24 @@ public:
             ::EnableWindow(hBtnBack, TRUE);
         }
         show(hBtnPrimary,      !pProg && !passiveMode);
-        show(hBtnCancel,       !pFin);
+        show(hBtnCancel,       !pFin && !passiveMode);
+        if (pFin || passiveMode) {
+            ::EnableWindow(hBtnCancel, FALSE);
+        } else if (!installRunning.load()) {
+            ::EnableWindow(hBtnCancel, TRUE);
+        }
+        if (hWnd) {
+            RECT btnClientRc{};
+            ::GetClientRect(hWnd, &btnClientRc);
+            const UINT btnDpi = ::GetDpiForWindow(hWnd);
+            auto Sb = [&](int px) { return rsw::ui::ScalePx(px, btnDpi, theme.textScalePercent); };
+            const int bFooterH = Sb(58);
+            const int bBtnY    = (btnClientRc.bottom - bFooterH) + (bFooterH - Sb(32)) / 2;
+            const int bWinW    = btnClientRc.right - btnClientRc.left;
+            if (!IsRetroDockedProgressMode()) {
+                ::MoveWindow(hBtnPrimary, pFin ? (bWinW - Sb(130)) : (bWinW - Sb(218)), bBtnY, Sb(112), Sb(32), TRUE);
+            }
+        }
 
         const wchar_t* nextBtnTxt = cfg.isAeroWizard ? L"&Next" : L"&Next >";
 

@@ -1,0 +1,40 @@
+// ================================================================================
+// FILE: src/customaction/RsscMsiCa.rc
+// PROJECT: RaggieSoft Installer Studio ("Install Without Limits")
+// PURPOSE:
+//   Version resource metadata for `RsscMsiCa.dll` — the zero-dependency static `/MT`
+//   Windows Installer Type 1 Custom Action runner that executes embedded RaggieScript
+//   (`RSWBC2`) Immediate, Deferred, Rollback, and Commit Custom Actions natively
+//   inside `msiexec.exe` (preserving 100% GPO / Intune `/qn` parity!).
+// ================================================================================
+
+#include <windows.h>
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 0,9,1,0
+ PRODUCTVERSION 0,9,1,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_DLL
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName",      "RaggieSoft\0"
+            VALUE "FileDescription",  "RaggieScript MSI Native Custom Action Runner (RsscMsiCa.dll)\0"
+            VALUE "FileVersion",      "0.9.1.0\0"
+            VALUE "InternalName",     "RsscMsiCa.dll\0"
+            VALUE "LegalCopyright",   "Copyright (c) 2026 Michael P. Ragsdale / RaggieSoft (MIT License)\0"
+            VALUE "OriginalFilename", "RsscMsiCa.dll\0"
+            VALUE "ProductName",      "RaggieSoft Installer Studio\0"
+            VALUE "ProductVersion",   "0.9.1.0\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
