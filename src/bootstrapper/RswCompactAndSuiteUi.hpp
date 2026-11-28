@@ -3692,7 +3692,7 @@ public:
                     0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SWZ_SEL_RESET)), hInst, nullptr);
 
                 self->hDirLbl = ::CreateWindowExW(
-                    0, L"STATIC", L"Suite &hub folder:", WS_CHILD | SS_NOPREFIX,
+                    0, L"STATIC", L"Suite &hub folder:", WS_CHILD,
                     0, 0, 10, 10, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SWZ_DIR_LBL)), hInst, nullptr);
                 self->hDirEdit = ::CreateWindowExW(
                     WS_EX_CLIENTEDGE, L"EDIT", self->suiteInstallDir.wstring().c_str(),
