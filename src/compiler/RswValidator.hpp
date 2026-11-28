@@ -339,12 +339,13 @@ inline ValidationReport ValidateManifestDocument(
     // 2. Required sections & required fields check (aware of `PackageKind = sfx` and `PackageKind = suite`!)
     const std::string pkgKindLow = AsciiLower(TrimAscii(doc.GetString("Package", "", "PackageKind", "msi")));
     const bool isSfxPkg   = (pkgKindLow == "sfx");
+    const bool isAddonPkg = (pkgKindLow == "addon");
     const bool isSuitePkg = (pkgKindLow == "suite");
 
     for (const auto& sd : kSectionDescriptors) {
         if (sd.cardinality == SectionCardinality::SingletonRequired) {
-            if ((isSfxPkg || isSuitePkg) && EqualsIgnoreCase(sd.nameOrPrefix, "Install")) {
-                continue; // `[Install]` is optional for pure SFX archives and Suite chainers!
+            if ((isSfxPkg || isAddonPkg || isSuitePkg) && EqualsIgnoreCase(sd.nameOrPrefix, "Install")) {
+                continue; // `[Install]` is optional for SFX archives, Host-Aware Add-Ons (`[HostApp]`), and Suite chainers!
             }
             if (seenSingletonSections.find(AsciiLower(sd.nameOrPrefix)) == seenSingletonSections.end()) {
                 addErr("RSW015", 1, std::string(sd.nameOrPrefix), "",
@@ -352,8 +353,8 @@ inline ValidationReport ValidateManifestDocument(
             } else {
                 for (const auto& fd : kFieldDescriptors) {
                     if (fd.required && EqualsIgnoreCase(fd.sectionPrefix, sd.nameOrPrefix)) {
-                        if (isSfxPkg && EqualsIgnoreCase(sd.nameOrPrefix, "Package") && EqualsIgnoreCase(fd.key, "UpgradeCode")) {
-                            continue; // Pure SFX archives do not register in Installed Apps, so UpgradeCode is optional!
+                        if ((isSfxPkg || isAddonPkg) && EqualsIgnoreCase(sd.nameOrPrefix, "Package") && EqualsIgnoreCase(fd.key, "UpgradeCode")) {
+                            continue; // SFX archives and Add-Ons auto-derive deterministic UUIDv5 UpgradeCodes when omitted!
                         }
                         if (doc.GetString(sd.nameOrPrefix, "", fd.key).empty()) {
                             addErr("RSW016", 1, std::string(sd.nameOrPrefix), std::string(fd.key),
@@ -556,14 +557,51 @@ inline ValidationReport ValidateManifestDocument(
         }
     }
 
-    // Validate `[SuitePackage.<id>]` child `.msi` / `-setup.exe` paths & `[Media]` cabinet bounds
+    // Validate `[HostApp]` rules when `PackageKind = addon` (`RSW067` / `RSW068`)
+    if (isAddonPkg) {
+        const std::string hName = TrimAscii(doc.GetString("HostApp", "", "Name"));
+        const std::string hUpg  = TrimAscii(doc.GetString("HostApp", "", "UpgradeCode"));
+        const std::string hReg  = TrimAscii(doc.GetString("HostApp", "", "RegistryKey"));
+        const std::string hSub  = TrimAscii(doc.GetString("HostApp", "", "FallbackSubdir"));
+        if (hName.empty()) {
+            addErr("RSW067", 1, "HostApp", "Name",
+                   "PackageKind = addon requires a '[HostApp]' section with a non-empty 'Name = <Host Application Name>'.");
+        }
+        if (hUpg.empty() && hReg.empty() && hSub.empty()) {
+            addErr("RSW068", 1, "HostApp", "Discovery",
+                   "[HostApp] must specify at least one discovery rule: 'UpgradeCode', 'RegistryKey', or 'FallbackSubdir'.");
+        }
+    }
+
+    // Validate `[SuitePackage.<id>]` child `.msi` / `-setup.exe` / Web Workload rules & `[Media]` cabinet bounds
     for (const auto& spId : doc.GetNamedSectionIds("SuitePackage")) {
-        const std::string rawSp = doc.GetString("SuitePackage", spId, "Source");
-        if (!rawSp.empty()) {
-            const auto absSp = resolvePathStd(rawSp);
-            if (!std::filesystem::exists(absSp, ec)) {
+        const std::string deliv = AsciiLower(TrimAscii(doc.GetString("SuitePackage", spId, "Delivery", "embedded")));
+        const std::string rawSp = TrimAscii(doc.GetString("SuitePackage", spId, "Source"));
+        const std::string dlUrl = TrimAscii(ExpandArchToken(doc.GetString("SuitePackage", spId, "DownloadUrl"), rep.resolvedArchitecture));
+        const std::string shaSpecific = EqualsIgnoreCase(rep.resolvedArchitecture, "x64")
+            ? TrimAscii(doc.GetString("SuitePackage", spId, "Sha256X64"))
+            : TrimAscii(doc.GetString("SuitePackage", spId, "Sha256Arm64"));
+        const std::string shaEff = !shaSpecific.empty() ? shaSpecific : TrimAscii(doc.GetString("SuitePackage", spId, "Sha256"));
+
+        if (deliv == "web") {
+            if (dlUrl.empty()) {
+                addErr("RSW038", 1, "SuitePackage." + spId, "DownloadUrl",
+                       "[SuitePackage." + spId + "] uses Delivery = web, so DownloadUrl is required.");
+            }
+            if (shaEff.size() != 64 && rawSp.empty()) {
+                addErr("RSW038", 1, "SuitePackage." + spId, "Sha256",
+                       "[SuitePackage." + spId + "] uses Delivery = web without a local Source file, so a 64-character hex Sha256 (or Sha256X64/Sha256Arm64) is required.");
+            }
+        } else {
+            if (rawSp.empty()) {
                 addErr("RSW038", 1, "SuitePackage." + spId, "Source",
-                       "SuitePackage Source file does not exist on disk: " + WideToUtf8(absSp.wstring()));
+                       "[SuitePackage." + spId + "] uses Delivery = embedded, so Source is required.");
+            } else {
+                const auto absSp = resolvePathStd(rawSp);
+                if (!std::filesystem::exists(absSp, ec)) {
+                    addErr("RSW038", 1, "SuitePackage." + spId, "Source",
+                           "SuitePackage Source file does not exist on disk: " + WideToUtf8(absSp.wstring()));
+                }
             }
         }
     }
@@ -711,7 +749,7 @@ inline ValidationReport ValidateManifestDocument(
             addErr("RSW091", 1, "Package", "PackageKind",
                    edLabel + " can consume existing [MergeModule.*] (.msm) files, while compiling new .MSM Merge Modules requires Developer, Architect, or Community Edition.");
         }
-        if (pkgKind != "sfx" && (engine == "raggiescript" || engine == "native") &&
+        if (pkgKind != "sfx" && pkgKind != "addon" && (engine == "raggiescript" || engine == "native") &&
             !EditionSupportsNativeEngineAndScripting(activeEdition)) {
             addErr("RSW092", 1, "Package", "Engine",
                    "RaggieScript EXE (Engine = raggiescript) and RaggieScript (.rssc) scripting require Developer, Architect, or Community Edition (currently running " + edLabel + ").");

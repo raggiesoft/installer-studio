@@ -1337,6 +1337,7 @@ inline bool PackageNativeOrSfxExecutable(
     const std::string arch       = val.resolvedArchitecture;
     const std::string pkgKindLow = AsciiLower(TrimAscii(doc.GetString("Package", "", "PackageKind", "msi")));
     const bool isSfx             = (pkgKindLow == "sfx");
+    const bool isAddon           = (pkgKindLow == "addon");
 
     const std::filesystem::path baseDir = doc.sourcePath.empty()
         ? std::filesystem::current_path()
@@ -1353,16 +1354,23 @@ inline bool PackageNativeOrSfxExecutable(
     outSummary.productName         = ExpandArchToken(doc.GetString("Package", "", "Name"), arch);
     outSummary.productVersion      = ExpandArchToken(doc.GetString("Package", "", "Version"), arch);
     outSummary.manufacturer        = ExpandArchToken(doc.GetString("Package", "", "Manufacturer"), arch);
-    outSummary.perMachine          = !isSfx && EqualsIgnoreCase(doc.GetString("Package", "", "Scope", "machine"), "machine");
+    outSummary.perMachine          = !isSfx && !isAddon && EqualsIgnoreCase(doc.GetString("Package", "", "Scope", "machine"), "machine");
+    if (isAddon && EqualsIgnoreCase(doc.GetString("Package", "", "Scope", "user"), "machine")) {
+        outSummary.perMachine = true;
+    }
     outSummary.minWindowsBuild     = doc.GetInt("Requirements", "", "MinWindowsBuild", 22000);
     outSummary.osLaunchMessage     = doc.GetString("Requirements", "", "OsLaunchMessage", "This application requires Windows 11 (Build 22000) or later.");
     const std::string rawDefaultSub = isSfx
         ? doc.GetString("SFX", "", "DefaultExtractSubdir", doc.GetString("Install", "", "DefaultSubdir"))
-        : doc.GetString("Install", "", "DefaultSubdir");
+        : (isAddon
+            ? doc.GetString("HostApp", "", "ContentSubdir", doc.GetString("Install", "", "DefaultSubdir"))
+            : doc.GetString("Install", "", "DefaultSubdir"));
     outSummary.defaultSubdir       = ExpandArchToken(rawDefaultSub, arch);
     outSummary.mainExeRel          = ExpandArchToken(doc.GetString("Install", "", "MainExecutable"), arch);
-    outSummary.installBtnText      = doc.GetString("UI", "", "InstallButtonText", isSfx ? "&Extract" : "&Install");
-    outSummary.launchChkText       = doc.GetString("UI", "", "FinishLaunchCheckbox", "&Launch application when finished");
+    outSummary.installBtnText      = doc.GetString("UI", "", "InstallButtonText", isSfx ? "&Extract" : (isAddon ? "&Install Add-On" : "&Install"));
+    const std::string hostDisp     = doc.GetString("HostApp", "", "Name", "Host Application");
+    outSummary.launchChkText       = doc.GetString("UI", "", "FinishLaunchCheckbox",
+                                       isAddon ? ("&Open in " + hostDisp + " when finished") : "&Launch application when finished");
     outSummary.offerLaunchOnFinish = doc.GetBool("UI", "", "OfferLaunchOnFinish", true);
     outSummary.iconFilePath        = resolvePath(doc.GetString("UI", "", "IconFile"));
 
@@ -1510,7 +1518,7 @@ inline bool PackageNativeOrSfxExecutable(
         NormalizeRequestedExecutionLevel(doc.GetString("Package", "", "RequestedExecutionLevel", "asInvoker")));
 
     NativeOrSfxManifest nm{};
-    nm.mode                  = isSfx ? "sfx" : "native";
+    nm.mode                  = isSfx ? "sfx" : (isAddon ? "addon" : "native");
     nm.productName           = outSummary.productName;
     nm.tagline               = ExpandArchToken(doc.GetString("Package", "", "Tagline"), arch);
     nm.websiteLabel          = doc.GetString("Package", "", "WebsiteLabel");
@@ -1521,7 +1529,7 @@ inline bool PackageNativeOrSfxExecutable(
     nm.architecture          = arch;
     nm.perMachine            = outSummary.perMachine;
     nm.requestedExecLevel    = requestedExecLvl;
-    nm.hideFromInstalledApps = doc.GetBool("Package", "", "HideFromInstalledApps", false);
+    nm.hideFromInstalledApps = doc.GetBool("Package", "", "HideFromInstalledApps", isAddon);
     nm.aboutUrl              = doc.GetString("Package", "", "AboutUrl");
     nm.minWindowsBuild       = outSummary.minWindowsBuild;
     nm.osLaunchMessage       = outSummary.osLaunchMessage;
@@ -1541,7 +1549,7 @@ inline bool PackageNativeOrSfxExecutable(
     nm.postExtractArgs     = ExpandArchToken(doc.GetString("SFX", "", "PostExtractArgs"), arch);
     nm.postExtractOpen     = ExpandArchToken(doc.GetString("SFX", "", "PostExtractOpen"), arch);
     nm.extractToTemp       = doc.GetBool("SFX", "", "ExtractToTemp", false);
-    nm.allowChangeFolder   = doc.GetBool("SFX", "", "AllowChangeFolder", true);
+    nm.allowChangeFolder   = doc.GetBool("SFX", "", "AllowChangeFolder", !isAddon);
     nm.silentOverwrite     = doc.GetBool("SFX", "", "SilentOverwrite", true);
     nm.cleanupTempAfterRun = doc.GetBool("SFX", "", "CleanupTempAfterRun", false);
     nm.waitMode            = doc.GetString("SFX", "", "WaitMode", "auto");
@@ -1550,6 +1558,23 @@ inline bool PackageNativeOrSfxExecutable(
     nm.autoStartExtract    = doc.GetBool("SFX", "", "AutoStartExtract", false);
     nm.updateFeedUrl       = ExpandNamedToken(ExpandArchToken(doc.GetString("Upgrade", "", "UpdateFeedUrl"), arch), "VERSION", outSummary.productVersion);
     nm.updateChannel       = doc.GetString("Upgrade", "", "UpdateChannel", "stable");
+
+    if (isAddon) {
+        nm.hostName             = ExpandArchToken(doc.GetString("HostApp", "", "Name"), arch);
+        const std::string rawHU = doc.GetString("HostApp", "", "UpgradeCode");
+        if (!rawHU.empty()) NormalizeMsiGuid(rawHU, nm.hostUpgradeCode);
+        nm.hostRegistryHive     = doc.GetString("HostApp", "", "RegistryHive", "auto");
+        nm.hostRegistryKey      = ExpandArchToken(doc.GetString("HostApp", "", "RegistryKey"), arch);
+        nm.hostRegistryValue    = doc.GetString("HostApp", "", "RegistryValue", "Install Path");
+        nm.hostFallbackSubdir   = ExpandArchToken(doc.GetString("HostApp", "", "FallbackSubdir"), arch);
+        nm.hostExecutable       = ExpandArchToken(doc.GetString("HostApp", "", "Executable"), arch);
+        nm.contentTargetRoot    = doc.GetString("HostApp", "", "ContentTargetRoot", "LocalAppData");
+        nm.contentSubdir        = ExpandArchToken(doc.GetString("HostApp", "", "ContentSubdir", outSummary.defaultSubdir), arch);
+        nm.hostDownloadUrl      = ExpandArchToken(doc.GetString("HostApp", "", "DownloadUrl"), arch);
+        nm.hostLaunchUri        = ExpandArchToken(doc.GetString("HostApp", "", "LaunchUri"), arch);
+        nm.hostRefreshArgs      = ExpandArchToken(doc.GetString("HostApp", "", "RefreshArgs"), arch);
+        nm.requireHostInstalled = doc.GetBool("HostApp", "", "RequireHostInstalled", true);
+    }
 
     // Classic 1990s multi-stage `SETUP.EXE` / `_INST32I.EX_` / `_INS*._MP` / `_ISDEL.EXE` auto-tuning:
     // If an SFX archive unpacks to `%TEMP%` with `CleanupTempAfterRun = true` and contains `_ISDEL.EXE`,
@@ -1748,6 +1773,7 @@ inline bool PackageUnifiedSuiteExecutable(
     sm.perMachine               = EqualsIgnoreCase(doc.GetString("Package", "", "Scope", "machine"), "machine");
     sm.requestedExecLevel       = std::string(NormalizeRequestedExecutionLevel(
         doc.GetString("Package", "", "RequestedExecutionLevel", "asInvoker")));
+    sm.rollbackPolicy           = AsciiLower(doc.GetString("Package", "", "SuiteRollbackPolicy", "keep_completed"));
     sm.minWindowsBuild          = doc.GetInt("Requirements", "", "MinWindowsBuild", 22000);
     sm.osLaunchMessage          = doc.GetString("Requirements", "", "OsLaunchMessage", "This suite requires Windows 11 (Build 22000) or later.");
     sm.defaultSubdir            = ExpandArchToken(doc.GetString("Install", "", "DefaultSubdir", sm.manufacturer + "\\" + sm.suiteName), arch);
@@ -1764,16 +1790,30 @@ inline bool PackageUnifiedSuiteExecutable(
 
     const auto spIds = doc.GetNamedSectionIds("SuitePackage");
     for (std::size_t i = 0; i < spIds.size(); ++i) {
-        const auto& spId   = spIds[i];
-        const auto srcPath = resolvePath(doc.GetString("SuitePackage", spId, "Source"));
+        const auto& spId    = spIds[i];
+        const std::string deliv = AsciiLower(TrimAscii(doc.GetString("SuitePackage", spId, "Delivery", "embedded")));
+        const bool isWebChild   = (deliv == "web");
+        const auto srcPath      = resolvePath(doc.GetString("SuitePackage", spId, "Source"));
+
         std::vector<std::uint8_t> rawBytes;
-        if (!ReadBinaryFileBytes(srcPath, rawBytes, outError)) {
-            return false;
-        }
         std::string shaHex;
-        if (!ComputeFileSha256Hex(srcPath, shaHex)) {
-            outError = "Failed computing SHA-256 for SuitePackage '" + spId + "'.";
-            return false;
+        if (!isWebChild) {
+            if (!ReadBinaryFileBytes(srcPath, rawBytes, outError)) {
+                return false;
+            }
+            if (!ComputeFileSha256Hex(srcPath, shaHex)) {
+                outError = "Failed computing SHA-256 for SuitePackage '" + spId + "'.";
+                return false;
+            }
+        } else {
+            const std::string archSha = EqualsIgnoreCase(arch, "x64")
+                ? TrimAscii(doc.GetString("SuitePackage", spId, "Sha256X64"))
+                : TrimAscii(doc.GetString("SuitePackage", spId, "Sha256Arm64"));
+            shaHex = !archSha.empty() ? AsciiLower(archSha) : AsciiLower(TrimAscii(doc.GetString("SuitePackage", spId, "Sha256")));
+            std::error_code sEc;
+            if (shaHex.empty() && !srcPath.empty() && std::filesystem::is_regular_file(srcPath, sEc)) {
+                ComputeFileSha256Hex(srcPath, shaHex);
+            }
         }
 
         SuiteChildSpec ch{};
@@ -1782,24 +1822,40 @@ inline bool PackageUnifiedSuiteExecutable(
         ch.description = ExpandArchToken(doc.GetString("SuitePackage", spId, "Description"), arch);
         ch.category    = ExpandArchToken(doc.GetString("SuitePackage", spId, "Category", "Suite"), arch);
         ch.version     = ExpandArchToken(doc.GetString("SuitePackage", spId, "Version"), arch);
-        ch.fileName    = WideToUtf8(srcPath.filename().wstring());
+        ch.delivery    = isWebChild ? "web" : "embedded";
+        ch.downloadUrl = ExpandArchToken(doc.GetString("SuitePackage", spId, "DownloadUrl"), arch);
+
+        std::string explicitFn = ExpandArchToken(doc.GetString("SuitePackage", spId, "FileName"), arch);
+        if (!explicitFn.empty()) {
+            ch.fileName = explicitFn;
+        } else if (!srcPath.empty()) {
+            ch.fileName = WideToUtf8(srcPath.filename().wstring());
+        } else {
+            const auto slash = ch.downloadUrl.find_last_of("/\\");
+            ch.fileName = (slash != std::string::npos) ? ch.downloadUrl.substr(slash + 1) : (spId + "-setup.exe");
+        }
+
         const std::string rawChUpg = doc.GetString("SuitePackage", spId, "UpgradeCode");
         if (!rawChUpg.empty()) NormalizeMsiGuid(rawChUpg, ch.upgradeCode);
-        ch.engine            = AsciiLower(doc.GetString("SuitePackage", spId, "Engine",
-                                   EqualsIgnoreCase(WideToUtf8(srcPath.extension().wstring()), ".msi") ? "msi" : "native"));
+        const bool looksMsi  = EqualsIgnoreCase(WideToUtf8(std::filesystem::path(Utf8ToWide(ch.fileName)).extension().wstring()), ".msi");
+        ch.engine            = AsciiLower(doc.GetString("SuitePackage", spId, "Engine", looksMsi ? "msi" : "raggiescript"));
         ch.installArgs       = ExpandArchToken(doc.GetString("SuitePackage", spId, "InstallArgs"), arch);
         ch.sha256Hex         = shaHex;
         const int estKb      = doc.GetInt("SuitePackage", spId, "EstimatedSizeKB", 0);
         ch.uncompressedBytes = (estKb > 0)
             ? (static_cast<std::uint64_t>(estKb) * 1024ull)
-            : static_cast<std::uint64_t>(rawBytes.size());
-        ch.embeddedResId     = kResIdSuiteChildBase + static_cast<int>(i);
+            : (rawBytes.empty() ? (1024ull * 1024ull) : static_cast<std::uint64_t>(rawBytes.size()));
+        ch.embeddedResId     = isWebChild ? 0 : (kResIdSuiteChildBase + static_cast<int>(i));
         ch.required          = doc.GetBool("SuitePackage", spId, "Required", false);
         ch.selectedByDefault = doc.GetBool("SuitePackage", spId, "SelectedByDefault", true);
         ch.adoptStandalone   = doc.GetBool("SuitePackage", spId, "AdoptStandalone", true);
+        ch.rollbackBoundary  = doc.GetBool("SuitePackage", spId, "RollbackBoundary", false);
+        ch.forwardInstallDir = doc.GetBool("SuitePackage", spId, "ForwardInstallDir", false);
 
         sm.children.push_back(std::move(ch));
-        childBlobs.push_back({kResIdSuiteChildBase + static_cast<int>(i), CompressWithLzmsIfSmaller(rawBytes)});
+        if (!isWebChild) {
+            childBlobs.push_back({kResIdSuiteChildBase + static_cast<int>(i), CompressWithLzmsIfSmaller(rawBytes)});
+        }
     }
 
     const std::string rawOutName = ExpandArchToken(doc.GetString("Package", "", "OutputName"), arch);

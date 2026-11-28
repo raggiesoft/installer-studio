@@ -88,11 +88,13 @@ inline constexpr std::string_view kAllowedWizardLayouts =
     "standard|wizard95|wizard97|aerowizard|fluentmica|oneclick|passivetoast|fullscreenblue|fullscreenteal|autorun16x9|simple";
 
 // ================================================================================
-// 1. CANONICAL `.RSIP` SECTION DESCRIPTOR TABLE (`26` SECTIONS)
+// 1. CANONICAL `.RSIP` SECTION DESCRIPTOR TABLE (`27` SECTIONS)
 // ================================================================================
-inline constexpr std::array<SectionDescriptor, 26> kSectionDescriptors{{
+inline constexpr std::array<SectionDescriptor, 27> kSectionDescriptors{{
     {"Package",         SectionCardinality::SingletonRequired, true,
-     "Core product identity, PackageKind (msi/msm/sfx/suite), Engine (msi/raggiescript), UAC execution level, target CPU architecture (x64/arm64), and universal output settings."},
+     "Core product identity, PackageKind (msi/msm/sfx/addon/suite), Engine (msi/raggiescript), UAC execution level, SuiteRollbackPolicy, target CPU architecture (x64/arm64), and universal output settings."},
+    {"HostApp",         SectionCardinality::SingletonOptional, false,
+     "Host application discovery & automatic content placement rules ([HostApp]) for PackageKind = addon (locates an installed Host App such as Book Reader or Listening Room via UpgradeCode/Registry/Executable and places books, albums, plugins, or DLC into the right directory with zero full-installer ceremony)."},
     {"Requirements",    SectionCardinality::SingletonOptional, false,
      "Minimum Windows 11 build gate (RtlGetVersion & MSI LaunchCondition), downgrade protection, and silent reboot exit code."},
     {"Upgrade",         SectionCardinality::SingletonOptional, false,
@@ -150,8 +152,8 @@ inline constexpr std::array<SectionDescriptor, 26> kSectionDescriptors{{
 // ================================================================================
 inline constexpr std::array<FieldDescriptor, 45> kFieldDescriptors{{
     // --- [Package] ---
-    {"Package", "SchemaVersion",         FieldValueKind::String,      false, "0.8",               "",
-     "Manifest grammar version (`0.8`)."},
+    {"Package", "SchemaVersion",         FieldValueKind::String,      false, "0.9",               "",
+     "Manifest grammar version (`0.9`)."},
     {"Package", "Name",                  FieldValueKind::String,      true,  "",                  "",
      "Consumer-facing ProductName written to MSI Property table and VERSIONINFO."},
     {"Package", "Version",               FieldValueKind::MsiVersion,  true,  "",                  "",
@@ -265,8 +267,10 @@ inline constexpr std::array<FieldDescriptor, 45> kFieldDescriptors{{
 // ================================================================================
 inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>({
     // --- Extended [Package], [Media], [SFX], [Requirements], [UI], [SetupType], [Billboard], [SuitePackage], [Feature], [Payload], [Shortcut], [Registry] ---
-    {"Package",  "PackageKind",          FieldValueKind::EnumChoice,  false, "msi",               "msi|msm|sfx|suite",
-     "`msi` builds an Enterprise `.msi` (+ optional `-setup.exe`), `msm` builds a Merge Module (`.msm`), `sfx` builds a lightweight LZMS Self-Extracting `.exe` (zero Installed Apps clutter), and `suite` builds a single-UAC Unified Suite Chainer (`ARPSYSTEMCOMPONENT` adoption)."},
+    {"Package",  "PackageKind",          FieldValueKind::EnumChoice,  false, "msi",               "msi|msm|sfx|addon|suite",
+     "`msi` builds an Enterprise `.msi` (+ optional `-setup.exe`), `msm` builds a Merge Module (`.msm`), `sfx` builds a lightweight LZMS Self-Extracting `.exe`, `addon` builds a Host-Aware Add-On / Content Pack Installer (`[HostApp]` locates the parent app and drops books/albums/plugins directly into its library directory), and `suite` builds a single-UAC Unified Suite / Web Workload Chainer."},
+    {"Package",  "SuiteRollbackPolicy",  FieldValueKind::EnumChoice,  false, "keep_completed",    "keep_completed|rollback_new",
+     "Controls failure recovery in `PackageKind = suite`: `keep_completed` leaves already-finished member packages installed for fast resume; `rollback_new` automatically uninstalls packages newly added in the current Suite session back to the start or last `RollbackBoundary = true` savepoint."},
     {"Package",  "Engine",               FieldValueKind::EnumChoice,  false, "msi",               "msi|raggiescript|native",
      "`msi` uses Microsoft Windows Installer (`msi.dll`); `raggiescript` (alias `native`) builds a **RaggieScript EXE** zero-`msi.dll` transactional LZMS installer with rollback journal, `.lnk` shortcuts, `Uninstall` registry registration, and signed `Uninstall.exe`."},
     {"Package",  "RequestedExecutionLevel", FieldValueKind::EnumChoice, false, "asInvoker",       "asInvoker|highestAvailable|requireAdministrator",
@@ -397,17 +401,29 @@ inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>
     {"Feature",  "PackUrl",              FieldValueKind::String,      false, "",                  "",
      "Optional HTTPS download URL for `<OutputName>-<FeatureId>.rswpak` when `Delivery = ondemand` (defaults to `UniversalDownloadBaseUrl` or side-by-side local `.rswpak`)."},
 
-    // --- [SuitePackage.<id>] (Unified Suite Chainer & Dynamic ARPSYSTEMCOMPONENT Adoption!) ---
+    // --- [SuitePackage.<id>] (Unified Suite Chainer, Web Workloads, Rollback Boundaries, & ARPSYSTEMCOMPONENT Adoption!) ---
     {"SuitePackage", "Name",             FieldValueKind::String,      true,  "",                  "",
      "Consumer-facing child tool title displayed in the Unified Suite Setup & Maintenance Hub."},
     {"SuitePackage", "Description",      FieldValueKind::String,      false, "",                  "",
      "Plain-English description of this child package in the Suite checklist."},
-    {"SuitePackage", "Source",           FieldValueKind::Path,        true,  "",                  "",
-     "Path to the compiled child `.msi` or native `-setup.exe` binary on the build machine (supports `$(ARCH)`)."},
+    {"SuitePackage", "Delivery",         FieldValueKind::EnumChoice,  false, "embedded",          "embedded|web",
+     "`embedded` packs the child installer inside the offline Suite `.exe`; `web` builds a lightweight `< 2 MB` Workload Suite stub that downloads only selected packages (`DownloadUrl`) and verifies `Sha256` before installing."},
+    {"SuitePackage", "Source",           FieldValueKind::Path,        false, "",                  "",
+     "Path to the compiled child `.msi`, `-setup.exe`, or `addon` binary on the build machine (required when `Delivery = embedded`; optional when `Delivery = web` to auto-fill `Sha256` & `FileName`)."},
+    {"SuitePackage", "DownloadUrl",      FieldValueKind::String,      false, "",                  "",
+     "HTTPS (or `file:///`) URL for `Delivery = web` on-demand workload downloading (supports `$(ARCH)` expansion)."},
+    {"SuitePackage", "Sha256",           FieldValueKind::String,      false, "",                  "",
+     "Expected 64-character SHA-256 hex digest verified via `bcrypt.dll` before executing a `Delivery = web` Suite package (supports `$(ARCH)` or `Sha256X64`/`Sha256Arm64`)."},
+    {"SuitePackage", "Sha256X64",        FieldValueKind::String,      false, "",                  "",
+     "Optional `x64`-specific SHA-256 hex digest when `DownloadUrl` uses `$(ARCH)`."},
+    {"SuitePackage", "Sha256Arm64",      FieldValueKind::String,      false, "",                  "",
+     "Optional `arm64`-specific SHA-256 hex digest when `DownloadUrl` uses `$(ARCH)`."},
+    {"SuitePackage", "FileName",         FieldValueKind::String,      false, "",                  "",
+     "Optional staged filename when `Delivery = web` (defaults to the URL's filename leaf; supports `$(ARCH)`)."},
     {"SuitePackage", "UpgradeCode",      FieldValueKind::Guid,        false, "",                  "",
      "Permanent `{UpgradeCode}` of this child package used to detect & dynamically adopt already-installed standalone siblings (`RS_SUITE_MANAGED=1`)."},
-    {"SuitePackage", "Engine",           FieldValueKind::EnumChoice,  false, "msi",               "msi|raggiescript|native|exe",
-     "Child installer engine (`msi` passes `RS_SUITE_MANAGED=1` via `MsiInstallProductW`; `raggiescript` / `native` / `exe` passes `/s RS_SUITE_MANAGED=1`)."},
+    {"SuitePackage", "Engine",           FieldValueKind::EnumChoice,  false, "msi",               "msi|raggiescript|native|addon|exe",
+     "Child installer engine (`msi` passes `RS_SUITE_MANAGED=1` via `MsiInstallProductW`; `raggiescript` / `native` / `addon` / `exe` passes `/s RS_SUITE_MANAGED=1`)."},
     {"SuitePackage", "InstallArgs",      FieldValueKind::String,      false, "",                  "",
      "Optional extra properties or CLI switches passed to this child package during Suite install."},
     {"SuitePackage", "Required",         FieldValueKind::Boolean,     false, "false",             "",
@@ -416,12 +432,44 @@ inline constexpr auto kExtendedFieldDescriptors = std::to_array<FieldDescriptor>
      "Whether this child package is pre-checked by default on fresh Suite installations."},
     {"SuitePackage", "AdoptStandalone",  FieldValueKind::Boolean,     false, "true",              "",
      "When `true` (default), dynamically adopts any already-installed standalone sibling (`REINSTALL=ALL REINSTALLMODE=vomus RS_SUITE_MANAGED=1`) under the single Suite Installed Apps entry."},
+    {"SuitePackage", "RollbackBoundary", FieldValueKind::Boolean,     false, "false",             "",
+     "When `true` under `SuiteRollbackPolicy = rollback_new`, commits all packages up through this item as a savepoint so a later failure does not uninstall earlier foundational prerequisites/tools."},
+    {"SuitePackage", "ForwardInstallDir",FieldValueKind::Boolean,     false, "false",             "",
+     "When `true`, passes `SUITE_INSTALLDIR=\"<SuiteDir>\"` into this child package so member apps or add-ons align under a shared Suite root."},
     {"SuitePackage", "Category",         FieldValueKind::String,      false, "Suite",             "",
      "Optional category badge displayed for this application in the Unified Suite Setup checklist."},
     {"SuitePackage", "Version",          FieldValueKind::String,      false, "",                  "",
      "Optional display version (`X.Y.Z`) shown alongside this child package in the Suite checklist."},
     {"SuitePackage", "EstimatedSizeKB",  FieldValueKind::Integer,     false, "0",                 "",
      "Optional uncompressed size override in kilobytes used to weight Overall Suite Progress (`0` uses actual payload size)."},
+
+    // --- [HostApp] (Host-Aware Add-On / Content Pack Discovery & Placement — `v0.9.0`!) ---
+    {"HostApp",  "Name",                 FieldValueKind::String,      true,  "",                  "",
+     "Display name of the required parent application (e.g. `RaggieSoft Book Reader` or `The Listening Room`)."},
+    {"HostApp",  "UpgradeCode",          FieldValueKind::Guid,        false, "",                  "",
+     "Optional `{UpgradeCode}` of the host application probed via MSI `MsiEnumRelatedProductsW` and Windows `Uninstall` Registry."},
+    {"HostApp",  "RegistryHive",         FieldValueKind::EnumChoice,  false, "auto",              "auto|HKCU|HKLM",
+     "Registry hive searched for `RegistryKey` (`auto` probes `HKCU` first, then 64-bit `HKLM`)."},
+    {"HostApp",  "RegistryKey",          FieldValueKind::String,      false, "",                  "",
+     "Optional registry key holding the host install directory (e.g. `Software\\RaggieSoft\\Book Reader`)."},
+    {"HostApp",  "RegistryValue",        FieldValueKind::String,      false, "Install Path",      "",
+     "Registry value name under `RegistryKey` holding the host install folder (also falls back to `InstallLocation` and `InstallDir`)."},
+    {"HostApp",  "FallbackSubdir",       FieldValueKind::RelativePath,false, "",                  "",
+     "Optional fallback folder relative to `%ProgramFiles%` or `%LOCALAPPDATA%` (e.g. `RaggieSoft\\Book Reader`) checked if Registry/MSI keys are absent."},
+    {"HostApp",  "Executable",           FieldValueKind::RelativePath,false, "",                  "",
+     "Optional executable relative to the detected host folder (e.g. `BookReader.exe`) verified on disk to confirm the host is genuinely installed."},
+    {"HostApp",  "ContentTargetRoot",    FieldValueKind::EnumChoice,  false, "LocalAppData",      "HostInstallDir|LocalAppData|CommonAppData|AppData",
+     "Where to place the add-on content once the host is verified: `HostInstallDir` (`<DetectedHostDir>\\<ContentSubdir>` for plugins/mods/help packs), `LocalAppData` (`%LOCALAPPDATA%\\<ContentSubdir>` for zero-UAC per-user books & albums), `CommonAppData` (`%ProgramData%`), or `AppData` (`%APPDATA%`)."},
+    {"HostApp",  "ContentSubdir",        FieldValueKind::RelativePath,false, "",                  "",
+     "Destination subfolder under `ContentTargetRoot` (e.g. `RaggieSoft\\Books\\cedar-run` or `Plugins\\SynthPack`; defaults to `[Install] DefaultSubdir`)."},
+    {"HostApp",  "DownloadUrl",          FieldValueKind::String,      false, "",                  "",
+     "Optional HTTPS URL opened when the user clicks `&Get Host...` if the required host application is not yet installed."},
+    {"HostApp",  "LaunchUri",            FieldValueKind::String,      false, "",                  "",
+     "Optional URI or host CLI argument launched when the user leaves `&Open in <HostName>` checked on completion (e.g. `raggiesoft-books://cedar-run`)."},
+    {"HostApp",  "RefreshArgs",          FieldValueKind::String,      false, "",                  "",
+     "Optional CLI switch passed silently to `Executable` if the host app is already running during add-on installation (e.g. `--refresh-library`)."},
+    {"HostApp",  "RequireHostInstalled", FieldValueKind::Boolean,     false, "true",              "",
+     "When `true` (default), verifies the host application is installed before unpacking content (returning `1605` in `/s` silent mode or offering `DownloadUrl` interactively if missing)."},
     {"Payload",  "TargetRoot",           FieldValueKind::EnumChoice,  false, "INSTALLDIR",        kAllowedTargetRoots,
      "Destination MSI system folder root (`INSTALLDIR`, `CommonAppDataFolder`, `AppDataFolder`, `FontsFolder`, etc.)."},
     {"Payload",  "Component",            FieldValueKind::String,      false, "",                  "",

@@ -89,6 +89,7 @@ inline bool ParseSuiteWorkspace(
     outSuite.upgradeCode              = doc.GetString("Suite", "", "UpgradeCode", "");
     outSuite.scope                    = doc.GetString("Suite", "", "Scope", "machine");
     outSuite.requestedExecutionLevel  = doc.GetString("Suite", "", "RequestedExecutionLevel", "asInvoker");
+    outSuite.rollbackPolicy           = AsciiLower(doc.GetString("Suite", "", "RollbackPolicy", "keep_completed"));
     outSuite.outputName               = doc.GetString("Suite", "", "OutputName", "");
     outSuite.outputDir                = doc.GetString("Suite", "", "OutputDir", "out");
     outSuite.defaultSubdir            = doc.GetString("Suite", "", "DefaultSubdir", "");
@@ -142,6 +143,8 @@ inline bool ParseSuiteWorkspace(
         pe.includeInSuite    = doc.GetBool("Project", pid, "IncludeInSuite", true);
         pe.requiredInSuite   = doc.GetBool("Project", pid, "Required", false);
         pe.selectedByDefault = doc.GetBool("Project", pid, "SelectedByDefault", true);
+        pe.rollbackBoundary  = doc.GetBool("Project", pid, "RollbackBoundary", false);
+        pe.forwardInstallDir = doc.GetBool("Project", pid, "ForwardInstallDir", false);
         pe.declIndex         = declIdx++;
 
         if (pe.rawRelPath.empty()) {

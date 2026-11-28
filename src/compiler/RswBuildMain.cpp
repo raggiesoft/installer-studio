@@ -168,7 +168,7 @@ int ProcessSingleProject(
                 std::cerr << "[ERROR] " << buildErr << "\n";
                 return 1;
             }
-        } else if (pkgKind == "sfx" || isRsscExeEng) {
+        } else if (pkgKind == "sfx" || pkgKind == "addon" || isRsscExeEng) {
             if (!rsw::PackageNativeOrSfxExecutable(doc, "x64", compilerExeDir, x64Sum, x64Setup, buildErr) ||
                 !rsw::PackageNativeOrSfxExecutable(doc, "arm64", compilerExeDir, arm64Sum, arm64Setup, buildErr)) {
                 std::cerr << "[ERROR] " << buildErr << "\n";
@@ -240,7 +240,7 @@ int ProcessSingleProject(
         return 0;
     }
 
-    if (pkgKind == "sfx" || isRsscExeEng) {
+    if (pkgKind == "sfx" || pkgKind == "addon" || isRsscExeEng) {
         rsw::CompiledMsiSummary natSum{};
         std::filesystem::path outExe;
         std::string buildErr;
@@ -248,7 +248,10 @@ int ProcessSingleProject(
             std::cerr << "[ERROR] " << buildErr << "\n";
             return 1;
         }
-        std::cout << "[OK] Compiled " << (pkgKind == "sfx" ? "Self-Extracting Archive (.exe)" : "RaggieScript EXE Installer (-setup.exe)")
+        const char* kindDesc = (pkgKind == "sfx")
+            ? "Self-Extracting Archive (.exe)"
+            : ((pkgKind == "addon") ? "Host-Aware Add-On / Content Pack (-setup.exe)" : "RaggieScript EXE Installer (-setup.exe)");
+        std::cout << "[OK] Compiled " << kindDesc
                   << " (" << natSum.architecture << ", " << natSum.fileCount << " file(s)):\n"
                   << "     EXE  : " << rsw::WideToUtf8(outExe.wstring()) << "\n";
         for (const auto& fp : natSum.featurePacks) {
@@ -837,6 +840,7 @@ int wmain(int argc, wchar_t* argv[]) {
             synthDoc.SetString("Package", "", "PackageKind",             "suite");
             synthDoc.SetString("Package", "", "Scope",                   suite.scope);
             synthDoc.SetString("Package", "", "RequestedExecutionLevel", suite.requestedExecutionLevel);
+            synthDoc.SetString("Package", "", "SuiteRollbackPolicy",     suite.rollbackPolicy);
             synthDoc.SetString("Package", "", "UpgradeCode",
                 suite.upgradeCode.empty()
                     ? rsw::ComputeDeterministicComponentGuid("{A18F4E20-7C93-4D62-9B44-524147474945}", "suite", suite.name)
@@ -932,5 +936,4 @@ int wmain(int argc, wchar_t* argv[]) {
     }
     return ProcessSingleProject(
         inputPath, cliVariables, archOverride, universalFlag,
-        validateOnly, jsonDiagnostics, emitVpatFlag, licenseStatus, pkgOverrides, compilerExeDir);
-}
+     

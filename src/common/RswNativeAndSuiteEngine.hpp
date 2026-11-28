@@ -179,6 +179,21 @@ struct NativeOrSfxManifest {
     int           waitSpawnGraceMs      = 1500;
     bool          autoStartExtract      = false;
 
+    // `[HostApp]` Host-Aware Add-On / Content Pack Discovery & Placement (`PackageKind = addon`, `v0.9.0`)
+    std::string   hostName;
+    std::string   hostUpgradeCode;
+    std::string   hostRegistryHive      = "auto";         // `auto` | `HKCU` | `HKLM`
+    std::string   hostRegistryKey;                        // e.g. `Software\RaggieSoft\Book Reader`
+    std::string   hostRegistryValue     = "Install Path";
+    std::string   hostFallbackSubdir;                     // e.g. `RaggieSoft\Book Reader`
+    std::string   hostExecutable;                         // e.g. `BookReader.exe`
+    std::string   contentTargetRoot     = "LocalAppData"; // `HostInstallDir` | `LocalAppData` | `CommonAppData` | `AppData`
+    std::string   contentSubdir;                          // e.g. `RaggieSoft\Books\cedar-run`
+    std::string   hostDownloadUrl;
+    std::string   hostLaunchUri;                          // e.g. `raggiesoft-books://cedar-run`
+    std::string   hostRefreshArgs;                        // e.g. `--refresh-library`
+    bool          requireHostInstalled  = true;
+
     // `[Upgrade]` static-CDN updater metadata (`v0.8.0` -> `<InstallDir>\UpdateConfig.json` for `RsUpdate.exe`)
     std::string   updateFeedUrl;
     std::string   updateChannel         = "stable";
@@ -325,11 +340,16 @@ inline std::map<std::string, std::string> ParseFlatIniMap(std::string_view text)
 inline std::string ExpandInstallTokens(
     std::string raw,
     const std::filesystem::path& installDir,
-    std::string_view productVersion)
+    std::string_view productVersion,
+    const std::filesystem::path& hostDir = {})
 {
     std::string dirWithSlash = WideToUtf8(installDir.wstring());
     if (!dirWithSlash.empty() && dirWithSlash.back() != '\\') {
         dirWithSlash.push_back('\\');
+    }
+    std::string hostWithSlash = WideToUtf8(hostDir.wstring());
+    if (!hostWithSlash.empty() && hostWithSlash.back() != '\\') {
+        hostWithSlash.push_back('\\');
     }
     auto replaceAll = [](std::string& s, std::string_view needle, std::string_view repl) {
         std::size_t pos = 0;
@@ -339,6 +359,7 @@ inline std::string ExpandInstallTokens(
         }
     };
     replaceAll(raw, "[INSTALLDIR]", dirWithSlash);
+    if (!hostWithSlash.empty()) replaceAll(raw, "[HOSTDIR]", hostWithSlash);
     replaceAll(raw, "[ProductVersion]", productVersion);
     return raw;
 }
@@ -683,7 +704,20 @@ inline std::string SerializeNativeOrSfxManifestIni(const NativeOrSfxManifest& m)
         << "WaitSpawnGraceMs="      << m.waitSpawnGraceMs << "\n"
         << "AutoStartExtract="      << (m.autoStartExtract ? "true" : "false") << "\n"
         << "UpdateFeedUrl="         << EscapeSingleLine(m.updateFeedUrl) << "\n"
-        << "UpdateChannel="         << EscapeSingleLine(m.updateChannel) << "\n";
+        << "UpdateChannel="         << EscapeSingleLine(m.updateChannel) << "\n"
+        << "HostName="              << EscapeSingleLine(m.hostName) << "\n"
+        << "HostUpgradeCode="       << EscapeSingleLine(m.hostUpgradeCode) << "\n"
+        << "HostRegistryHive="      << EscapeSingleLine(m.hostRegistryHive) << "\n"
+        << "HostRegistryKey="       << EscapeSingleLine(m.hostRegistryKey) << "\n"
+        << "HostRegistryValue="     << EscapeSingleLine(m.hostRegistryValue) << "\n"
+        << "HostFallbackSubdir="    << EscapeSingleLine(m.hostFallbackSubdir) << "\n"
+        << "HostExecutable="        << EscapeSingleLine(m.hostExecutable) << "\n"
+        << "ContentTargetRoot="     << EscapeSingleLine(m.contentTargetRoot) << "\n"
+        << "ContentSubdir="         << EscapeSingleLine(m.contentSubdir) << "\n"
+        << "HostDownloadUrl="       << EscapeSingleLine(m.hostDownloadUrl) << "\n"
+        << "HostLaunchUri="         << EscapeSingleLine(m.hostLaunchUri) << "\n"
+        << "HostRefreshArgs="       << EscapeSingleLine(m.hostRefreshArgs) << "\n"
+        << "RequireHostInstalled="  << (m.requireHostInstalled ? "true" : "false") << "\n";
 
     out << "FolderCount=" << m.folders.size() << "\n";
     for (std::size_t i = 0; i < m.folders.size(); ++i) {
@@ -809,6 +843,19 @@ inline NativeOrSfxManifest ParseNativeOrSfxManifestIni(std::string_view text) {
     m.autoStartExtract    = EqualsIgnoreCase(getS("AutoStartExtract", "false"), "true");
     m.updateFeedUrl       = getS("UpdateFeedUrl");
     m.updateChannel       = getS("UpdateChannel", "stable");
+    m.hostName             = getS("HostName");
+    m.hostUpgradeCode      = getS("HostUpgradeCode");
+    m.hostRegistryHive     = getS("HostRegistryHive", "auto");
+    m.hostRegistryKey      = getS("HostRegistryKey");
+    m.hostRegistryValue    = getS("HostRegistryValue", "Install Path");
+    m.hostFallbackSubdir   = getS("HostFallbackSubdir");
+    m.hostExecutable       = getS("HostExecutable");
+    m.contentTargetRoot    = getS("ContentTargetRoot", "LocalAppData");
+    m.contentSubdir        = getS("ContentSubdir");
+    m.hostDownloadUrl      = getS("HostDownloadUrl");
+    m.hostLaunchUri        = getS("HostLaunchUri");
+    m.hostRefreshArgs      = getS("HostRefreshArgs");
+    m.requireHostInstalled = !EqualsIgnoreCase(getS("RequireHostInstalled", "true"), "false");
 
     const int nFold = std::clamp(std::atoi(kv["FolderCount"].c_str()), 0, 512);
     for (int i = 0; i < nFold; ++i) {
@@ -854,6 +901,145 @@ inline NativeOrSfxManifest ParseNativeOrSfxManifestIni(std::string_view text) {
                               getS(p + "Act", "set"), getS(p + "Feat", "Main")});
     }
     return m;
+}
+
+// ================================================================================
+// 1B. HOST APPLICATION DISCOVERY FOR ADD-ON / CONTENT PACK INSTALLERS (`mode == "addon"`)
+// ================================================================================
+struct HostAppResolution {
+    bool                  found = false;
+    std::filesystem::path hostInstallDir;
+    std::filesystem::path hostExePath;
+    std::filesystem::path resolvedContentDir;
+    std::string           detectionSource;
+};
+
+/// Discovers an installed Host Application (e.g., *RaggieSoft Book Reader* or *The Listening Room*)
+/// and resolves the exact directory where the Add-On / Content Pack's files belong!
+inline HostAppResolution ResolveHostApplicationForAddOn(const NativeOrSfxManifest& m) {
+    HostAppResolution res{};
+    std::error_code ec;
+    const auto virtRegRoot = native_detail::GetVirtualRegistryStoreRoot();
+
+    auto verifyCandidateDir = [&](const std::filesystem::path& rawDir, std::string_view srcTag) -> bool {
+        if (rawDir.empty()) return false;
+        const auto normDir = rawDir.lexically_normal();
+        if (!std::filesystem::is_directory(normDir, ec)) return false;
+        if (!m.hostExecutable.empty()) {
+            const auto exeCand = (normDir / Utf8ToWide(m.hostExecutable)).lexically_normal();
+            if (!std::filesystem::is_regular_file(exeCand, ec)) return false;
+            res.hostExePath = exeCand;
+        }
+        res.found           = true;
+        res.hostInstallDir  = normDir;
+        res.detectionSource = std::string(srcTag);
+        return true;
+    };
+
+    // 1. Optional test-harness host root (`RSW_TEST_HOST_ROOT_DIR`) for 100% hermetic `insttests.exe` runs!
+    wchar_t testHostBuf[MAX_PATH * 2]{};
+    const DWORD nTestHost = ::GetEnvironmentVariableW(L"RSW_TEST_HOST_ROOT_DIR", testHostBuf, static_cast<DWORD>(std::size(testHostBuf)));
+    if (nTestHost > 0 && !m.hostFallbackSubdir.empty()) {
+        verifyCandidateDir(std::filesystem::path(testHostBuf) / Utf8ToWide(m.hostFallbackSubdir), "TestHostRoot");
+    }
+
+    // 2. Probe `[HostApp] RegistryKey` across `HKCU` and/or `HKLM` (64-bit view, virtual-registry aware)
+    if (!res.found && !m.hostRegistryKey.empty()) {
+        const std::wstring wKey = Utf8ToWide(m.hostRegistryKey);
+        const std::vector<std::string> hives =
+            EqualsIgnoreCase(m.hostRegistryHive, "HKCU") ? std::vector<std::string>{"HKCU"} :
+            (EqualsIgnoreCase(m.hostRegistryHive, "HKLM") ? std::vector<std::string>{"HKLM"} :
+                                                            std::vector<std::string>{"HKCU", "HKLM"});
+        const std::vector<std::wstring> valNames{
+            Utf8ToWide(m.hostRegistryValue.empty() ? "Install Path" : m.hostRegistryValue),
+            L"InstallLocation",
+            L"InstallDir",
+            L"Path"
+        };
+        for (const auto& hv : hives) {
+            for (const auto& vn : valNames) {
+                std::string valUtf8;
+                bool got = false;
+                if (!virtRegRoot.empty()) {
+                    got = native_detail::VirtualRegReadValue(virtRegRoot, hv, wKey, vn, valUtf8);
+                } else {
+                    HKEY hRoot = (hv == "HKCU") ? HKEY_CURRENT_USER : HKEY_LOCAL_MACHINE;
+                    got = ReadRegValueStringView(hRoot, wKey, vn, KEY_WOW64_64KEY, valUtf8);
+                }
+                if (got && !TrimAscii(valUtf8).empty()) {
+                    if (verifyCandidateDir(std::filesystem::path(Utf8ToWide(TrimAscii(valUtf8))), hv + "\\" + m.hostRegistryKey)) {
+                        break;
+                    }
+                }
+            }
+            if (res.found) break;
+        }
+    }
+
+    // 3. Probe `[HostApp] UpgradeCode` via Windows Installer `MsiEnumRelatedProductsW` + `Uninstall\<UpgradeCode>`
+    if (!res.found && !m.hostUpgradeCode.empty()) {
+        const std::wstring wUpg = Utf8ToWide(m.hostUpgradeCode);
+        if (virtRegRoot.empty()) {
+            wchar_t prodBuf[39]{};
+            if (::MsiEnumRelatedProductsW(wUpg.c_str(), 0, 0, prodBuf) == ERROR_SUCCESS) {
+                wchar_t locBuf[MAX_PATH * 2]{};
+                DWORD cch = static_cast<DWORD>(std::size(locBuf));
+                if (::MsiGetProductInfoW(prodBuf, INSTALLPROPERTY_INSTALLLOCATION, locBuf, &cch) == ERROR_SUCCESS && locBuf[0] != L'\0') {
+                    verifyCandidateDir(std::filesystem::path(locBuf), "MSI UpgradeCode");
+                }
+            }
+        }
+        if (!res.found) {
+            const std::wstring unKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" + wUpg;
+            for (const char* hv : {"HKCU", "HKLM"}) {
+                std::string locUtf8;
+                bool got = !virtRegRoot.empty()
+                    ? native_detail::VirtualRegReadValue(virtRegRoot, hv, unKey, L"InstallLocation", locUtf8)
+                    : ReadRegValueStringView((std::string_view(hv) == "HKCU") ? HKEY_CURRENT_USER : HKEY_LOCAL_MACHINE,
+                                             unKey, L"InstallLocation", KEY_WOW64_64KEY, locUtf8);
+                if (got && !TrimAscii(locUtf8).empty() &&
+                    verifyCandidateDir(std::filesystem::path(Utf8ToWide(TrimAscii(locUtf8))), "Uninstall\\" + m.hostUpgradeCode)) {
+                    break;
+                }
+            }
+        }
+    }
+
+    // 4. Fallback directory check under `%ProgramW6432%` and `%LOCALAPPDATA%` (only when not isolated in virtual-reg unit test)
+    if (!res.found && virtRegRoot.empty() && nTestHost == 0 && !m.hostFallbackSubdir.empty()) {
+        for (const wchar_t* envName : {L"ProgramW6432", L"ProgramFiles", L"LOCALAPPDATA"}) {
+            wchar_t envVal[MAX_PATH * 2]{};
+            if (::GetEnvironmentVariableW(envName, envVal, static_cast<DWORD>(std::size(envVal))) > 0) {
+                if (verifyCandidateDir(std::filesystem::path(envVal) / Utf8ToWide(m.hostFallbackSubdir), WideToUtf8(envName))) {
+                    break;
+                }
+            }
+        }
+    }
+
+    // 5. Compute target content directory (`HostInstallDir`, `LocalAppData`, `CommonAppData`, or `AppData`)
+    const std::string sub = !m.contentSubdir.empty()
+        ? m.contentSubdir
+        : (!m.defaultSubdir.empty() ? m.defaultSubdir : (m.manufacturer + "\\AddOns\\" + SlugifyName(m.productName)));
+
+    wchar_t testDataBuf[MAX_PATH * 2]{};
+    const DWORD nTestData = ::GetEnvironmentVariableW(L"RSW_TEST_ADDON_DATA_ROOT", testDataBuf, static_cast<DWORD>(std::size(testDataBuf)));
+
+    if (EqualsIgnoreCase(m.contentTargetRoot, "HostInstallDir")) {
+        const std::filesystem::path hostBase = res.found
+            ? res.hostInstallDir
+            : (std::filesystem::path(L"C:\\Program Files") / Utf8ToWide(m.hostFallbackSubdir.empty() ? m.hostName : m.hostFallbackSubdir));
+        res.resolvedContentDir = sub.empty() ? hostBase : (hostBase / Utf8ToWide(sub)).lexically_normal();
+    } else if (nTestData > 0) {
+        res.resolvedContentDir = (std::filesystem::path(testDataBuf) / Utf8ToWide(sub)).lexically_normal();
+    } else if (EqualsIgnoreCase(m.contentTargetRoot, "CommonAppData")) {
+        res.resolvedContentDir = (native_detail::ResolveSystemRootFolder("CommonAppDataFolder", {}, "", true) / Utf8ToWide(sub)).lexically_normal();
+    } else if (EqualsIgnoreCase(m.contentTargetRoot, "AppData")) {
+        res.resolvedContentDir = (native_detail::ResolveSystemRootFolder("AppDataFolder", {}, "", false) / Utf8ToWide(sub)).lexically_normal();
+    } else {
+        res.resolvedContentDir = (native_detail::ResolveSystemRootFolder("LocalAppDataFolder", {}, "", false) / Utf8ToWide(sub)).lexically_normal();
+    }
+    return res;
 }
 
 // ================================================================================
@@ -1696,14 +1882,18 @@ struct SuiteChildSpec {
     std::string   version;
     std::string   fileName;
     std::string   upgradeCode;
-    std::string   engine            = "msi"; // `"msi"` | `"native"` | `"exe"`
+    std::string   engine            = "msi";      // `"msi"` | `"raggiescript"` | `"native"` | `"addon"` | `"exe"`
+    std::string   delivery          = "embedded"; // `"embedded"` | `"web"`
+    std::string   downloadUrl;                    // HTTPS or `file:///` workload URL when `delivery == "web"`
     std::string   installArgs;
     std::string   sha256Hex;
     std::uint64_t uncompressedBytes = 0;
-    int           embeddedResId     = 0;     // `kResIdSuiteChildBase + idx`
+    int           embeddedResId     = 0;          // `kResIdSuiteChildBase + idx` (`0` when `delivery == "web"`)
     bool          required          = false;
     bool          selectedByDefault = true;
     bool          adoptStandalone   = true;
+    bool          rollbackBoundary  = false;      // Savepoint under `rollbackPolicy == "rollback_new"`
+    bool          forwardInstallDir = false;      // Passes `SUITE_INSTALLDIR` to child setup
 };
 
 struct SuiteChainerManifest {
@@ -1716,6 +1906,7 @@ struct SuiteChainerManifest {
     std::string   architecture             = "arm64";
     bool          perMachine               = true;
     std::string   requestedExecLevel       = "asInvoker";
+    std::string   rollbackPolicy           = "keep_completed"; // `"keep_completed"` | `"rollback_new"`
     int           minWindowsBuild          = 22000;
     std::string   osLaunchMessage          = "This suite requires Windows 11 (Build 22000) or later.";
     std::string   defaultSubdir            = "RaggieSoft\\Suite";
@@ -1805,6 +1996,7 @@ inline std::string SerializeSuiteChainerManifestIni(const SuiteChainerManifest& 
         << "Architecture="          << EscapeSingleLine(s.architecture) << "\n"
         << "PerMachine="            << (s.perMachine ? "true" : "false") << "\n"
         << "RequestedExecutionLevel=" << EscapeSingleLine(s.requestedExecLevel) << "\n"
+        << "RollbackPolicy="        << EscapeSingleLine(s.rollbackPolicy) << "\n"
         << "MinWindowsBuild="       << s.minWindowsBuild << "\n"
         << "OsLaunchMessage="       << EscapeSingleLine(s.osLaunchMessage) << "\n"
         << "DefaultSubdir="         << EscapeSingleLine(s.defaultSubdir) << "\n"
@@ -1825,13 +2017,17 @@ inline std::string SerializeSuiteChainerManifestIni(const SuiteChainerManifest& 
             << p << "FileName="  << EscapeSingleLine(c.fileName) << "\n"
             << p << "Upgrade="   << EscapeSingleLine(c.upgradeCode) << "\n"
             << p << "Engine="    << EscapeSingleLine(c.engine) << "\n"
+            << p << "Delivery="  << EscapeSingleLine(c.delivery) << "\n"
+            << p << "Url="       << EscapeSingleLine(c.downloadUrl) << "\n"
             << p << "Args="      << EscapeSingleLine(c.installArgs) << "\n"
             << p << "Sha256="    << EscapeSingleLine(c.sha256Hex) << "\n"
             << p << "Bytes="     << c.uncompressedBytes << "\n"
             << p << "ResId="     << c.embeddedResId << "\n"
             << p << "Required="  << (c.required ? "true" : "false") << "\n"
             << p << "Default="   << (c.selectedByDefault ? "true" : "false") << "\n"
-            << p << "Adopt="     << (c.adoptStandalone ? "true" : "false") << "\n";
+            << p << "Adopt="     << (c.adoptStandalone ? "true" : "false") << "\n"
+            << p << "Boundary="  << (c.rollbackBoundary ? "true" : "false") << "\n"
+            << p << "FwdDir="    << (c.forwardInstallDir ? "true" : "false") << "\n";
     }
     return out.str();
 }
@@ -1853,6 +2049,7 @@ inline SuiteChainerManifest ParseSuiteChainerManifestIni(std::string_view text) 
     s.architecture             = getS("Architecture", s.architecture);
     s.perMachine               = !EqualsIgnoreCase(getS("PerMachine", "true"), "false");
     s.requestedExecLevel       = std::string(NormalizeRequestedExecutionLevel(getS("RequestedExecutionLevel", "asInvoker")));
+    s.rollbackPolicy           = AsciiLower(getS("RollbackPolicy", "keep_completed"));
     if (!kv["MinWindowsBuild"].empty()) s.minWindowsBuild = std::atoi(kv["MinWindowsBuild"].c_str());
     s.osLaunchMessage          = getS("OsLaunchMessage", s.osLaunchMessage);
     s.defaultSubdir            = getS("DefaultSubdir", s.defaultSubdir);
@@ -1873,6 +2070,8 @@ inline SuiteChainerManifest ParseSuiteChainerManifestIni(std::string_view text) 
         c.fileName          = getS(p + "FileName");
         c.upgradeCode       = getS(p + "Upgrade");
         c.engine            = AsciiLower(getS(p + "Engine", "msi"));
+        c.delivery          = AsciiLower(getS(p + "Delivery", "embedded"));
+        c.downloadUrl       = getS(p + "Url");
         c.installArgs       = getS(p + "Args");
         c.sha256Hex         = AsciiLower(getS(p + "Sha256"));
         if (!kv[p + "Bytes"].empty()) {
@@ -1882,6 +2081,8 @@ inline SuiteChainerManifest ParseSuiteChainerManifestIni(std::string_view text) 
         c.required          = EqualsIgnoreCase(getS(p + "Required", "false"), "true");
         c.selectedByDefault = !EqualsIgnoreCase(getS(p + "Default", "true"), "false");
         c.adoptStandalone   = !EqualsIgnoreCase(getS(p + "Adopt", "true"), "false");
+        c.rollbackBoundary  = EqualsIgnoreCase(getS(p + "Boundary", "false"), "true");
+        c.forwardInstallDir = EqualsIgnoreCase(getS(p + "FwdDir", "false"), "true");
         s.children.push_back(std::move(c));
     }
     return s;

@@ -55,13 +55,13 @@
 
 namespace rsw {
 
-// Semantic Versioning (`0.8.0`)
+// Semantic Versioning (`0.9.0`)
 inline constexpr int kVersionMajor = 0;
-inline constexpr int kVersionMinor = 8;
+inline constexpr int kVersionMinor = 9;
 inline constexpr int kVersionPatch = 0;
 
-inline constexpr std::string_view  kVersionString      = "0.8.0";
-inline constexpr std::wstring_view kVersionStringWide  = L"0.8.0";
+inline constexpr std::string_view  kVersionString      = "0.9.0";
+inline constexpr std::wstring_view kVersionStringWide  = L"0.9.0";
 
 // Suite, Runtime Wizard, Help Viewer, Patch Compiler, Updater, & MSI Prism Product Identity
 inline constexpr std::string_view  kSuiteTitle         = "RaggieSoft Installer Studio";
@@ -80,9 +80,9 @@ inline constexpr std::string_view  kIncludeExt         = ".rsii";
 inline constexpr std::string_view  kScriptExt          = ".rssc";
 inline constexpr std::string_view  kPakExt             = ".rswpak";
 inline constexpr std::string_view  kPatchExt           = ".rswpatch";
-inline constexpr std::string_view  kGeneratorSignature = "RaggieSoft Installer Studio (instbuild.exe 0.8.0)";
-inline constexpr std::wstring_view kGeneratorSigWide   = L"RaggieSoft Installer Studio (instbuild.exe 0.8.0)";
-inline constexpr std::string_view  kManifestSchemaVer  = "0.8";
+inline constexpr std::string_view  kGeneratorSignature = "RaggieSoft Installer Studio (instbuild.exe 0.9.0)";
+inline constexpr std::wstring_view kGeneratorSigWide   = L"RaggieSoft Installer Studio (instbuild.exe 0.9.0)";
+inline constexpr std::string_view  kManifestSchemaVer  = "0.9";
 
 /// Official IDE Product Editions (`Community` permanently maintains 100% feature parity with `Architect`!).
 enum class RswIdeEdition : int {
@@ -109,11 +109,11 @@ inline constexpr std::wstring_view EditionSummary(RswIdeEdition ed) noexcept {
         case RswIdeEdition::Community:
             return L"Free for hobbyists, solo creators, educators & open source — 100% technical feature parity with Architect Edition (zero locked views, zero watermarks).";
         case RswIdeEdition::Essentials:
-            return L"Commercial Tier 1 — Guided .MSI + Universal Setup.exe, Basic .ZIP/Folder SFX (%TEMP% wrapper), WCAG 2.2 AA UI, Signing, Pre-MSI Runtimes, .MSM consumption, & Major Upgrades.";
+            return L"Commercial Tier 1 — Guided .MSI + Universal Setup.exe, Host-Aware Add-On / Content Pack Installers (PackageKind = addon), .ZIP/Folder SFX, WCAG 2.2 AA UI, Signing, .MSM consumption, & Major Upgrades.";
         case RswIdeEdition::Developer:
             return L"Commercial Tier 2 — Everything in Essentials + compile .MSM Merge Modules, RaggieScript EXE (.rssc), RsUpdate.exe, Custom Dialog Designers, VS/VB6 Importers, msiprism, & CI/CD agents.";
         case RswIdeEdition::Architect:
-            return L"Commercial Tier 3 — Everything in Developer + Multi-Product .rsis Suites (Showcase front-door), RsPatch.exe .MSP & .rswpatch binary deltas, .MST transforms, Disk Spanning/msiexec /a, & HTML5 VPAT 2.5.";
+            return L"Commercial Tier 3 — Everything in Developer + Multi-Product .rsis & Web Workload Suites (rollback boundaries & ARPSYSTEMCOMPONENT adoption), RsPatch.exe .MSP & .rswpatch deltas, .MST transforms, Spanning/msiexec /a, & HTML5 VPAT 2.5.";
     }
     return L"100% Feature Parity with Architect Edition.";
 }
