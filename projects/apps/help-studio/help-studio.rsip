@@ -1,16 +1,16 @@
 ; ==============================================================================
 ; FILE: projects/apps/help-studio/help-studio.rsip
-; APPLICATION: RaggieSoft Help Studio (v0.5.0)
-; COMPILER: RaggieSoft Installer Studio v0.6.0 (Zero-Prerequisite C++20 /MT!)
+; APPLICATION: RaggieSoft Help Studio (v0.7.0)
+; COMPILER: RaggieSoft Installer Studio v0.8.0 (Zero-Prerequisite C++20 /MT!)
 ; ==============================================================================
 ; PLAIN-ENGLISH OVERVIEW FOR 100-LEVEL READERS:
-;   Packages RaggieSoft Help Studio (`HelpStudio.exe` 8-View Win32 C++20 Visual
-;   IDE, `rshbuild.exe` Headless CLI & Legacy `.CHM`/`.HLP` Decompiler,
-;   `RaggieSoftHelp.exe` Universal Offline `F1` & Rescue Viewer, C++/C#/VB6/TS
-;   `F1` SDK Headers, Dogfooded `raggiesoft.help-studio` Manual, and Classic
-;   StoreTrainer `.HLP`+`.CNT` Sample) as native Windows 11 `x64` & `ARM64`
-;   `.msi` and Universal `Setup.exe` installers—with ZERO `.NET` or `WebView2`
-;   runtime prerequisites!
+;   Packages RaggieSoft Help Studio (`HelpStudio.exe` 9-View Win32 C++20 Visual
+;   IDE, `rshbuild.exe` Headless CLI, `use help;` RaggieScript Host & Legacy
+;   `.CHM`/`.HLP` Decompiler, `RaggieSoftHelp.exe` Universal Offline `F1`,
+;   Cross-Suite Federated Search & Rescue Viewer, C++/C#/VB6/TS `F1` SDK Headers,
+;   Dogfooded `raggiesoft.help-studio` Manual, and Classic StoreTrainer `.HLP`+`.CNT`
+;   Sample) as native Windows 11 `x64` & `ARM64` `.msi` and Universal `Setup.exe`
+;   installers—with ZERO `.NET` or `WebView2` runtime prerequisites!
 ; ==============================================================================
 
 @include "..\..\shared\raggiesoft-defaults.rsii"
@@ -18,9 +18,9 @@
 [Package]
 SchemaVersion            = 0.8
 Name                     = RaggieSoft Help Studio
-Tagline                  = Native C++20 F1 Context Help IDE & Legacy .CHM / WinHelp .HLP Importer
+Tagline                  = Native C++20 F1 Context Help IDE, RaggieScript ('use help;'), Reference Portals & .CHM/.HLP Importer
 WebsiteLabel             = raggiesoftstudio.com/help-studio
-Version                  = 0.6.1
+Version                  = 0.7.0
 Manufacturer             = RaggieSoft
 UpgradeCode              = {6E39D214-8B72-4F5A-9C3E-147253485050}
 Architecture             = $(ARCH)
@@ -57,7 +57,7 @@ FinishLaunchCheckbox     = &Open RaggieSoft Help Studio when setup finishes
 
 [SetupType.Workstation]
 Title                    = &Workstation F1 Help IDE + CLI + SDKs (Recommended)
-Description              = Installs the 8-view C++20 HelpStudio.exe IDE, rshbuild.exe CLI & CHM/HLP decompiler, RaggieSoftHelp.exe viewer, and F1 SDKs.
+Description              = Installs the 9-view C++20 HelpStudio.exe IDE, rshbuild.exe CLI & CHM/HLP decompiler, RaggieSoftHelp.exe federated viewer, and F1 SDKs.
 Tier                     = typical
 Glyph                    = Bolt
 Recommended              = true
@@ -91,7 +91,7 @@ DisallowAbsent           = true
 
 [Feature.StudioIde]
 Title                    = HelpStudio.exe Visual Authoring IDE & F1 SDK Headers
-Description              = 8-view tree-first Win32 C++20 IDE with live Msftedit.dll F1 preview and C++/C#/VB6/TypeScript SDK headers.
+Description              = 9-view tree-first Win32 C++20 IDE with live Msftedit.dll F1 preview, RaggieScript ('use help;') editor, and C++/C#/VB6/TS SDK headers.
 Inclusion                = typical
 
 [Feature.HelpDocs]
