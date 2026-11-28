@@ -3306,6 +3306,134 @@ int wmain() {
                       runOkRc == 0 && allThreeInstalled,
                       "v0.9.0 Unified Suite Delivery=web/side-by-side SHA-256 verification, RollbackBoundary + rollback_new LIFO undo, & Host+Add-On Suite chaining verified",
                       "rbRc=" + std::to_string(runRbRc) + " hostKept=" + std::to_string(hostKeptAtBoundary) + " compRb=" + std::to_string(compRolledBackClean) + " okRc=" + std::to_string(runOkRc));
+
+                // =========================================================================
+                // 18. v0.9.1 Test — Suite Maintenance Registration (`ModifyPath` vs `UninstallString`
+                //     + `InstallSource`), Full LIFO Rollback on Explicit User Cancel (Even Past
+                //     `RollbackBoundary = true`), RaggieScript EXE Mid-Install Cancel Rollback,
+                //     `--export-screenshots` Multi-Page Suite Wizard Render, & WCAG 2.2 AA Contrast!
+                // =========================================================================
+                {
+                    ::SetEnvironmentVariableW(L"RSW_TEST_REG_STORE_DIR", stVirtReg.wstring().c_str());
+                    ::SetEnvironmentVariableW(L"RSW_TEST_ADDON_DATA_ROOT", stAddonData.wstring().c_str());
+
+                    // A. Verify `ok-suite` registered `ModifyPath` (`--suite-manage`), `UninstallString` (`--suite-uninstall`),
+                    //    and `InstallSource` cleanly so Windows `Settings -> Apps -> Uninstall` never opens First-Run mode!
+                    rsw::SuiteChainerManifest probeSuite{};
+                    probeSuite.suiteName   = "Boxset App and Add-On Suite";
+                    probeSuite.upgradeCode = "{A1112222-3333-4444-8555-666677778891}";
+                    probeSuite.perMachine  = false;
+                    const auto regInfo = rsw::QuerySuiteInstalledRegistration(probeSuite);
+
+                    const std::wstring suiteRegSubKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{A1112222-3333-4444-8555-666677778891}.Suite";
+                    std::string regModifyPath, regUninstallStr;
+                    rsw::native_detail::VirtualRegReadValue(stVirtReg, "HKCU", suiteRegSubKey, L"ModifyPath", regModifyPath);
+                    rsw::native_detail::VirtualRegReadValue(stVirtReg, "HKCU", suiteRegSubKey, L"UninstallString", regUninstallStr);
+
+                    const bool maintRegSeparated =
+                        regInfo.registered &&
+                        !regInfo.installLocation.empty() &&
+                        !regInfo.installSource.empty() &&
+                        regModifyPath.find("--suite-manage") != std::string::npos &&
+                        regUninstallStr.find("--suite-uninstall") != std::string::npos &&
+                        regUninstallStr.find("--suite-manage") == std::string::npos;
+
+                    // Repair mode (`--suite-repair /s`) must succeed even when invoked from `<SuiteInstallDir>\SuiteSetup.exe`
+                    // (resolving `packages\` automatically through persisted `InstallSource`!)
+                    const auto installedHubExe = stInstall / L"SuiteHub2" / L"SuiteSetup.exe";
+                    const DWORD repairHubRc = std::filesystem::exists(installedHubExe, ec)
+                        ? runCli(installedHubExe, L"--suite-repair /s")
+                        : 99u;
+
+                    // Full Uninstall (`--suite-uninstall /s`) removes all 3 child packages AND the Suite Uninstall key!
+                    const DWORD uninstSuiteRc = runCli(stOut / L"ok-suite-setup.exe", L"--suite-uninstall /s --install-dir \"" + (stInstall / L"SuiteHub2").wstring() + L"\"");
+                    const auto regAfterUninst = rsw::QuerySuiteInstalledRegistration(probeSuite);
+                    const bool fullUninstClean =
+                        (uninstSuiteRc == 0) &&
+                        !regAfterUninst.registered &&
+                        !std::filesystem::exists(hostInstDir / L"BookReader.exe", ec) &&
+                        !std::filesystem::exists(compInstDir / L"CompanionTool.txt", ec) &&
+                        !std::filesystem::exists(stAddonData / L"RaggieSoft" / L"Books" / L"ad-astra" / L"ad-astra.md", ec);
+
+                    // B. Mid-Suite Explicit User Cancel (`RSW_TEST_SUITE_CANCEL_AFTER_STEP=2`):
+                    //    Step 1 (`HostReader`, `RollbackBoundary = true`) and Step 2 (`Companion`) install,
+                    //    then user confirms Cancel before Step 3 -> BOTH Step 2 AND Step 1 MUST roll back!
+                    ::SetEnvironmentVariableW(L"RSW_TEST_SUITE_CANCEL_AFTER_STEP", L"2");
+                    const DWORD cancelSuiteRc = runCli(stOut / L"ok-suite-setup.exe", L"/s --install-dir \"" + (stInstall / L"SuiteHubCancel").wstring() + L"\"");
+                    ::SetEnvironmentVariableW(L"RSW_TEST_SUITE_CANCEL_AFTER_STEP", nullptr);
+
+                    const bool suiteCancelUnwoundAll =
+                        (cancelSuiteRc == ERROR_INSTALL_USEREXIT) &&
+                        !std::filesystem::exists(hostInstDir / L"BookReader.exe", ec) &&
+                        !std::filesystem::exists(compInstDir / L"CompanionTool.txt", ec) &&
+                        !rsw::QuerySuiteInstalledRegistration(probeSuite).registered;
+
+                    // C. Mid-Install RaggieScript EXE Cancel (`RSW_TEST_CANCEL_AFTER_FILES=1`) -> Full Atomic LIFO Rollback!
+                    const auto cancelNatDir = stInstall / L"NativeCancelTarget";
+                    ::SetEnvironmentVariableW(L"RSW_TEST_CANCEL_AFTER_FILES", L"1");
+                    const DWORD cancelNatRc = runCli(hostSetupExe, L"/s INSTALLDIR=\"" + cancelNatDir.wstring() + L"\"");
+                    ::SetEnvironmentVariableW(L"RSW_TEST_CANCEL_AFTER_FILES", nullptr);
+                    const bool natCancelRolledBack =
+                        (cancelNatRc != 0) &&
+                        !std::filesystem::exists(cancelNatDir / L"BookReader.exe", ec) &&
+                        !std::filesystem::exists(cancelNatDir / L".rsw-rollback.jnl", ec);
+
+                    // D. Multi-Step Suite Wizard Screenshot Export (`SetupType`, `CustomSuite`, `Maintenance`, `Installing`)
+                    const auto suiteShotsDir = suiteTestDir / L"suite-shots";
+                    const DWORD shotRc = runCli(stOut / L"ok-suite-setup.exe", L"--export-screenshots \"" + suiteShotsDir.wstring() + L"\"");
+                    const bool suiteWizardShotsOk =
+                        (shotRc == 0) &&
+                        std::filesystem::exists(suiteShotsDir / L"setupwizard-suite-setup-type.png", ec) &&
+                        std::filesystem::exists(suiteShotsDir / L"setupwizard-suite-custom-list.png", ec) &&
+                        std::filesystem::exists(suiteShotsDir / L"setupwizard-suite-maintenance.png", ec) &&
+                        std::filesystem::exists(suiteShotsDir / L"setupwizard-suite-dual-progress.png", ec);
+
+                    // E. WCAG 2.2 Level AA Contrast Verification (`>= 4.5:1` text, `>= 3.0:1` focus rings) across Dark & Light
+                    auto wcagContrast = [](COLORREF c1, COLORREF c2) -> double {
+                        auto chan = [](BYTE v) -> double {
+                            const double s = static_cast<double>(v) / 255.0;
+                            return (s <= 0.03928) ? (s / 12.92) : std::pow((s + 0.055) / 1.055, 2.4);
+                        };
+                        auto lum = [&](COLORREF c) -> double {
+                            return 0.2126 * chan(GetRValue(c)) + 0.7152 * chan(GetGValue(c)) + 0.0722 * chan(GetBValue(c));
+                        };
+                        const double l1 = lum(c1), l2 = lum(c2);
+                        return (std::max(l1, l2) + 0.05) / (std::min(l1, l2) + 0.05);
+                    };
+                    rsw::ui::RswTheme thDark{}, thLight{};
+                    rsw::ui::ForcedThemeOverride() = 1;
+                    thDark.Refresh();
+                    rsw::ui::ForcedThemeOverride() = 0;
+                    thLight.Refresh();
+                    rsw::ui::ForcedThemeOverride() = -1;
+
+                    const bool wcagContrastOk =
+                        wcagContrast(thDark.textPrimary,   thDark.windowBg)  >= 4.5 &&
+                        wcagContrast(thDark.textPrimary,   thDark.cardBg)    >= 4.5 &&
+                        wcagContrast(thDark.textSecondary, thDark.windowBg)  >= 4.5 &&
+                        wcagContrast(thDark.textSecondary, thDark.cardBg)    >= 4.5 &&
+                        wcagContrast(thLight.textPrimary,   thLight.windowBg) >= 4.5 &&
+                        wcagContrast(thLight.textPrimary,   thLight.cardBg)   >= 4.5 &&
+                        wcagContrast(thLight.textSecondary, thLight.windowBg) >= 4.5 &&
+                        wcagContrast(thLight.textSecondary, thLight.cardBg)   >= 4.5 &&
+                        wcagContrast(RGB(255, 255, 255),    RGB(29, 78, 216)) >= 4.5 &&
+                        wcagContrast(rsw::ui::brand::kWarmGold, thDark.cardBg) >= 3.0 &&
+                        wcagContrast(RGB(29, 78, 216),     thLight.cardBg)    >= 3.0;
+
+                    ::SetEnvironmentVariableW(L"RSW_TEST_ADDON_DATA_ROOT", nullptr);
+                    ::SetEnvironmentVariableW(L"RSW_TEST_REG_STORE_DIR", (prevVLen > 0) ? prevVReg : nullptr);
+
+                    Check(maintRegSeparated && repairHubRc == 0 && fullUninstClean &&
+                          suiteCancelUnwoundAll && natCancelRolledBack && suiteWizardShotsOk && wcagContrastOk,
+                          "v0.9.1 Suite Wizard Maintenance (ModifyPath vs UninstallString + InstallSource Repair), Cancel 100% LIFO rollback, & WCAG 2.2 AA contrast verified",
+                          "maintSep=" + std::to_string(maintRegSeparated) +
+                          " repRc=" + std::to_string(repairHubRc) +
+                          " uninstClean=" + std::to_string(fullUninstClean) +
+                          " suiteCancelRb=" + std::to_string(suiteCancelUnwoundAll) +
+                          " natCancelRb=" + std::to_string(natCancelRolledBack) +
+                          " shots=" + std::to_string(suiteWizardShotsOk) +
+                          " wcag=" + std::to_string(wcagContrastOk));
+                }
             }
         }
 

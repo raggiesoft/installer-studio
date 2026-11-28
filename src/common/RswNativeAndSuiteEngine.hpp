@@ -1122,6 +1122,34 @@ inline bool ExecuteNativeOrSfxTransaction(
     };
 
     const std::filesystem::path virtRegRoot = native_detail::GetVirtualRegistryStoreRoot();
+
+    // Support both in-process `cancelFlag` AND cross-process `RSW_CHILD_CANCEL_FILE` (used when
+    // Unified Suite Setup or `--elevated-native-worker` requests graceful LIFO rollback mid-install!),
+    // plus optional deterministic unit-test hook `RSW_TEST_CANCEL_AFTER_FILES`.
+    std::filesystem::path childCancelFile;
+    {
+        wchar_t cBuf[MAX_PATH * 4]{};
+        const DWORD nCancel = ::GetEnvironmentVariableW(L"RSW_CHILD_CANCEL_FILE", cBuf, static_cast<DWORD>(std::size(cBuf)));
+        if (nCancel > 0 && nCancel < std::size(cBuf)) {
+            childCancelFile = cBuf;
+        }
+    }
+    int testCancelAfterFiles = 0;
+    {
+        wchar_t tcBuf[64]{};
+        if (::GetEnvironmentVariableW(L"RSW_TEST_CANCEL_AFTER_FILES", tcBuf, static_cast<DWORD>(std::size(tcBuf))) > 0) {
+            testCancelAfterFiles = std::atoi(WideToUtf8(tcBuf).c_str());
+        }
+    }
+    auto isCancelSignaled = [&]() noexcept -> bool {
+        if (cancelFlag && cancelFlag->load()) return true;
+        if (!childCancelFile.empty()) {
+            std::error_code cEc;
+            if (std::filesystem::exists(childCancelFile, cEc)) return true;
+        }
+        return false;
+    };
+
     auto performLifoRollback = [&]() {
         if (onProgress) onProgress(0, L"Rolling back changes to restore previous system state...");
         for (auto it = envUndoStack.rbegin(); it != envUndoStack.rend(); ++it) {
@@ -1267,14 +1295,19 @@ inline bool ExecuteNativeOrSfxTransaction(
         return true;
     };
 
+    auto abortOnUserCancel = [&]() -> bool {
+        if (!isCancelSignaled()) return false;
+        outError = "Installation canceled by user.";
+        performLifoRollback();
+        std::filesystem::remove(journalFile, ec);
+        return true;
+    };
+
     // 1. Extract all selected files from embedded `RSWPAK1` stream!
     std::size_t filesWrittenCount = 0;
     const std::size_t totalItems  = std::max<std::size_t>(1, metas.size());
     for (std::size_t i = 0; i < metas.size(); ++i) {
-        if (cancelFlag && cancelFlag->load()) {
-            outError = "Installation canceled by user.";
-            performLifoRollback();
-            std::filesystem::remove(journalFile, ec);
+        if (abortOnUserCancel()) {
             return false;
         }
         const auto& m = metas[i];
@@ -1292,6 +1325,12 @@ inline bool ExecuteNativeOrSfxTransaction(
             return false;
         }
         ++filesWrittenCount;
+        if (testCancelAfterFiles > 0 && static_cast<int>(filesWrittenCount) >= testCancelAfterFiles) {
+            outError = "Installation canceled by user.";
+            performLifoRollback();
+            std::filesystem::remove(journalFile, ec);
+            return false;
+        }
         if (opts.simulateFaultAfterFiles > 0 && static_cast<int>(filesWrittenCount) >= opts.simulateFaultAfterFiles) {
             outError = "Simulated disk write fault after " + std::to_string(filesWrittenCount) + " file(s).";
             performLifoRollback();
@@ -1302,6 +1341,7 @@ inline bool ExecuteNativeOrSfxTransaction(
 
     // 2. Acquire & extract any selected external `.rswpak` On-Demand Feature Packs!
     for (const auto& fp : featurePacks) {
+        if (abortOnUserCancel()) return false;
         if (excludedFeaturesLower.count(AsciiLower(fp.featureId)) > 0) continue;
         std::filesystem::path localPak;
         bool tempDownloaded = false;
@@ -1363,12 +1403,16 @@ inline bool ExecuteNativeOrSfxTransaction(
 
     // Pure `PackageKind = sfx` finishes cleanly right here with ZERO registry/Installed Apps footprint!
     if (isSfx) {
+        if (abortOnUserCancel()) return false;
         if (onProgress) onProgress(1000, L"Extraction complete.");
         return true;
     }
 
+    if (abortOnUserCancel()) return false;
+
     // 3. Create explicit `[Folder.*]` directories
     for (const auto& fl : manifest.folders) {
+        if (abortOnUserCancel()) return false;
         if (!fl.featureId.empty() && excludedFeaturesLower.count(AsciiLower(fl.featureId)) > 0) continue;
         const auto base = native_detail::ResolveSystemRootFolder(fl.targetRoot, opts.targetDir, effStartMenu, manifest.perMachine);
         const auto full = fl.targetSubdir.empty() ? base : (base / Utf8ToWide(fl.targetSubdir));
@@ -1378,6 +1422,7 @@ inline bool ExecuteNativeOrSfxTransaction(
     // 4. Create `.lnk` Start Menu & Desktop Shortcuts via `IShellLinkW`
     if (onProgress) onProgress(880, L"Creating Start Menu & Desktop shortcuts...");
     for (const auto& sc : manifest.shortcuts) {
+        if (abortOnUserCancel()) return false;
         if (!sc.featureId.empty() && excludedFeaturesLower.count(AsciiLower(sc.featureId)) > 0) continue;
         const bool isDesktop = EqualsIgnoreCase(sc.location, "Desktop");
         if (isDesktop && !opts.createDesktopShortcuts) continue;
@@ -1591,6 +1636,8 @@ inline bool ExecuteNativeOrSfxTransaction(
     if (envChangedLive) {
         native_detail::BroadcastEnvironmentChangeIfLive(virtRegRoot);
     }
+
+    if (abortOnUserCancel()) return false;
 
     // 6. Emit signed `Uninstall.exe` + `Uninstall.rswm` & register in Windows *Installed apps*!
     if (onProgress) onProgress(970, L"Registering uninstaller...");
@@ -1878,6 +1925,21 @@ inline bool ExecuteNativeUninstallFromMeta(
 // ================================================================================
 // 3. UNIFIED SUITE CHAINER & DYNAMIC `ARPSYSTEMCOMPONENT` GOVERNANCE (`#230`)
 // ================================================================================
+struct SuiteSetupTypeCardSpec {
+    std::string id;
+    std::string title;
+    std::string description;
+    std::string tier        = "typical"; // `"minimal"` | `"typical"` | `"complete"` | `"custom"`
+    std::string glyph       = "Bolt";
+    bool        recommended = false;
+};
+
+struct SuiteBillboardSlideSpec {
+    std::string headline;
+    std::string body;
+    std::string glyph = "ShieldCheck";
+};
+
 struct SuiteChildSpec {
     std::string   id;
     std::string   name;
@@ -1887,12 +1949,13 @@ struct SuiteChildSpec {
     std::string   fileName;
     std::string   upgradeCode;
     std::string   engine            = "msi";      // `"msi"` | `"raggiescript"` | `"native"` | `"addon"` | `"exe"`
-    std::string   delivery          = "embedded"; // `"embedded"` | `"web"`
+    std::string   delivery          = "embedded"; // `"embedded"` | `"side-by-side"` | `"web"`
     std::string   downloadUrl;                    // HTTPS or `file:///` workload URL when `delivery == "web"`
     std::string   installArgs;
     std::string   sha256Hex;
     std::uint64_t uncompressedBytes = 0;
-    int           embeddedResId     = 0;          // `kResIdSuiteChildBase + idx` (`0` when `delivery == "web"`)
+    int           embeddedResId     = 0;          // `kResIdSuiteChildBase + idx` (`0` when `delivery != "embedded"`)
+    std::string   inclusion         = "typical";  // `"minimal"` | `"typical"` | `"complete"` (`required` implies `"minimal"`)
     bool          required          = false;
     bool          selectedByDefault = true;
     bool          adoptStandalone   = true;
@@ -1904,21 +1967,37 @@ struct SuiteChainerManifest {
     std::string   suiteName                = "Application Suite";
     std::string   tagline;
     std::string   websiteLabel;
+    std::string   aboutUrl;
     std::string   version                  = "1.0.0";
     std::string   manufacturer             = "RaggieSoft";
     std::string   upgradeCode;
     std::string   architecture             = "arm64";
     bool          perMachine               = true;
     std::string   requestedExecLevel       = "asInvoker";
-    std::string   rollbackPolicy           = "keep_completed"; // `"keep_completed"` | `"rollback_new"`
+    std::string   rollbackPolicy           = "rollback_new"; // `"rollback_new"` (default) | `"keep_completed"`
     int           minWindowsBuild          = 22000;
     std::string   osLaunchMessage          = "This suite requires Windows 11 (Build 22000) or later.";
     std::string   defaultSubdir            = "RaggieSoft\\Suite";
+    std::string   mainExecutable;
+    std::string   wizardLayout             = "standard";
+    std::string   setupTypePreset          = "express_custom"; // `"express_custom"` | `"win95_classic"`
+    std::string   welcomeHeadline;
+    std::string   welcomeIntro;
+    std::string   bannerTitle;
+    std::string   expressDesc;
+    std::string   compactDesc;
+    std::string   customDesc;
+    std::string   finishLaunchText         = "&Launch application when setup finishes";
+    bool          offerLaunchOnFinish      = false;
+    bool          hasLicenseRtf            = false;
+    bool          allowChangeFolder        = false;
     std::string   accentPrimaryHex         = "#2563EB";
     std::string   accentSecondaryHex       = "#FBBF24";
-    std::string   installBtnText           = "&Install Selected";
+    std::string   installBtnText           = "&Install";
     bool          showComponentProgressBar = true;
-    std::vector<SuiteChildSpec> children;
+    std::vector<SuiteSetupTypeCardSpec>  setupTypes;
+    std::vector<SuiteBillboardSlideSpec> billboards;
+    std::vector<SuiteChildSpec>          children;
 };
 
 /// Live dual-bar telemetry snapshot emitted during Unified Suite Setup (`PackageKind = suite`).
@@ -1994,6 +2073,7 @@ inline std::string SerializeSuiteChainerManifestIni(const SuiteChainerManifest& 
         << "SuiteName="             << EscapeSingleLine(s.suiteName) << "\n"
         << "Tagline="               << EscapeSingleLine(s.tagline) << "\n"
         << "WebsiteLabel="          << EscapeSingleLine(s.websiteLabel) << "\n"
+        << "AboutUrl="              << EscapeSingleLine(s.aboutUrl) << "\n"
         << "Version="               << EscapeSingleLine(s.version) << "\n"
         << "Manufacturer="          << EscapeSingleLine(s.manufacturer) << "\n"
         << "UpgradeCode="           << EscapeSingleLine(s.upgradeCode) << "\n"
@@ -2004,12 +2084,46 @@ inline std::string SerializeSuiteChainerManifestIni(const SuiteChainerManifest& 
         << "MinWindowsBuild="       << s.minWindowsBuild << "\n"
         << "OsLaunchMessage="       << EscapeSingleLine(s.osLaunchMessage) << "\n"
         << "DefaultSubdir="         << EscapeSingleLine(s.defaultSubdir) << "\n"
+        << "MainExecutable="        << EscapeSingleLine(s.mainExecutable) << "\n"
+        << "WizardLayout="          << EscapeSingleLine(s.wizardLayout) << "\n"
+        << "SetupTypePreset="       << EscapeSingleLine(s.setupTypePreset) << "\n"
+        << "WelcomeHeadline="       << EscapeSingleLine(s.welcomeHeadline) << "\n"
+        << "WelcomeIntro="          << EscapeSingleLine(s.welcomeIntro) << "\n"
+        << "BannerTitle="           << EscapeSingleLine(s.bannerTitle) << "\n"
+        << "ExpressDescription="    << EscapeSingleLine(s.expressDesc) << "\n"
+        << "CompactDescription="    << EscapeSingleLine(s.compactDesc) << "\n"
+        << "CustomDescription="     << EscapeSingleLine(s.customDesc) << "\n"
+        << "FinishLaunchCheckbox="  << EscapeSingleLine(s.finishLaunchText) << "\n"
+        << "OfferLaunchOnFinish="   << (s.offerLaunchOnFinish ? "true" : "false") << "\n"
+        << "HasLicenseRtf="         << (s.hasLicenseRtf ? "true" : "false") << "\n"
+        << "AllowChangeFolder="     << (s.allowChangeFolder ? "true" : "false") << "\n"
         << "AccentPrimaryHex="      << EscapeSingleLine(s.accentPrimaryHex) << "\n"
         << "AccentSecondaryHex="    << EscapeSingleLine(s.accentSecondaryHex) << "\n"
         << "InstallButtonText="     << EscapeSingleLine(s.installBtnText) << "\n"
         << "ShowComponentProgressBar=" << (s.showComponentProgressBar ? "true" : "false") << "\n"
-        << "ChildCount="            << s.children.size() << "\n";
+        << "SetupTypeCount="        << s.setupTypes.size() << "\n";
 
+    for (std::size_t i = 0; i < s.setupTypes.size(); ++i) {
+        const auto& st = s.setupTypes[i];
+        const std::string p = "SetupType_" + std::to_string(i) + "_";
+        out << p << "Id="          << EscapeSingleLine(st.id) << "\n"
+            << p << "Title="       << EscapeSingleLine(st.title) << "\n"
+            << p << "Description=" << EscapeSingleLine(st.description) << "\n"
+            << p << "Tier="        << EscapeSingleLine(st.tier) << "\n"
+            << p << "Glyph="       << EscapeSingleLine(st.glyph) << "\n"
+            << p << "Recommended=" << (st.recommended ? "true" : "false") << "\n";
+    }
+
+    out << "BillboardCount=" << s.billboards.size() << "\n";
+    for (std::size_t i = 0; i < s.billboards.size(); ++i) {
+        const auto& bb = s.billboards[i];
+        const std::string p = "Billboard_" + std::to_string(i) + "_";
+        out << p << "Headline=" << EscapeSingleLine(bb.headline) << "\n"
+            << p << "Body="     << EscapeSingleLine(bb.body) << "\n"
+            << p << "Glyph="    << EscapeSingleLine(bb.glyph) << "\n";
+    }
+
+    out << "ChildCount=" << s.children.size() << "\n";
     for (std::size_t i = 0; i < s.children.size(); ++i) {
         const auto& c = s.children[i];
         const std::string p = "Child_" + std::to_string(i) + "_";
@@ -2027,6 +2141,7 @@ inline std::string SerializeSuiteChainerManifestIni(const SuiteChainerManifest& 
             << p << "Sha256="    << EscapeSingleLine(c.sha256Hex) << "\n"
             << p << "Bytes="     << c.uncompressedBytes << "\n"
             << p << "ResId="     << c.embeddedResId << "\n"
+            << p << "Inclusion=" << EscapeSingleLine(c.inclusion) << "\n"
             << p << "Required="  << (c.required ? "true" : "false") << "\n"
             << p << "Default="   << (c.selectedByDefault ? "true" : "false") << "\n"
             << p << "Adopt="     << (c.adoptStandalone ? "true" : "false") << "\n"
@@ -2047,20 +2162,57 @@ inline SuiteChainerManifest ParseSuiteChainerManifestIni(std::string_view text) 
     s.suiteName                = getS("SuiteName", s.suiteName);
     s.tagline                  = getS("Tagline");
     s.websiteLabel             = getS("WebsiteLabel");
+    s.aboutUrl                 = getS("AboutUrl");
     s.version                  = getS("Version", s.version);
     s.manufacturer             = getS("Manufacturer", s.manufacturer);
     s.upgradeCode              = getS("UpgradeCode");
     s.architecture             = getS("Architecture", s.architecture);
     s.perMachine               = !EqualsIgnoreCase(getS("PerMachine", "true"), "false");
     s.requestedExecLevel       = std::string(NormalizeRequestedExecutionLevel(getS("RequestedExecutionLevel", "asInvoker")));
-    s.rollbackPolicy           = AsciiLower(getS("RollbackPolicy", "keep_completed"));
+    s.rollbackPolicy           = AsciiLower(getS("RollbackPolicy", "rollback_new"));
     if (!kv["MinWindowsBuild"].empty()) s.minWindowsBuild = std::atoi(kv["MinWindowsBuild"].c_str());
     s.osLaunchMessage          = getS("OsLaunchMessage", s.osLaunchMessage);
     s.defaultSubdir            = getS("DefaultSubdir", s.defaultSubdir);
+    s.mainExecutable           = getS("MainExecutable");
+    s.wizardLayout             = getS("WizardLayout", s.wizardLayout);
+    s.setupTypePreset          = getS("SetupTypePreset", s.setupTypePreset);
+    s.welcomeHeadline          = getS("WelcomeHeadline");
+    s.welcomeIntro             = getS("WelcomeIntro");
+    s.bannerTitle              = getS("BannerTitle");
+    s.expressDesc              = getS("ExpressDescription");
+    s.compactDesc              = getS("CompactDescription");
+    s.customDesc               = getS("CustomDescription");
+    s.finishLaunchText         = getS("FinishLaunchCheckbox", s.finishLaunchText);
+    s.offerLaunchOnFinish      = EqualsIgnoreCase(getS("OfferLaunchOnFinish", "false"), "true");
+    s.hasLicenseRtf            = EqualsIgnoreCase(getS("HasLicenseRtf", "false"), "true");
+    s.allowChangeFolder        = EqualsIgnoreCase(getS("AllowChangeFolder", "false"), "true");
     s.accentPrimaryHex         = getS("AccentPrimaryHex", s.accentPrimaryHex);
     s.accentSecondaryHex       = getS("AccentSecondaryHex", s.accentSecondaryHex);
     s.installBtnText           = getS("InstallButtonText", s.installBtnText);
     s.showComponentProgressBar = !EqualsIgnoreCase(getS("ShowComponentProgressBar", "true"), "false");
+
+    const int nSt = std::clamp(std::atoi(kv["SetupTypeCount"].c_str()), 0, 16);
+    for (int i = 0; i < nSt; ++i) {
+        const std::string p = "SetupType_" + std::to_string(i) + "_";
+        s.setupTypes.push_back({
+            getS(p + "Id"),
+            getS(p + "Title"),
+            getS(p + "Description"),
+            AsciiLower(getS(p + "Tier", "typical")),
+            getS(p + "Glyph", "Bolt"),
+            EqualsIgnoreCase(getS(p + "Recommended", "false"), "true")
+        });
+    }
+
+    const int nBb = std::clamp(std::atoi(kv["BillboardCount"].c_str()), 0, 32);
+    for (int i = 0; i < nBb; ++i) {
+        const std::string p = "Billboard_" + std::to_string(i) + "_";
+        s.billboards.push_back({
+            getS(p + "Headline"),
+            getS(p + "Body"),
+            getS(p + "Glyph", "ShieldCheck")
+        });
+    }
 
     const int count = std::clamp(std::atoi(kv["ChildCount"].c_str()), 0, 512);
     for (int i = 0; i < count; ++i) {
@@ -2084,12 +2236,70 @@ inline SuiteChainerManifest ParseSuiteChainerManifestIni(std::string_view text) 
         c.embeddedResId     = std::atoi(getS(p + "ResId", "0").c_str());
         c.required          = EqualsIgnoreCase(getS(p + "Required", "false"), "true");
         c.selectedByDefault = !EqualsIgnoreCase(getS(p + "Default", "true"), "false");
+        c.inclusion         = AsciiLower(getS(p + "Inclusion", c.required ? "minimal" : (c.selectedByDefault ? "typical" : "complete")));
         c.adoptStandalone   = !EqualsIgnoreCase(getS(p + "Adopt", "true"), "false");
         c.rollbackBoundary  = EqualsIgnoreCase(getS(p + "Boundary", "false"), "true");
         c.forwardInstallDir = EqualsIgnoreCase(getS(p + "FwdDir", "false"), "true");
         s.children.push_back(std::move(c));
     }
     return s;
+}
+
+/// Canonical registry key leaf (`<UpgradeCode>.Suite`) written under `CurrentVersion\Uninstall` for a Suite!
+inline std::string ComputeSuiteUninstallKeyLeaf(const SuiteChainerManifest& suite) {
+    return (suite.upgradeCode.empty() ? ("RaggieSoft." + suite.suiteName) : suite.upgradeCode) + ".Suite";
+}
+
+struct SuiteInstalledRegistrationInfo {
+    bool                  registered = false;
+    std::string           displayVersion;
+    std::filesystem::path installLocation;
+    std::filesystem::path installSource; // Original media directory containing `packages\` for `side-by-side` suites!
+};
+
+/// Probes `HKLM` and `HKCU` (`Software\Microsoft\Windows\CurrentVersion\Uninstall\<SuiteKey>`)
+/// so re-running `<suite>-setup.exe` automatically opens **Suite Maintenance Mode** (`Modify` / `Repair` / `Remove`)
+/// and locates side-by-side `packages\` media even when launched from `C:\Program Files\...\SuiteSetup.exe`!
+inline SuiteInstalledRegistrationInfo QuerySuiteInstalledRegistration(const SuiteChainerManifest& suite) {
+    SuiteInstalledRegistrationInfo info{};
+    const std::wstring subKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" +
+                                Utf8ToWide(ComputeSuiteUninstallKeyLeaf(suite));
+    const auto virtRegRoot = native_detail::GetVirtualRegistryStoreRoot();
+    if (!virtRegRoot.empty()) {
+        for (const char* rc : {"HKLM", "HKCU"}) {
+            std::string dispName;
+            if (native_detail::VirtualRegReadValue(virtRegRoot, rc, subKey, L"DisplayName", dispName) && !dispName.empty()) {
+                info.registered = true;
+                native_detail::VirtualRegReadValue(virtRegRoot, rc, subKey, L"DisplayVersion", info.displayVersion);
+                std::string loc, src;
+                if (native_detail::VirtualRegReadValue(virtRegRoot, rc, subKey, L"InstallLocation", loc) && !loc.empty()) {
+                    info.installLocation = std::filesystem::path(Utf8ToWide(loc));
+                }
+                if (native_detail::VirtualRegReadValue(virtRegRoot, rc, subKey, L"InstallSource", src) && !src.empty()) {
+                    info.installSource = std::filesystem::path(Utf8ToWide(src));
+                }
+                return info;
+            }
+        }
+        return info;
+    }
+
+    for (HKEY hRoot : {HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER}) {
+        std::string dispName;
+        if (ReadRegValueStringView(hRoot, subKey, L"DisplayName", KEY_WOW64_64KEY, dispName) && !dispName.empty()) {
+            info.registered = true;
+            ReadRegValueStringView(hRoot, subKey, L"DisplayVersion", KEY_WOW64_64KEY, info.displayVersion);
+            std::string loc, src;
+            if (ReadRegValueStringView(hRoot, subKey, L"InstallLocation", KEY_WOW64_64KEY, loc) && !loc.empty()) {
+                info.installLocation = std::filesystem::path(Utf8ToWide(loc));
+            }
+            if (ReadRegValueStringView(hRoot, subKey, L"InstallSource", KEY_WOW64_64KEY, src) && !src.empty()) {
+                info.installSource = std::filesystem::path(Utf8ToWide(src));
+            }
+            return info;
+        }
+    }
+    return info;
 }
 
 /// Checks whether a Suite child package (`msi` or `native`) is currently installed on this PC,

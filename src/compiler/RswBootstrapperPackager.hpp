@@ -1768,6 +1768,7 @@ inline bool PackageUnifiedSuiteExecutable(
     sm.suiteName                = ExpandArchToken(doc.GetString("Package", "", "Name"), arch);
     sm.tagline                  = ExpandArchToken(doc.GetString("Package", "", "Tagline", "Unified Application Suite"), arch);
     sm.websiteLabel             = doc.GetString("Package", "", "WebsiteLabel");
+    sm.aboutUrl                 = doc.GetString("Package", "", "AboutUrl");
     sm.version                  = ExpandArchToken(doc.GetString("Package", "", "Version", "1.0.0"), arch);
     sm.manufacturer             = ExpandArchToken(doc.GetString("Package", "", "Manufacturer", "RaggieSoft"), arch);
     NormalizeMsiGuid(doc.GetString("Package", "", "UpgradeCode"), sm.upgradeCode);
@@ -1775,14 +1776,63 @@ inline bool PackageUnifiedSuiteExecutable(
     sm.perMachine               = EqualsIgnoreCase(doc.GetString("Package", "", "Scope", "machine"), "machine");
     sm.requestedExecLevel       = std::string(NormalizeRequestedExecutionLevel(
         doc.GetString("Package", "", "RequestedExecutionLevel", "asInvoker")));
-    sm.rollbackPolicy           = AsciiLower(doc.GetString("Package", "", "SuiteRollbackPolicy", "keep_completed"));
+    sm.rollbackPolicy           = AsciiLower(doc.GetString("Package", "", "SuiteRollbackPolicy", "rollback_new"));
     sm.minWindowsBuild          = doc.GetInt("Requirements", "", "MinWindowsBuild", 22000);
     sm.osLaunchMessage          = doc.GetString("Requirements", "", "OsLaunchMessage", "This suite requires Windows 11 (Build 22000) or later.");
     sm.defaultSubdir            = ExpandArchToken(doc.GetString("Install", "", "DefaultSubdir", sm.manufacturer + "\\" + sm.suiteName), arch);
+    sm.mainExecutable           = ExpandArchToken(doc.GetString("Install", "", "MainExecutable"), arch);
+    sm.wizardLayout             = doc.GetString("UI", "", "WizardLayout", "standard");
+    sm.setupTypePreset          = doc.GetString("UI", "", "SetupTypePreset", "express_custom");
+    sm.welcomeHeadline          = doc.GetString("UI", "", "WelcomeHeadline", "Welcome to " + sm.suiteName + " Setup");
+    sm.welcomeIntro             = doc.GetString("UI", "", "WelcomeIntro", doc.GetString("Package", "", "Description",
+                                     "This wizard will guide you through installing or configuring " + sm.suiteName + " on your computer."));
+    sm.bannerTitle              = doc.GetString("UI", "", "BannerTitle", "Choose how you would like to install " + sm.suiteName + ".");
+    sm.expressDesc              = doc.GetString("UI", "", "ExpressDescription",
+                                     "Installs the recommended applications and content packs using automatic folder defaults.");
+    sm.compactDesc              = doc.GetString("UI", "", "CompactDescription",
+                                     "Installs only the essential core applications to conserve disk space.");
+    sm.customDesc               = doc.GetString("UI", "", "CustomDescription",
+                                     "Choose individual applications, add-on packs, and installation options step by step.");
+    sm.finishLaunchText         = doc.GetString("UI", "", "FinishLaunchCheckbox", "&Launch application when setup finishes");
+    sm.offerLaunchOnFinish      = doc.GetBool("UI", "", "OfferLaunchOnFinish", !sm.mainExecutable.empty());
+    sm.allowChangeFolder        = doc.GetBool("UI", "", "AllowChangeFolder", false);
     sm.accentPrimaryHex         = doc.GetString("UI", "", "AccentPrimaryHex", "#2563EB");
     sm.accentSecondaryHex       = doc.GetString("UI", "", "AccentSecondaryHex", "#FBBF24");
-    sm.installBtnText           = doc.GetString("UI", "", "InstallButtonText", "&Install Selected");
+    sm.installBtnText           = doc.GetString("UI", "", "InstallButtonText", "&Install");
     sm.showComponentProgressBar = doc.GetBool("UI", "", "ShowComponentProgressBar", true);
+
+    std::error_code uiEc;
+    const auto licenseRtfPath = resolvePath(doc.GetString("UI", "", "LicenseRtf"));
+    std::vector<std::uint8_t> suiteLicenseBytes;
+    if (!licenseRtfPath.empty() && std::filesystem::is_regular_file(licenseRtfPath, uiEc)) {
+        if (ReadBinaryFileBytes(licenseRtfPath, suiteLicenseBytes, outError) && !suiteLicenseBytes.empty()) {
+            sm.hasLicenseRtf = true;
+        }
+    }
+    const auto artworkPngPath = resolvePath(doc.GetString("UI", "", "ArtworkPng"));
+    std::vector<std::uint8_t> suiteArtworkBytes;
+    if (!artworkPngPath.empty() && std::filesystem::is_regular_file(artworkPngPath, uiEc)) {
+        std::string ignoreArtErr;
+        ReadBinaryFileBytes(artworkPngPath, suiteArtworkBytes, ignoreArtErr);
+    }
+
+    for (const auto& stId : doc.GetNamedSectionIds("SetupType")) {
+        sm.setupTypes.push_back({
+            stId,
+            doc.GetString("SetupType", stId, "Title", "&" + stId),
+            doc.GetString("SetupType", stId, "Description"),
+            AsciiLower(doc.GetString("SetupType", stId, "Tier", "typical")),
+            doc.GetString("SetupType", stId, "Glyph", "Bolt"),
+            doc.GetBool("SetupType", stId, "Recommended", sm.setupTypes.empty())
+        });
+    }
+    for (const auto& bbId : doc.GetNamedSectionIds("Billboard")) {
+        sm.billboards.push_back({
+            doc.GetString("Billboard", bbId, "Headline"),
+            doc.GetString("Billboard", bbId, "Body"),
+            doc.GetString("Billboard", bbId, "Glyph", "ShieldCheck")
+        });
+    }
 
     const std::string rawOutName = ExpandArchToken(doc.GetString("Package", "", "OutputName"), arch);
     const std::string outStem    = rawOutName.empty()
@@ -1886,6 +1936,9 @@ inline bool PackageUnifiedSuiteExecutable(
         ch.embeddedResId     = (isWebChild || isSideChild) ? 0 : (kResIdSuiteChildBase + static_cast<int>(i));
         ch.required          = doc.GetBool("SuitePackage", spId, "Required", false);
         ch.selectedByDefault = doc.GetBool("SuitePackage", spId, "SelectedByDefault", true);
+        ch.inclusion         = AsciiLower(doc.GetString(
+            "SuitePackage", spId, "Inclusion",
+            ch.required ? "minimal" : (ch.selectedByDefault ? "typical" : "complete")));
         ch.adoptStandalone   = doc.GetBool("SuitePackage", spId, "AdoptStandalone", true);
         ch.rollbackBoundary  = doc.GetBool("SuitePackage", spId, "RollbackBoundary", false);
         ch.forwardInstallDir = doc.GetBool("SuitePackage", spId, "ForwardInstallDir", false);
@@ -1932,6 +1985,16 @@ inline bool PackageUnifiedSuiteExecutable(
     bool ok = ::UpdateResourceW(
         hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdSuiteManifest), kLangNeutral,
         const_cast<char*>(smText.data()), static_cast<DWORD>(smText.size()));
+    if (!suiteLicenseBytes.empty()) {
+        ok = ok && ::UpdateResourceW(
+            hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdLicenseRtf), kLangNeutral,
+            suiteLicenseBytes.data(), static_cast<DWORD>(suiteLicenseBytes.size()));
+    }
+    if (!suiteArtworkBytes.empty()) {
+        ok = ok && ::UpdateResourceW(
+            hRes, RT_RCDATA, MAKEINTRESOURCEW(kResIdArtworkPng), kLangNeutral,
+            suiteArtworkBytes.data(), static_cast<DWORD>(suiteArtworkBytes.size()));
+    }
     for (const auto& cb : childBlobs) {
         ok = ok && ::UpdateResourceW(
             hRes, RT_RCDATA, MAKEINTRESOURCEW(cb.resId), kLangNeutral,

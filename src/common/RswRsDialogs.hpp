@@ -382,6 +382,16 @@ inline LRESULT CALLBACK RsDialogWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPAR
                 return 0;
             }
             if (id == IDC_RSD_CANCEL || id == IDCANCEL) {
+                const bool isFinishStep = st->spec &&
+                    (st->spec->kind == RsDialogKind::Finish || st->spec->kind == RsDialogKind::FinishReboot);
+                if (!isFinishStep) {
+                    const std::wstring prodTitle = (st->spec && !st->spec->windowTitle.empty())
+                        ? rsw::Utf8ToWide(st->spec->windowTitle)
+                        : L"Application";
+                    if (!rsw::ui::ConfirmSetupCancelDialog(hWnd, prodTitle, false)) {
+                        return 0;
+                    }
+                }
                 st->result = kResultCancel;
                 st->done   = true;
                 return 0;
@@ -390,6 +400,16 @@ inline LRESULT CALLBACK RsDialogWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPAR
         }
         case WM_CLOSE:
             if (st) {
+                const bool isFinishStep = st->spec &&
+                    (st->spec->kind == RsDialogKind::Finish || st->spec->kind == RsDialogKind::FinishReboot);
+                if (!isFinishStep) {
+                    const std::wstring prodTitle = (st->spec && !st->spec->windowTitle.empty())
+                        ? rsw::Utf8ToWide(st->spec->windowTitle)
+                        : L"Application";
+                    if (!rsw::ui::ConfirmSetupCancelDialog(hWnd, prodTitle, false)) {
+                        return 0;
+                    }
+                }
                 st->result = kResultCancel;
                 st->done   = true;
             }

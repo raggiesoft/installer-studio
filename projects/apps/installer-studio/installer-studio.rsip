@@ -1,6 +1,6 @@
 ; ==============================================================================
 ; FILE: projects/apps/installer-studio/installer-studio.rsip
-; APPLICATION: RaggieSoft Installer Studio (v0.9.0 Release)
+; APPLICATION: RaggieSoft Installer Studio (v0.9.1 Release)
 ; COMPILER: RaggieSoft Installer Studio (instbuild.exe -> .msi + Universal Setup.exe)
 ; ==============================================================================
 
@@ -11,7 +11,7 @@ SchemaVersion            = 0.9
 Name                     = RaggieSoft Installer Studio
 Tagline                  = Install Without Limits - Suites, Add-On Installers, MSI/MSP Compiler, RsPatch, RsUpdate & Prism
 WebsiteLabel             = raggiesoftstudio.com
-Version                  = 0.9.0
+Version                  = 0.9.1
 Manufacturer             = RaggieSoft
 UpgradeCode              = {D9C0EF36-990C-519C-A9C7-D7E19FDD5627}
 Architecture             = $(ARCH)

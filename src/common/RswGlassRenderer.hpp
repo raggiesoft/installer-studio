@@ -1412,8 +1412,8 @@ inline void DrawAccessiblePushButton(
     } else {
         if (!isEnabled) {
             fillCol   = theme.isDarkMode ? RGB(20, 29, 48)   : RGB(241, 245, 249);
-            borderCol = theme.isDarkMode ? RGB(51, 65, 85)   : RGB(203, 213, 225);
-            textCol   = theme.isDarkMode ? RGB(100, 116, 139): RGB(148, 163, 184);
+            borderCol = theme.isDarkMode ? RGB(61, 76, 99)   : RGB(180, 194, 212);
+            textCol   = theme.isDarkMode ? RGB(148, 163, 184): RGB(100, 116, 139);
         } else if (theme.isDarkMode) {
             // Elevated Dark Slate-Navy (`#212D48` with `#F8FAFC` text = 12.8:1 WCAG AAA!)
             if (isPressed)      fillCol = RGB(22, 31, 52);
@@ -1703,6 +1703,44 @@ inline LRESULT CALLBACK SharedListViewSubclassProc(
         ::RemoveWindowSubclass(hListView, &SharedListViewSubclassProc, uIdSubclass);
         return ::DefSubclassProc(hListView, uMsg, wParam, lParam);
     }
+
+    // WCAG 2.2 AA Contrast Safeguard for Disabled `SysListView32` Controls:
+    //   Stock Windows `comctl32.dll` fills disabled ListViews with `COLOR_BTNFACE` (`#F0F0F0` light gray)
+    //   while still painting item labels in `ListView_SetTextColor` (`#F8FAFC` white in Dark Mode -> `1.08:1`!).
+    //   Keeping `cardBg` during erase/paint and switching item text to `textSecondary` when disabled guarantees
+    //   `>= 9.6:1` readable contrast even if a ListView is temporarily disabled!
+    if (themePtr && !::IsWindowEnabled(hListView)) {
+        if (uMsg == WM_ERASEBKGND) {
+            RECT rc{};
+            ::GetClientRect(hListView, &rc);
+            ::FillRect(reinterpret_cast<HDC>(wParam), &rc, themePtr->hbrCard);
+            return 1;
+        }
+        if (uMsg == WM_PAINT || uMsg == WM_PRINTCLIENT) {
+            const LONG styleOrig = ::GetWindowLongW(hListView, GWL_STYLE);
+            ListView_SetBkColor(hListView, themePtr->cardBg);
+            ListView_SetTextBkColor(hListView, themePtr->cardBg);
+            ListView_SetTextColor(hListView, themePtr->textSecondary);
+            if ((styleOrig & WS_DISABLED) != 0) {
+                ::SetWindowLongW(hListView, GWL_STYLE, styleOrig & ~WS_DISABLED);
+            }
+            const LRESULT paintRes = ::DefSubclassProc(hListView, uMsg, wParam, lParam);
+            if ((styleOrig & WS_DISABLED) != 0) {
+                ::SetWindowLongW(hListView, GWL_STYLE, styleOrig);
+            }
+            return paintRes;
+        }
+    }
+
+    if (uMsg == WM_ENABLE && themePtr) {
+        const LRESULT enRes = ::DefSubclassProc(hListView, uMsg, wParam, lParam);
+        ListView_SetBkColor(hListView, themePtr->cardBg);
+        ListView_SetTextBkColor(hListView, themePtr->cardBg);
+        ListView_SetTextColor(hListView, (wParam != FALSE) ? themePtr->textPrimary : themePtr->textSecondary);
+        ::InvalidateRect(hListView, nullptr, TRUE);
+        return enRes;
+    }
+
     const LRESULT res = ::DefSubclassProc(hListView, uMsg, wParam, lParam);
     if (uMsg == LVM_INSERTCOLUMNW || uMsg == LVM_INSERTCOLUMNA || uMsg == WM_STYLECHANGED) {
         EnsureListViewHeaderSubclassed(hListView, themePtr);
@@ -1904,6 +1942,203 @@ inline void SetPushButtonAeroCircleBackMode(HWND hButton, bool enableAeroCircle)
         st->isAeroCircleBack = enableAeroCircle;
         ::InvalidateRect(hButton, nullptr, FALSE);
     }
+}
+
+namespace detail {
+
+struct SharedOptionCardSubclassState {
+    const RswTheme* themePtr    = nullptr;
+    GlassGlyph      glyph       = GlassGlyph::Bolt;
+    COLORREF        rimRgb      = brand::kSkyCyan;
+    COLORREF        accentRgb   = brand::kWarmGold;
+    std::wstring    description;
+    bool            isHovered   = false;
+};
+
+inline LRESULT CALLBACK SharedOptionCardSubclassProc(
+    HWND hWnd,
+    UINT uMsg,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR uIdSubclass,
+    DWORD_PTR dwRefData) noexcept
+{
+    auto* st = reinterpret_cast<SharedOptionCardSubclassState*>(dwRefData);
+    if (!st || !st->themePtr) {
+        return ::DefSubclassProc(hWnd, uMsg, wParam, lParam);
+    }
+
+    switch (uMsg) {
+        case WM_NCDESTROY:
+            ::RemoveWindowSubclass(hWnd, &SharedOptionCardSubclassProc, uIdSubclass);
+            delete st;
+            return ::DefSubclassProc(hWnd, uMsg, wParam, lParam);
+
+        case WM_ERASEBKGND:
+            return 1;
+
+        case WM_MOUSEMOVE:
+            if (!st->isHovered) {
+                st->isHovered = true;
+                TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hWnd, 0};
+                ::TrackMouseEvent(&tme);
+                ::InvalidateRect(hWnd, nullptr, FALSE);
+            }
+            break;
+
+        case WM_MOUSELEAVE:
+            st->isHovered = false;
+            ::InvalidateRect(hWnd, nullptr, FALSE);
+            break;
+
+        case WM_SETTEXT:
+        case WM_ENABLE:
+        case BM_SETCHECK:
+        case BM_SETSTATE: {
+            ::SendMessageW(hWnd, WM_SETREDRAW, FALSE, 0);
+            const LRESULT res = ::DefSubclassProc(hWnd, uMsg, wParam, lParam);
+            ::SendMessageW(hWnd, WM_SETREDRAW, TRUE, 0);
+            ::InvalidateRect(hWnd, nullptr, FALSE);
+            return res;
+        }
+
+        case WM_SETFOCUS:
+        case WM_KILLFOCUS:
+        case WM_LBUTTONDOWN:
+        case WM_LBUTTONUP:
+        case WM_KEYDOWN:
+        case WM_KEYUP: {
+            const LRESULT res = ::DefSubclassProc(hWnd, uMsg, wParam, lParam);
+            ::InvalidateRect(hWnd, nullptr, FALSE);
+            return res;
+        }
+
+        case WM_PAINT:
+        case WM_PRINTCLIENT: {
+            RECT rc{};
+            ::GetClientRect(hWnd, &rc);
+            const int w = std::max<int>(1, rc.right - rc.left);
+            const int h = std::max<int>(1, rc.bottom - rc.top);
+
+            PAINTSTRUCT ps{};
+            HDC targetDc = (uMsg == WM_PRINTCLIENT) ? reinterpret_cast<HDC>(wParam) : ::BeginPaint(hWnd, &ps);
+            HDC memDc    = ::CreateCompatibleDC(targetDc);
+            HBITMAP bmp  = ::CreateCompatibleBitmap(targetDc, w, h);
+            HGDIOBJ oldB = ::SelectObject(memDc, bmp);
+
+            RECT fullRc{0, 0, w, h};
+            ::FillRect(memDc, &fullRc, st->themePtr->hbrWindow);
+
+            wchar_t titleBuf[256]{};
+            ::GetWindowTextW(hWnd, titleBuf, static_cast<int>(std::size(titleBuf)));
+            const bool isSelected = (::SendMessageW(hWnd, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            const bool hasFocus   = (::GetFocus() == hWnd);
+            const UINT dpi        = ::GetDpiForWindow(hWnd);
+
+            {
+                Gdiplus::Graphics g(memDc);
+                g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+                g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
+                DrawAccessibleOptionCard(
+                    memDc, g, fullRc, dpi, *st->themePtr,
+                    st->glyph, st->rimRgb, st->accentRgb,
+                    titleBuf, st->description,
+                    isSelected, hasFocus, st->isHovered);
+            }
+
+            ::BitBlt(targetDc, 0, 0, w, h, memDc, 0, 0, SRCCOPY);
+            ::SelectObject(memDc, oldB);
+            ::DeleteObject(bmp);
+            ::DeleteDC(memDc);
+            if (uMsg == WM_PAINT) {
+                ::EndPaint(hWnd, &ps);
+            }
+            return 0;
+        }
+    }
+    return ::DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
+
+} // namespace detail
+
+/// Subclasses a genuine Win32 `BS_AUTORADIOBUTTON` (`BUTTON`) so it renders as an accessible
+/// Setup Type or Maintenance Mode Option Card while preserving native Arrow-key cycling,
+/// `&` keyboard mnemonics, and UI Automation `RadioButton` screen-reader semantics!
+inline void AttachAccessibleOptionCardSubclass(
+    HWND hRadioCard,
+    const RswTheme* themePtr,
+    GlassGlyph glyph,
+    COLORREF rimRgb,
+    COLORREF accentRgb,
+    std::wstring_view description) noexcept
+{
+    if (!hRadioCard || !themePtr) return;
+    DWORD_PTR existing = 0;
+    if (::GetWindowSubclass(hRadioCard, &detail::SharedOptionCardSubclassProc, 0x52534F43u, &existing) && existing != 0) {
+        auto* st = reinterpret_cast<detail::SharedOptionCardSubclassState*>(existing);
+        st->themePtr    = themePtr;
+        st->glyph       = glyph;
+        st->rimRgb      = rimRgb;
+        st->accentRgb   = accentRgb;
+        st->description = std::wstring(description);
+        ::InvalidateRect(hRadioCard, nullptr, FALSE);
+        return;
+    }
+    auto* st = new detail::SharedOptionCardSubclassState{
+        themePtr, glyph, rimRgb, accentRgb, std::wstring(description), false};
+    if (!::SetWindowSubclass(hRadioCard, &detail::SharedOptionCardSubclassProc, 0x52534F43u, reinterpret_cast<DWORD_PTR>(st))) {
+        delete st;
+    }
+}
+
+/// Shared accessible `"Are you sure? (Yes / No)"` Cancel confirmation dialog used across ALL
+/// RaggieSoft Installer Studio runtimes (`.MSI`, `RaggieScript EXE`, `Add-On`, and `Unified Suite`)!
+///   - Defaults focus to `IDNO` so an accidental `Esc` or `Enter` never aborts an active installation.
+///   - Clearly informs the user that confirming `Yes` during an active installation performs a full rollback!
+inline bool ConfirmSetupCancelDialog(
+    HWND hParent,
+    std::wstring_view productName,
+    bool isActivelyApplyingChanges,
+    bool isUninstallOrMaint = false) noexcept
+{
+    wchar_t testOverride[16]{};
+    if (::GetEnvironmentVariableW(L"RSW_TEST_AUTO_CONFIRM_CANCEL", testOverride, static_cast<DWORD>(std::size(testOverride))) > 0) {
+        return testOverride[0] == L'1' || testOverride[0] == L'y' || testOverride[0] == L'Y';
+    }
+
+    const std::wstring cleanName = productName.empty() ? L"Application" : std::wstring(productName);
+    const std::wstring winTitle  = cleanName + (isUninstallOrMaint ? L" Maintenance" : L" Setup");
+    const std::wstring mainInstr = isActivelyApplyingChanges
+        ? L"Are you sure you want to cancel and roll back changes?"
+        : (isUninstallOrMaint
+               ? L"Are you sure you want to exit maintenance?"
+               : L"Are you sure you want to exit setup?");
+    const std::wstring bodyText  = isActivelyApplyingChanges
+        ? (cleanName + L" Setup is currently in progress.\n\n"
+           L"If you choose Yes, setup will stop immediately and perform a full rollback of all changes made during this session.\n\n"
+           L"Choose No to continue setup.")
+        : (cleanName + L" has not finished yet. No changes have been made to your computer.\n\n"
+           L"Do you want to exit now?");
+
+    TASKDIALOGCONFIG tdc{};
+    tdc.cbSize             = sizeof(tdc);
+    tdc.hwndParent         = hParent;
+    tdc.hInstance          = ::GetModuleHandleW(nullptr);
+    tdc.dwFlags            = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
+    tdc.dwCommonButtons    = TDCBF_YES_BUTTON | TDCBF_NO_BUTTON;
+    tdc.pszWindowTitle     = winTitle.c_str();
+    tdc.pszMainIcon        = isActivelyApplyingChanges ? TD_WARNING_ICON : TD_INFORMATION_ICON;
+    tdc.pszMainInstruction = mainInstr.c_str();
+    tdc.pszContent         = bodyText.c_str();
+    tdc.nDefaultButton     = IDNO;
+
+    int chosenBtn = IDNO;
+    if (FAILED(::TaskDialogIndirect(&tdc, &chosenBtn, nullptr, nullptr))) {
+        chosenBtn = ::MessageBoxW(
+            hParent, bodyText.c_str(), winTitle.c_str(),
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+    }
+    return chosenBtn == IDYES;
 }
 
 // ================================================================================

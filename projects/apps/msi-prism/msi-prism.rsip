@@ -16,7 +16,7 @@
 SchemaVersion            = 0.9
 Name                     = RaggieSoft MSI Prism
 Tagline                  = 64-Bit Read/Write MSI, MSM, MST & MSP Relational SQL Table Editor
-Version                  = 0.9.0
+Version                  = 0.9.1
 Manufacturer             = RaggieSoft
 WebsiteLabel             = raggiesoftstudio.com
 AboutUrl                 = https://raggiesoftstudio.com/installer-studio

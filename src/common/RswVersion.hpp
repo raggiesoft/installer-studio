@@ -55,13 +55,13 @@
 
 namespace rsw {
 
-// Semantic Versioning (`0.9.0`)
+// Semantic Versioning (`0.9.1`)
 inline constexpr int kVersionMajor = 0;
 inline constexpr int kVersionMinor = 9;
-inline constexpr int kVersionPatch = 0;
+inline constexpr int kVersionPatch = 1;
 
-inline constexpr std::string_view  kVersionString      = "0.9.0";
-inline constexpr std::wstring_view kVersionStringWide  = L"0.9.0";
+inline constexpr std::string_view  kVersionString      = "0.9.1";
+inline constexpr std::wstring_view kVersionStringWide  = L"0.9.1";
 
 // Suite, Runtime Wizard, Help Viewer, Patch Compiler, Updater, & MSI Prism Product Identity
 inline constexpr std::string_view  kSuiteTitle         = "RaggieSoft Installer Studio";
@@ -80,8 +80,8 @@ inline constexpr std::string_view  kIncludeExt         = ".rsii";
 inline constexpr std::string_view  kScriptExt          = ".rssc";
 inline constexpr std::string_view  kPakExt             = ".rswpak";
 inline constexpr std::string_view  kPatchExt           = ".rswpatch";
-inline constexpr std::string_view  kGeneratorSignature = "RaggieSoft Installer Studio (instbuild.exe 0.9.0)";
-inline constexpr std::wstring_view kGeneratorSigWide   = L"RaggieSoft Installer Studio (instbuild.exe 0.9.0)";
+inline constexpr std::string_view  kGeneratorSignature = "RaggieSoft Installer Studio (instbuild.exe 0.9.1)";
+inline constexpr std::wstring_view kGeneratorSigWide   = L"RaggieSoft Installer Studio (instbuild.exe 0.9.1)";
 inline constexpr std::string_view  kManifestSchemaVer  = "0.9";
 
 /// Official IDE Product Editions (`Community` permanently maintains 100% feature parity with `Architect`!).

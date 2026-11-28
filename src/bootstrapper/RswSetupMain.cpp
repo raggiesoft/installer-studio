@@ -3276,7 +3276,7 @@ public:
                         if (!rsw::DownloadFileViaWinHttp(fp.downloadUrl, pakFile, &cancelRequested, nullptr, dlErr)) {
                             std::lock_guard<std::mutex> lk(msgMutex);
                             capturedErrorText = rsw::Utf8ToWide(dlErr);
-                            rc = ERROR_INSTALL_FAILURE;
+                            rc = cancelRequested.load() ? ERROR_INSTALL_USEREXIT : ERROR_INSTALL_FAILURE;
                             break;
                         }
                     }
@@ -3287,10 +3287,19 @@ public:
                             !rsw::ExtractRswPakFileToDirectory(pakFile, std::filesystem::path(installDir), &cancelRequested, nullptr, pkErr)) {
                             std::lock_guard<std::mutex> lk(msgMutex);
                             capturedErrorText = rsw::Utf8ToWide(pkErr);
-                            rc = ERROR_INSTALL_FAILURE;
+                            rc = cancelRequested.load() ? ERROR_INSTALL_USEREXIT : ERROR_INSTALL_FAILURE;
                             break;
                         }
                     }
+                }
+                // Atomic Post-MSI Feature-Pack Rollback: if the user canceled (or a required `.rswpak` failed)
+                // during a fresh installation AFTER `MsiInstallProductW` committed, roll back the newly installed MSI!
+                if (rc == ERROR_INSTALL_USEREXIT && !alreadyInstalled && !cfg.productCode.empty() &&
+                    selectedAction != SelectedAction::MaintUninstall &&
+                    selectedAction != SelectedAction::MaintQuickRepair &&
+                    selectedAction != SelectedAction::MaintFullReinstall) {
+                    postStatus(L"Rolling back Windows Installer package...");
+                    ::MsiConfigureProductExW(cfg.productCode.c_str(), INSTALLLEVEL_DEFAULT, INSTALLSTATE_ABSENT, L"");
                 }
             }
 
@@ -3328,6 +3337,45 @@ public:
         ::SetFocus(hBtnPrimary);
         ::InvalidateRect(hWnd, nullptr, TRUE);
         if (hBackdropWnd) ::InvalidateRect(hBackdropWnd, nullptr, FALSE);
+    }
+
+    // Prompts `"Are you sure? (Yes / No)"` before exiting Setup or canceling an active MSI transaction
+    // (explaining clearly that confirming `Yes` mid-install performs a full rollback of all changes!).
+    void PromptAndHandleUserCancel(HWND hTargetWnd) {
+        if (isHeadlessExport || currentPage == WizardPage::Finished) {
+            ::DestroyWindow(hTargetWnd);
+            return;
+        }
+        const bool isMaintFlow =
+            alreadyInstalled ||
+            selectedAction == SelectedAction::MaintUninstall ||
+            selectedAction == SelectedAction::MaintQuickRepair ||
+            selectedAction == SelectedAction::MaintFullReinstall;
+
+        if (installRunning.load()) {
+            if (cancelLockedPointOfNoReturn.load() || cancelRequested.load()) {
+                return; // Point of no return (`.rbf` cleanup in progress) or rollback already started!
+            }
+            if (!isHeadlessExport) {
+                taskbarProgress.SetPaused(hTargetWnd);
+            }
+            const bool confirmed = rsw::ui::ConfirmSetupCancelDialog(
+                hTargetWnd, cfg.productName, true, isMaintFlow);
+            if (!confirmed) {
+                if (!isHeadlessExport) {
+                    taskbarProgress.SetNormalPermille(hTargetWnd, currentPermille);
+                }
+                return;
+            }
+            cancelRequested.store(true);
+            if (hBtnCancel) ::EnableWindow(hBtnCancel, FALSE);
+            if (hProgStatus) ::SetWindowTextW(hProgStatus, L"Canceling setup and rolling back all changes...");
+            return;
+        }
+
+        if (rsw::ui::ConfirmSetupCancelDialog(hTargetWnd, cfg.productName, false, isMaintFlow)) {
+            ::DestroyWindow(hTargetWnd);
+        }
     }
 
     // ----------------------------------------------------------------------------
@@ -4938,16 +4986,7 @@ public:
 
                     case IDC_NAV_CANCEL:
                     case IDCANCEL:
-                        if (self->installRunning.load()) {
-                            if (self->cancelLockedPointOfNoReturn.load()) {
-                                return 0; // Point of no return (`.rbf` cleanup in progress)!
-                            }
-                            self->cancelRequested.store(true);
-                            ::EnableWindow(self->hBtnCancel, FALSE);
-                            ::SetWindowTextW(self->hProgStatus, L"Canceling installation and rolling back changes...");
-                        } else {
-                            ::DestroyWindow(hWnd);
-                        }
+                        self->PromptAndHandleUserCancel(hWnd);
                         return 0;
                 }
                 break;
@@ -5092,14 +5131,7 @@ public:
                 return 0;
 
             case WM_CLOSE:
-                if (self->installRunning.load()) {
-                    if (self->cancelLockedPointOfNoReturn.load()) {
-                        return 0; // Cannot cancel or close once `.rbf` rollback files are being removed!
-                    }
-                    self->cancelRequested.store(true);
-                    return 0;
-                }
-                ::DestroyWindow(hWnd);
+                self->PromptAndHandleUserCancel(hWnd);
                 return 0;
 
             case WM_DESTROY:
@@ -6125,6 +6157,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
             }
             rsw::rssc::VmExecutionOptions wOpts{};
             wOpts.isElevatedWorker = true;
+            std::atomic<bool> workerCancel{false};
+            wOpts.cancelFlag = &workerCancel;
+            const auto cancelFlagPath = statePath.parent_path() / L"cancel.flag";
+            std::atomic<bool> stopCancelWatcher{false};
+            std::thread cancelWatchThread([&]() {
+                std::error_code cEc;
+                while (!stopCancelWatcher.load()) {
+                    if (std::filesystem::exists(cancelFlagPath, cEc)) {
+                        workerCancel.store(true);
+                        break;
+                    }
+                    ::Sleep(40);
+                }
+            });
             wchar_t selfExe[MAX_PATH * 4]{};
             ::GetModuleFileNameW(nullptr, selfExe, static_cast<DWORD>(std::size(selfExe)));
             wOpts.runningExePath = std::filesystem::path(selfExe);
@@ -6141,6 +6187,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
             rsw::rssc::RaggieScriptVm vm(prog, wOpts);
             vm.ImportWizardStateJson(sss.str());
             const auto res = vm.ExecuteCommitPhaseOnly();
+            stopCancelWatcher.store(true);
+            if (cancelWatchThread.joinable()) cancelWatchThread.join();
             {
                 std::ofstream rf(resultPath, std::ios::binary | std::ios::trunc);
                 rsw::rssc::Value outMap = rsw::rssc::Value::FromMap({

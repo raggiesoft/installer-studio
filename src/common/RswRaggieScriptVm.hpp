@@ -1408,6 +1408,7 @@ public:
                 std::filesystem::create_directories(jobDir, ec);
                 const auto stateFile  = jobDir / L"wizard-state.json";
                 const auto resultFile = jobDir / L"worker-result.json";
+                const auto cancelFile = jobDir / L"cancel.flag";
                 {
                     const std::string stateJson = ExportWizardStateJson();
                     std::ofstream sf(stateFile, std::ios::binary | std::ios::trunc);
@@ -1438,8 +1439,18 @@ public:
                 }
 
                 if (sei.hProcess) {
-                    // Pump Win32 UI messages cleanly while waiting for the elevated Commit worker!
+                    // Pump Win32 UI messages cleanly while waiting for the elevated Commit worker,
+                    // forwarding any parent `cancelFlag` or Suite `RSW_CHILD_CANCEL_FILE` signal!
+                    wchar_t childCancelBuf[MAX_PATH * 4]{};
+                    ::GetEnvironmentVariableW(L"RSW_CHILD_CANCEL_FILE", childCancelBuf, static_cast<DWORD>(std::size(childCancelBuf)));
+                    const std::filesystem::path envCancelPath(childCancelBuf);
                     for (;;) {
+                        if (((opts_.cancelFlag && opts_.cancelFlag->load()) ||
+                             (!envCancelPath.empty() && std::filesystem::exists(envCancelPath, ec))) &&
+                            !std::filesystem::exists(cancelFile, ec)) {
+                            std::ofstream cf(cancelFile, std::ios::binary | std::ios::trunc);
+                            cf << "1";
+                        }
                         const DWORD wr = ::MsgWaitForMultipleObjects(1, &sei.hProcess, FALSE, 50, QS_ALLINPUT);
                         if (wr == WAIT_OBJECT_0) break;
                         MSG msg{};

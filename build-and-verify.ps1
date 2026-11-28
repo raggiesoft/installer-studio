@@ -23,7 +23,7 @@ $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Set-Location $RepoRoot
 
 Write-Host "======================================================================" -ForegroundColor Cyan
-Write-Host "  RaggieSoft Installer Studio v0.9.0 - x64 + ARM64 Build & Test Suite" -ForegroundColor Cyan
+Write-Host "  RaggieSoft Installer Studio v0.9.1 - x64 + ARM64 Build & Test Suite" -ForegroundColor Cyan
 Write-Host "======================================================================" -ForegroundColor Cyan
 
 # Step 1: Locate Visual Studio `vcvarsall.bat` for `cl.exe`, `rc.exe`, & Windows 11 SDK
